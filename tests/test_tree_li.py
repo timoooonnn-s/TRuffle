@@ -6,6 +6,7 @@ import importlib.machinery
 import importlib.util
 import io
 import os
+import re
 import shutil
 import sys
 import tempfile
@@ -222,6 +223,34 @@ class TestHelpPage(TempDir):
         self.assertIn(cfg.data, text)
         self.assertIn(cfg.state_dir, text)
         self.assertIn("42 switches", text)
+
+
+class TestTheme(unittest.TestCase):
+    """Theme names are looked up as attributes, so a typo only shows on a rare screen.
+    This checks every name the source uses against the palette."""
+
+    SOURCE = open(os.path.join(ROOT, "tree-li"), encoding="utf-8").read()
+
+    def palette(self):
+        return set(re.findall(r'^    "(\w+)":\s+\(\(', self.SOURCE, re.M))
+
+    def test_every_theme_attribute_exists(self):
+        used = set(re.findall(r"\bth\.(\w+)\b", self.SOURCE)) - {"sym", "colors"}
+        self.assertEqual(sorted(used - self.palette()), [], "theme attribute used but not defined")
+
+    def test_status_and_banner_styles_exist(self):
+        palette = self.palette()
+        for state in (tl.PING_UP, tl.PING_DOWN, tl.SSH_OK, tl.SSH_FAILED, tl.WAIT):
+            style = tl.STATUS_STYLE[state]
+            self.assertIn(style, palette)
+            self.assertIn(style + "_sel", palette)       # built as style + "_sel" when selected
+        for i in range(1, len(tl.BANNER) + 1):
+            self.assertIn("banner%d" % i, palette)
+
+    def test_mono_fallback_covers_only_real_names(self):
+        mono = set(re.findall(r'"(\w+)":', self.SOURCE[self.SOURCE.index("MONO = {"):
+                                                       self.SOURCE.index("COLOR_NAMES")]))
+        self.assertEqual(sorted(mono - self.palette()), [])
 
 
 class TestCheck(TempDir):

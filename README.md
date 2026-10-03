@@ -146,6 +146,7 @@ From top to bottom:
 | `Ctrl-F` | mark / unmark the selected switch as a [favourite](#favourites-and-recent-switches) |
 | `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`) |
 | `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
+| `Ctrl-K` | close the running tmux sessions (asks first) |
 | `Ctrl-E` | [export](#export) the current list to a CSV file |
 | `Ctrl-R` | reload the switch list |
 | `Ctrl-L` | redraw the screen |
@@ -206,10 +207,13 @@ logs in by itself.
 | clear all marks | `ESC` (with an empty search) |
 | **back to TRee-Li**, panes keep running | `Ctrl-b d` |
 | **back into the panes** | `Ctrl-T` in TRee-Li |
+| **close them all**, from TRee-Li | `Ctrl-K` (asks first) |
 | switch between panes | `Ctrl-b o`, or `Ctrl-b` and an arrow key |
 | make one pane full screen (and back) | `Ctrl-b z` |
 | log out of one switch | `exit` in that pane; its pane closes |
-| close everything at once | `Ctrl-b &` (asks first) |
+
+`Ctrl-K` in TRee-Li is the reliable way to close everything: it needs no tmux key and works on any keyboard
+layout. tmux's own `Ctrl-b &` does the same from inside, but the `&` is awkward on some layouts.
 
 When the last pane is gone the tmux session ends by itself and you are back in TRee-Li.
 The tmux status bar shows these keys while you are in the session, and each pane border carries its switch name.

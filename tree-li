@@ -1333,13 +1333,19 @@ class Handover(object):
                 conn, _ = self.server.accept()
             except OSError:
                 return                        # closed
-            with conn:
-                try:
-                    conn.settimeout(5)
-                    answer = self._handle(conn)
-                    conn.sendall(answer.encode("utf-8") + b"\n")
-                except (OSError, ValueError, struct.error):
-                    pass
+            # one thread per connection: a client that connects and then says nothing
+            # must not keep the other panes waiting for their login
+            worker = threading.Thread(target=self._client, args=(conn,))
+            worker.daemon = True
+            worker.start()
+
+    def _client(self, conn):
+        with conn:
+            try:
+                conn.settimeout(3)
+                conn.sendall(self._handle(conn).encode("utf-8") + b"\n")
+            except (OSError, ValueError, struct.error):
+                pass
 
     def _handle(self, conn):
         uid, pid = peer_identity(conn)
@@ -1350,23 +1356,31 @@ class Handover(object):
         request = conn.recv(4096).decode("utf-8", "replace").strip()
         kind, _, ticket = request.partition(" ")
         ticket = ticket.strip()
+        if kind != "GET":
+            return "ERR refused"
         with self.lock:
             entry = self.tickets.get(ticket)
             if entry is None:
                 return "ERR unknown ticket"
-            if kind == "GET":
-                if entry["fetched"]:
-                    self.refused.append("ticket for %s used twice" % entry["host"])
-                    return "ERR already used"
-                if time.time() - entry["created"] > TICKET_LIFETIME:
-                    return "ERR ticket expired"
-                if entry["pid"] not in (pid, parent_pid(pid)):
-                    self.refused.append("pid %s is not the pane for %s" % (pid, entry["host"]))
-                    return "ERR wrong process"
-                entry["fetched"] = True
-                user, password = self.credentials()
-                return "OK " + json.dumps({"user": user, "password": password or ""})
-        return "ERR refused"
+            if entry["fetched"]:
+                self.refused.append("ticket for %s used twice" % entry["host"])
+                return "ERR already used"
+            if time.time() - entry["created"] > TICKET_LIFETIME:
+                return "ERR ticket expired"
+            expected, host = entry["pid"], entry["host"]
+        # Looking up a parent pid runs `ps` on macOS, so it happens outside the lock -
+        # otherwise one slow lookup would hold up every other pane.
+        if expected not in (pid, parent_pid(pid)):
+            with self.lock:
+                self.refused.append("pid %s is not the pane for %s" % (pid, host))
+            return "ERR wrong process"
+        with self.lock:
+            entry = self.tickets.get(ticket)
+            if entry is None or entry["fetched"]:     # checked again: single use must be exact
+                return "ERR already used"
+            entry["fetched"] = True
+            user, password = self.credentials()
+        return "OK " + json.dumps({"user": user, "password": password or ""})
 
     @property
     def pending(self):
@@ -1471,7 +1485,7 @@ def pane_command(cfg, socket_path, ticket, host, name):
 
 def open_panes(cfg, devices, handover):
     """Create a tmux session with one pane per switch and return its name."""
-    session = SESSION_PREFIX + time.strftime("%H%M%S")
+    session = free_session_name()
     first, rest = devices[0], devices[1:]
 
     def start(dev, *extra):
@@ -1482,18 +1496,23 @@ def open_panes(cfg, devices, handover):
         handover.bind(ticket, int(pid or 0))
         tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (dev.name, dev.host))
 
-    start(first, "new-session", "-d", "-s", session)
-    for dev in rest:
-        start(dev, "split-window", "-t", session)
-        tmux_try("select-layout", "-t", session, "tiled")
+    size = terminal_size() or (24, 80)          # a detached session would default to 80x24
+    try:
+        start(first, "new-session", "-d", "-s", session, "-x", str(size[1]), "-y", str(size[0]))
+        for dev in rest:
+            start(dev, "split-window", "-t", session)
+            tmux_try("select-layout", "-t", session, "tiled")
+    except BaseException:
+        tmux_try("kill-session", "-t", "=" + session)       # never leave half a session behind
+        raise
     tmux_try("select-layout", "-t", session, "tiled")
     tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
     tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
     tmux_try("set-option", "-t", session, "status-left", "[TRee-Li]  ")
     tmux_try("set-option", "-t", session, "status-right",
-             " Ctrl-b d = back to TRee-Li   Ctrl-b o = next pane   Ctrl-b & = close all ")
-    tmux_try("set-option", "-t", session, "status-right-length", "70")
+             " Ctrl-b d = back to TRee-Li   Ctrl-b o = next pane   exit = leave one switch ")
+    tmux_try("set-option", "-t", session, "status-right-length", "80")
     return session
 
 
@@ -1506,12 +1525,34 @@ def wait_for_logins(handover, deadline=TICKET_LIFETIME):
     return not handover.pending
 
 
-def attach_session(session):
-    """Hand the terminal to tmux until the user detaches (Ctrl-b d) or the session ends."""
+def session_exists(session):
     try:
-        return subprocess.call(["tmux", "attach-session", "-t", session])
+        tmux_run("has-session", "-t", "=" + session)
+        return True
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return False
+
+
+def free_session_name():
+    """tree-li-HHMMSS, with a suffix if that name is taken - two multi-ssh actions in
+    the same second would otherwise collide."""
+    base = SESSION_PREFIX + time.strftime("%H%M%S")
+    name, n = base, 1
+    while session_exists(name) and n < 100:
+        name, n = "%s-%d" % (base, n), n + 1
+    return name
+
+
+def attach_session(session):
+    """Hand the terminal to tmux until the user detaches (Ctrl-b d) or the session ends.
+    Returns (ok, message) - a failed attach must not look like nothing happened."""
+    if not session_exists(session):
+        return False, "the tmux session %s is gone" % session
+    try:
+        code = subprocess.call(["tmux", "attach-session", "-t", "=" + session])
+        return code == 0, "" if code == 0 else "tmux attach ended with code %d" % code
     except (OSError, subprocess.SubprocessError) as e:
-        return e
+        return False, "cannot run tmux: %s" % e
 
 
 def harden_process():
@@ -2120,6 +2161,7 @@ class App(object):
                  ("F1-F%d" % self.ncols(), "sort"), ("^E", "export"), ("^R", "reload"), ("^C", "quit")]
         if self.sessions:
             hints.insert(3, ("^T", "back to tmux"))
+            hints.insert(4, ("^K", "close tmux"))
         if batch:
             self.draw_frame("Switch Manager", right, hints=hints, footer_right=batch, footer_attr=th.wait)
         else:
@@ -2331,6 +2373,8 @@ class App(object):
             self.export()
         elif key == "CTRL_T":
             self.reattach()
+        elif key == "CTRL_K":
+            self.close_sessions()
         elif key == "MOUSE":
             return self.click()
         elif key == "CTRL_R":
@@ -2590,6 +2634,18 @@ class App(object):
             put(scr, y0, x0 + 4 + len(title), "%s %s " % (th.sym["sep"], subtitle), th.win_frame)
         return y0, x0
 
+    def confirm(self, title, question, detail=()):
+        """A y/n window.  Anything other than y / Enter means no."""
+        width = min(72, max(40, self.scr.getmaxyx()[1] - 6))
+        lines = list(textwrap.wrap(question, width - 6)) + [""] + list(detail)
+        y0, x0 = self.draw_window(title, "", len(lines) + 4, width)
+        for i, line in enumerate(lines):
+            put(self.scr, y0 + 1 + i, x0 + 3, line[:width - 6], self.th.win_hint if i else self.th.win_label)
+        put(self.scr, y0 + len(lines) + 2, x0 + 3, "y", self.th.win_key)
+        put(self.scr, y0 + len(lines) + 2, x0 + 5, "yes      any other key: no", self.th.win_hint)
+        self.scr.refresh()
+        return read_key(self.scr, -1) in ("y", "Y")
+
     # -- credentials --------------------------------------------------------
 
     def credential_dialog(self, error=None):
@@ -2700,29 +2756,74 @@ class App(object):
     def note(self, *lines):
         return note_text(lines, self.th.colors, self.th.sym["gt"])
 
-    def reattach(self):
-        """Ctrl-T: back into the tmux session with the open switch sessions."""
-        self.check_sessions()
-        sessions = self.sessions or tree_li_sessions()
-        if not sessions:
-            self.message("No tmux session with open switches (mark 2+ switches with Tab, then ssh)",
-                         seconds=10)
-            return
-        session = sessions[-1]              # the newest one
+    def live_sessions(self):
+        """Ask tmux right now - a cached list may name a session that has just ended."""
+        if not which("tmux"):
+            return []
+        alive = set(tree_li_sessions())
+        self.my_sessions = [s for s in self.my_sessions if s in alive]
+        self.sessions = list(self.my_sessions)
+        self._sessions_checked = time.time()
+        return self.my_sessions or sorted(alive)
+
+    def enter_tmux(self, session):
+        """Hand the terminal to tmux and come back.  Returns an error text or ''."""
         self.mouse(False)
         curses.endwin()
         try:
-            if os.environ.get("TMUX"):
-                tmux_try("switch-client", "-t", session)
-            else:
-                attach_session(session)
+            if os.environ.get("TMUX"):      # tmux refuses to nest: switch instead of attach
+                try:
+                    tmux_run("switch-client", "-t", "=" + session)
+                    return ""
+                except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+                    return str(e)
+            ok, error = attach_session(session)
+            return "" if ok else error
         finally:
             self.resume_curses()
+            self.reload_status()
+
+    def reattach(self):
+        """Ctrl-T: back into the tmux session that holds the open switches."""
+        if not which("tmux"):
+            self.message("tmux is not installed", error=True, seconds=10)
+            return
+        sessions = self.live_sessions()
+        if not sessions:
+            self.message("No open switch session - mark 2 or more switches with Tab, then run ssh",
+                         seconds=10)
+            return
+        session = sessions[-1]              # the newest one
+        error = self.enter_tmux(session)
+        if error:
+            self.message("Could not go back to %s: %s" % (session, error), error=True, seconds=15)
+            return
+        left = self.live_sessions()
+        if os.environ.get("TMUX"):
+            self.message("Switched to %s (Ctrl-b L switches back here)" % session, seconds=10)
+        elif len(left) > 1:
+            self.message("Back from %s - still running: %s" % (session, ", ".join(s for s in left
+                                                                                 if s != session)), seconds=15)
+        else:
+            self.message("Back from %s" % session if session in left else "%s has ended" % session)
+
+    def close_sessions(self):
+        """Ctrl-K: close the switch sessions without hunting for a tmux key."""
+        sessions = self.live_sessions()
+        if not sessions:
+            self.message("No open switch session", seconds=8)
+            return
+        if not self.confirm("Close switch sessions",
+                            "Close %d tmux session%s and log out of every switch in them?"
+                            % (len(sessions), "" if len(sessions) == 1 else "s"),
+                            detail=["  " + s for s in sessions]):
+            self.message("Nothing closed")
+            return
+        for session in sessions:
+            tmux_try("kill-session", "-t", "=" + session)
+        self.live_sessions()
         self.reload_status()
-        self.check_sessions()
-        if len(sessions) > 1:
-            self.message("Back from %s - %d more: %s"
-                         % (session, len(sessions) - 1, ", ".join(sessions[:-1])), seconds=15)
+        self.message("Closed %d tmux session%s" % (len(sessions), "" if len(sessions) == 1 else "s"))
 
     def connect_many(self, devices):
         """Several switches at once: one tmux session, one pane each, one login.
@@ -2752,21 +2853,17 @@ class App(object):
             return
         self.my_sessions.append(session)
         self.marked.clear()
-        inside = bool(os.environ.get("TMUX"))
+        self.message("Starting %d panes and logging them in ..." % len(devices), seconds=30)
+        self.draw()                                  # the wait is short, but never silent
         got_logins = wait_for_logins(handover)       # panes fetch immediately after they start
         handover.close()                             # the socket is not needed any more
         refused = handover.take_refusals()
-        self.mouse(False)
-        curses.endwin()
-        try:
-            if inside:                      # tmux refuses to nest: switch instead of attach
-                tmux_try("switch-client", "-t", session)
-            else:
-                attach_session(session)
-        finally:
-            self.resume_curses()
-        self.reload_status()                # the panes write their own results to the status file
-        self.check_sessions()
+        error = self.enter_tmux(session)             # also reloads what the panes wrote
+        self.live_sessions()
+        if error:
+            self.message("tmux session %s started, but could not show it: %s" % (session, error),
+                         error=True, seconds=15)
+            return
         note = "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
         if not got_logins:
             note += " - some panes had to ask for the password themselves"
@@ -2774,7 +2871,7 @@ class App(object):
             note += " (%d more were not opened - %d panes at most)" % (extra, MAX_PANES)
         if refused:
             note += " - REFUSED: %s" % "; ".join(refused[:2])
-        note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in" % self.th.sym["sep"]
+        note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in, Ctrl-K closes them" % self.th.sym["sep"]
         self.message(note, error=bool(refused), seconds=20)
 
     def run_ssh(self, dev, user, password):
@@ -2848,8 +2945,8 @@ def help_sections(cfg, ncols, switches):
         ("item", "Tab", "mark switches, then run ssh with 2 or more marked"),
         ("item", "Ctrl-b d", "back to TRee-Li - the switches stay logged in"),
         ("item", "Ctrl-T", "back into the tmux session from TRee-Li"),
+        ("item", "Ctrl-K", "close the switch sessions (asks first)"),
         ("item", "Ctrl-b o", "next pane      Ctrl-b z  zoom one pane in / out"),
-        ("item", "Ctrl-b &", "close the window and all its switch sessions (asks y/n)"),
         ("item", "exit  or  Ctrl-d", "in a pane: log out of that one switch; when the last"),
         ("item", "", "pane closes, the tmux session ends by itself"),
         ("item", "tmux ls", "from any shell: list the sessions that are still running"),

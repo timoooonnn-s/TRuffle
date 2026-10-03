@@ -156,3 +156,13 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - *Warden:* `N tmux` in the top bar while sessions live, and they are named again on exit. `synchronize-panes` is forced off so one command can never go to every switch.
 - Works on Linux (`SO_PEERCRED`) and macOS (`LOCAL_PEERCRED` / `LOCAL_PEERPID`), both verified.
 - 14 security tests in `tests/test_handover.py`; 80 tests overall on Python 3.8 / 3.9 / 3.14.
+
+## D24: tmux hardening after the first real use (2026-10-03)
+User feedback: "Ctrl-T is a bit buggy" and "Ctrl-b & does not close the session for me (Swiss German layout)".
+- **Ctrl-T had four faults**, all now fixed: it trusted a session list cached for up to 3 s (so it could attach to a session that had just ended), `attach_session` returned an exception object nobody looked at, a failed attach left curses and came straight back with no message, and a successful switch inside tmux said nothing at all. It now asks tmux for the live list, checks the session exists, reports every outcome, and names the sessions still running.
+- **Closing without a tmux key:** `Ctrl-K` in TRee-Li closes the sessions after a y/n window. Keyboard layouts make `Ctrl-b &` unreliable, and binding a tmux key ourselves would change the user's global tmux config, so the action belongs in TRee-Li. The tmux status bar now advertises `exit` per pane instead of `&`.
+- **Handover: one thread per connection.** The accept loop was serial with a 5 s timeout, so a single client that connected and said nothing blocked every other pane from fetching its login - measured: the second pane timed out completely. The `parent_pid()` lookup (which runs `ps` on macOS) also no longer happens while holding the lock. Single use is still exact, re-checked under the lock.
+- **Session names could collide** inside one second (`tree-li-HHMMSS`); `free_session_name()` now suffixes.
+- **A half-built session is killed** if a `split-window` fails, instead of being left behind.
+- Sessions are created with the real terminal size, not tmux's detached default of 80x24.
+- **`win_text` did not exist** in the palette and only crashed when the new confirm window opened. `TestTheme` now checks every `th.<name>` in the source, the dynamically built status styles and the MONO fallback against the palette - that class of bug must not reach a user again.
