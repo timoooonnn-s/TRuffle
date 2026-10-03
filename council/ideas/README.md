@@ -4,7 +4,7 @@ These are parked here so nothing gets lost. Each entry has a status. Nothing in 
 
 | Idea | Status | Details |
 |---|---|---|
-| **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **on hold**, the user is researching the security risks; option 1 preferred | [tmux-panes.md](tmux-panes.md) |
+| **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **built on the `tmux-version` branch**, experimental, not merged - the user is trying it out | [tmux-panes.md](tmux-panes.md) |
 | Quick connect from the shell: `tree-li bc01` | idea | fuzzy-find and connect directly (one match) or open with that search (several) |
 | Forget the password after N idle minutes | idea, *Warden*: mandatory if tmux sessions ever run in the background | |
 | Run show commands on many switches (read-only, confirmation step, limited parallel logins) | idea, big | outputs one file per switch |

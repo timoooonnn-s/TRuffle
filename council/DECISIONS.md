@@ -146,3 +146,13 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - **Help page is data (`help_sections`)**, rendered by `show_help` and checked by tests: every command must be documented and no removed feature may still be advertised. The stale "ping + SSH check" line got through exactly because nothing tested this.
 - **Cleanup:** dead `delimiter` parameter on `read_table`, the double refilter in `connect()`, the defensive `getattr(args, "debug")` (the test helper now mirrors the real parser), the `--debug` help text that hardcoded the state path, and stray blank lines.
 - **Session logging stays** (user's call) - it is the only feature with no demonstrated user, revisit later.
+
+## D23: tmux panes built on the `tmux-version` branch (2026-10-03)
+- Not merged. The user wants to try it before deciding; `main` is untouched.
+- **Mark with `Tab`** (right-click too), `+` in the list, "N marked" in the top bar. With 2+ marked, ssh opens one tmux session with one pane per switch (max 9), all logging in at once - the user's call: a mistyped password is their problem, as when using tmux by hand.
+- **Back out:** `Ctrl-b d`. **Back in:** `Ctrl-T`. Logging out of the last pane ends the session and TRee-Li picks the results up by itself.
+- **Handover (option 1)** with all the hardening from the idea doc: private 0700 directory, 0600 socket, kernel uid *and* pid check, one-time ticket bound to the pane tmux started, 15 s lifetime, socket deleted once the logins are out.
+- **Results go through the status file, not the socket** - simpler, survives long sessions, and lets the socket close early. The DONE protocol is gone.
+- *Warden:* `N tmux` in the top bar while sessions live, and they are named again on exit. `synchronize-panes` is forced off so one command can never go to every switch.
+- Works on Linux (`SO_PEERCRED`) and macOS (`LOCAL_PEERCRED` / `LOCAL_PEERPID`), both verified.
+- 14 security tests in `tests/test_handover.py`; 80 tests overall on Python 3.8 / 3.9 / 3.14.

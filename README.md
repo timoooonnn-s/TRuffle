@@ -84,6 +84,7 @@ All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something loo
 - [Keys](#keys)
 - [Commands](#commands)
 - [Search](#search)
+- [Several switches at once (tmux)](#several-switches-at-once-tmux)
 - [Favourites and recent switches](#favourites-and-recent-switches)
 - [Saved check results](#saved-check-results)
 - [Export](#export)
@@ -143,6 +144,8 @@ From top to bottom:
 | `ESC` | step by step: 1. clears the search, 2. cancels a running batch ping, 3. clears the sort |
 | `F1` … `F7` | sort by that column: ▲ ascending → ▼ descending → original order |
 | `Ctrl-F` | mark / unmark the selected switch as a [favourite](#favourites-and-recent-switches) |
+| `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`) |
+| `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
 | `Ctrl-E` | [export](#export) the current list to a CSV file |
 | `Ctrl-R` | reload the switch list |
 | `Ctrl-L` | redraw the screen |
@@ -152,6 +155,7 @@ In full-screen output (ping, details, help): `↑` `↓` `PgUp` `PgDn` scroll, a
 
 **Mouse:**
 - **Click:** a row or tab selects it.
+- **Right-click:** marks a row for [several at once](#several-switches-at-once-tmux).
 - **Double-click:** runs the selected command (e.g. ssh on a switch).
 - **Column header:** sorts by that column.
 - **Wheel:** scrolls.
@@ -187,6 +191,48 @@ in this order within one visible column. The best matches come first, and the ma
 | `is:recent` | switches you connected to, newest first |
 
 Example: `type:core -ber ping:up ssh:failed` shows core switches outside Berlin that answer ping but where your last ssh attempt failed.
+
+## Several switches at once (tmux)
+
+> **Experimental**, on the `tmux-version` branch. Needs `tmux` on the server. Turn it off with `tmux = no`.
+
+Mark switches with **`Tab`** (or right-click), then run **ssh**. With **two or more** marked, TRee-Li opens its
+own tmux session with **one pane per switch**, up to **9**. You type your password **once** and every pane
+logs in by itself.
+
+| You want | Press |
+|---|---|
+| mark / unmark a switch | `Tab` (`Shift-Tab` marks the one above) |
+| clear all marks | `ESC` (with an empty search) |
+| **back to TRee-Li**, panes keep running | `Ctrl-b d` |
+| **back into the panes** | `Ctrl-T` in TRee-Li |
+| switch between panes | `Ctrl-b o`, or `Ctrl-b` and an arrow key |
+| make one pane full screen (and back) | `Ctrl-b z` |
+| log out of one switch | `exit` in that pane; its pane closes |
+| close everything at once | `Ctrl-b &` (asks first) |
+
+When the last pane is gone the tmux session ends by itself and you are back in TRee-Li.
+The tmux status bar shows these keys while you are in the session, and each pane border carries its switch name.
+
+**From any shell**, the sessions are normal tmux sessions named `tree-li-HHMMSS`:
+
+```bash
+tmux ls                              # which are still running
+tmux attach -t tree-li-143052        # go back into one
+tmux kill-session -t tree-li-143052  # close one and its logins
+```
+
+**They keep running after you detach.** That is the point — a dropped PuTTY connection does not lose your
+sessions — but it also means switches stay logged in. TRee-Li shows `N tmux` in the top bar while any of
+its sessions are alive, and names them again when you quit.
+
+**How the single login works, and what it costs:** panes are started by tmux, so their command line is
+visible to every user on the machine (`ps`) and cannot carry the password. Each pane gets a one-time ticket
+instead and fetches the login through a Unix socket in a private directory. Before answering, TRee-Li asks
+the kernel who is connecting and replies only to **your own user** and to **the exact process tmux started**,
+once, within 15 seconds. The socket is deleted as soon as the panes have their login.
+Anything running as *your* user could still ask for it during those seconds — that is the trade-off of the
+single login. Set `tmux = no` if you would rather type the password per pane.
 
 ## Favourites and recent switches
 

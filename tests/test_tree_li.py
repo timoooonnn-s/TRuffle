@@ -212,7 +212,8 @@ class TestHelpPage(TempDir):
 
     def test_no_removed_feature_is_still_advertised(self):
         text = self.text().lower()
-        for gone in ("ssh check", "traceroute", "tracepath", "shift-tab", "no-answer", "ping + ssh"):
+        for gone in ("ssh check", "traceroute", "tracepath", "no-answer", "ping + ssh",
+                     "next / previous sort column"):          # Tab sorts no longer, it marks
             self.assertNotIn(gone, text, "help page still mentions the removed '%s'" % gone)
 
     def test_shows_the_paths_in_use(self):

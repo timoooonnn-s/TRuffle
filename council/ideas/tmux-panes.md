@@ -1,8 +1,23 @@
-# Idea: several switches at once in tmux panes
+# Several switches at once in tmux panes
 
-**Status:** on hold (2026-10-03). The user wants **option 1** (one login via a handover) but first researches whether the
-remaining risks are acceptable. **Nothing of this is built.** First code sketch: [tmux-panes-draft.py](tmux-panes-draft.py)
-(untested, without the hardening below).
+**Status: BUILT on the `tmux-version` branch (2026-10-03), experimental, not merged.**
+The user wanted to try it before deciding. Option 1 (one login via a handover) was chosen and implemented,
+including every piece of hardening listed below. Tests: `tests/test_handover.py`.
+
+What changed against the plan while building it:
+- **Results do not travel through the socket.** Each pane writes its own outcome into the shared status
+  file (`UserState.save_status`, which already merges by time). That removed the DONE protocol, and it means
+  results survive however long a session runs, instead of being lost when the user detaches. The socket is
+  therefore closed as soon as the panes have fetched their login - exactly the "only open while panes start"
+  promise, which the original design could not keep.
+- **Panes inherit the tmux *server's* environment, not TRee-Li's.** HOME and the XDG variables are passed
+  explicitly on the pane command line, otherwise a tmux server started earlier writes favourites and results
+  somewhere else. This cost an hour to find and is the kind of thing only a real run surfaces.
+- **`Ctrl-T` reattaches** from TRee-Li. The original plan had no way back *in*; the user asked for it
+  immediately, which confirmed the gap.
+- The tmux status bar and pane borders carry the key hints, so the way back is visible without the README.
+- Pane titles must be set by the parent against a pane id; a pane setting its own title renames whichever
+  pane happens to be active.
 
 ## How it would be used
 1. Open TRee-Li normally, **outside** tmux.

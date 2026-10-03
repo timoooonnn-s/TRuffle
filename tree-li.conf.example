@@ -45,6 +45,10 @@
 #ping_rate = 20
 #ping_timeout = 1
 
+# Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
+# and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
+#tmux = yes
+
 # Mouse: click to select, double-click to run, wheel to scroll.
 # While on, select text in PuTTY / Tabby with Shift held down.
 #mouse = yes

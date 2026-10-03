@@ -19,18 +19,22 @@ import fcntl
 import functools
 import getpass
 import io
+import json
 import locale
 import os
 import pty
 import re
 import resource
+import secrets
 import select
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import textwrap
 import threading
@@ -78,6 +82,7 @@ DEFAULTS = {
     "ping_timeout": "1",
     "charset": "auto",
     "mouse": "yes",
+    "tmux": "yes",
     "export_dir": "~",
 }
 
@@ -208,7 +213,9 @@ def load_config(args):
         raise ConfigError("charset: use auto, unicode or ascii")
     cfg.charset_setting = charset
     cfg.mouse = parse_bool(raw["mouse"], "mouse")
+    cfg.tmux = parse_bool(raw["tmux"], "tmux")
     cfg.debug = args.debug
+    cfg.config_file = args.config
     cfg.export_dir = os.path.abspath(os.path.expanduser(raw["export_dir"] or "~"))
     return cfg
 
@@ -1107,6 +1114,406 @@ def remove_host_key(host, known_hosts):
     return True, output
 
 
+def note_text(lines, colors=True, gt=">"):
+    """'TRee-Li > first line', further lines indented - printed outside curses."""
+    prefix = "\033[1;34mTRee-Li\033[0m" if colors else "TRee-Li"
+    return "\r\n%s %s %s" % (prefix, gt, ("\r\n" + " " * 10).join(lines))
+
+
+def open_session_log(cfg, name, host, user):
+    """--log: a new 0600 log file for one session.  Returns (file or None, error or None)."""
+    try:
+        os.makedirs(cfg.log_dir, mode=0o700, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name or host)[:60]
+        path = os.path.join(cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), safe))
+        f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
+        f.write(("# TRee-Li session log: %s (%s) as %s, %s\n"
+                 % (name, host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
+        return f, None
+    except OSError as e:
+        return None, "cannot write session log: %s" % e
+
+
+def write_debug_report(cfg, name, host, argv, password, result):
+    """--debug: append what happened around this login to debug.log (0600): the ssh
+    command, prompts, decisions and the output BEFORE the login - never the password,
+    never the session itself.  Returns an error text or None."""
+    lines = [
+        "=== %s  %s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S"), name, host),
+        "command      : %s" % " ".join(shlex.quote(a) for a in argv),
+        "password     : %s" % ("stored, TRee-Li types it" if password else "none stored, you type it"),
+    ] + ["event        : %s" % e for e in result.events] + [
+        "exit code    : %s   failed: %s   auth failed: %s   host key changed: %s" % (
+            result.exit_code, result.failed, result.auth_failed, result.hostkey_changed),
+        "last line    : %s" % result.last_line,
+        "before login :",
+    ] + ["  | " + line for line in result.pre_login.strip("\n").split("\n")[-40:]] + [""]
+    path = os.path.join(cfg.state_dir, "debug.log")
+    try:
+        os.makedirs(cfg.state_dir, mode=0o700, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return None
+    except OSError as e:
+        return "cannot write %s: %s" % (path, e.strerror or e)
+
+
+def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
+    """One ssh connection outside curses - used by the main screen and by tmux panes.
+    Connects (typing the password once), offers to replace a changed host key, and waits
+    for a key after a failure so the reason stays readable.  Returns a SessionResult."""
+    out = sys.stdout.fileno()
+
+    def say(*lines):
+        os.write(out, note(*lines).encode("utf-8", "replace"))
+    key_removed = False
+    while True:
+        argv = build_ssh_argv(cfg, user, host, inject_password=bool(password))
+        say("Connecting to %s (%s) as %s" % (name, host, user),
+            "log out to %s, ~. force-disconnects" % back)
+        os.write(out, b"\r\n\r\n")
+        log = None
+        if cfg.session_log:
+            log, error = open_session_log(cfg, name, host, user)
+            if error:
+                say(error)
+        try:
+            result = run_session(argv, password, log)
+        finally:
+            if log is not None:
+                log.close()
+        if cfg.debug:
+            error = write_debug_report(cfg, name, host, argv, password, result)
+            if error:
+                say(error)
+        if result.hostkey_changed and not result.auth_failed:
+            known_hosts = result.known_hosts or os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")
+            if key_removed:
+                terminal_wait_key(note("The host key is still reported as changed.",
+                                       "Please check %s by hand." % known_hosts,
+                                       "Press any key to %s ..." % back))
+                return result
+            answer = terminal_wait_key(note(
+                "The host key of %s (%s) has CHANGED." % (name, host),
+                "Expected if the switch was replaced - otherwise do NOT continue.",
+                "Remove the old key from %s and connect again? [y/N] " % known_hosts))
+            if answer not in (b"y", b"Y"):
+                return result
+            ok, text = remove_host_key(host, known_hosts)
+            os.write(out, (text.replace("\n", "\r\n") + "\r\n").encode("utf-8", "replace"))
+            if not ok:
+                terminal_wait_key(note("Could not remove the old key.", "Press any key to %s ..." % back))
+                return result
+            key_removed = True
+            continue
+        if result.failed and not result.auth_failed:
+            terminal_wait_key(note("Connection to %s ended (exit code %d)." % (name, result.exit_code),
+                                   "Press any key to %s ..." % back))
+        return result
+
+
+# --------------------------------------------------------------------------
+# Several switches at once: one tmux session, one pane per switch.
+#
+# The panes are started by tmux, not by TRee-Li, so their command line is visible
+# to every user on the machine (ps) and must not carry the password.  Each pane
+# gets a one-time ticket instead and fetches the login through a Unix socket that
+# lives in a private 0700 directory.  Before answering, TRee-Li asks the kernel
+# who is on the other end and only replies to our own user and to the exact
+# process tmux started for that ticket.  Linux and macOS.
+# --------------------------------------------------------------------------
+
+MAX_PANES = 9
+SESSION_PREFIX = "tree-li-"
+TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
+
+
+def tmux_run(*args, **kw):
+    """Run a tmux command.  Returns its stripped output; raises RuntimeError on failure."""
+    proc = subprocess.run(["tmux"] + list(args), stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kw.get("timeout", 10))
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode("utf-8", "replace").strip() or "tmux failed")
+    return proc.stdout.decode("utf-8", "replace").strip()
+
+
+def tmux_try(*args):
+    """Best effort: cosmetic tmux settings must not break the feature on an old tmux."""
+    try:
+        tmux_run(*args)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        pass
+
+
+def tree_li_sessions():
+    """Our tmux sessions that are still alive, oldest first."""
+    try:
+        lines = tmux_run("list-sessions", "-F", "#{session_created} #{session_name}").splitlines()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return []
+    names = [line.split(" ", 1)[1] for line in sorted(lines) if " " in line]
+    return [n for n in names if n.startswith(SESSION_PREFIX)]
+
+
+def peer_identity(conn):
+    """(uid, pid) of the process on the other end of a Unix socket, straight from the
+    kernel - a connecting process cannot fake either.  Returns (None, None) if the
+    platform does not support it, and the caller then refuses."""
+    try:
+        if sys.platform.startswith("linux"):
+            pid, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                              struct.calcsize("3i")))
+            return uid, pid
+        if sys.platform == "darwin":
+            sol_local, peercred, peerpid = 0, 0x001, 0x002
+            xucred = conn.getsockopt(sol_local, peercred, 100)        # version, uid, ...
+            uid = struct.unpack("2I", xucred[:8])[1]
+            pid = struct.unpack("i", conn.getsockopt(sol_local, peerpid, 4))[0]
+            return uid, pid
+    except (OSError, struct.error):
+        pass
+    return None, None
+
+
+def parent_pid(pid):
+    """The parent of pid, or None.  Used because some shells do not exec the pane
+    command, which would make the connecting process a child of tmux's pane process."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[1])
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=5).stdout
+        return int(out.strip() or 0) or None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+class Handover(object):
+    """Hands the login to tmux panes, once per pane.
+
+    A ticket is only answered when the connecting process runs as our user AND is the
+    process tmux started for that ticket, the ticket is unused, and it is younger than
+    TICKET_LIFETIME.  The socket itself sits in a directory only we can open."""
+
+    def __init__(self, credentials):
+        self.credentials = credentials        # callable -> (user, password or None)
+        self.dir = tempfile.mkdtemp(prefix="tree-li-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+        self.path = os.path.join(self.dir, "handover.sock")
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            self.server.bind(self.path)       # 0600, inside a 0700 directory
+        finally:
+            os.umask(old)
+        self.server.listen(MAX_PANES + 2)
+        self.tickets = {}                     # ticket -> {host, pid, created, fetched}
+        self.refused = []                     # connections we turned away, shown to the user
+        self.lock = threading.Lock()
+        self.closed = False
+        t = threading.Thread(target=self._serve)
+        t.daemon = True
+        t.start()
+
+    def issue(self, host):
+        """A ticket for one pane.  bind() must follow once tmux reports the pane's pid."""
+        ticket = secrets.token_hex(16)
+        with self.lock:
+            self.tickets[ticket] = {"host": host, "pid": None, "created": time.time(), "fetched": False}
+        return ticket
+
+    def bind(self, ticket, pid):
+        with self.lock:
+            if ticket in self.tickets:
+                self.tickets[ticket]["pid"] = pid
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return                        # closed
+            with conn:
+                try:
+                    conn.settimeout(5)
+                    answer = self._handle(conn)
+                    conn.sendall(answer.encode("utf-8") + b"\n")
+                except (OSError, ValueError, struct.error):
+                    pass
+
+    def _handle(self, conn):
+        uid, pid = peer_identity(conn)
+        if uid is None or uid != os.getuid():
+            with self.lock:
+                self.refused.append("connection from uid %s" % uid)
+            return "ERR refused"
+        request = conn.recv(4096).decode("utf-8", "replace").strip()
+        kind, _, ticket = request.partition(" ")
+        ticket = ticket.strip()
+        with self.lock:
+            entry = self.tickets.get(ticket)
+            if entry is None:
+                return "ERR unknown ticket"
+            if kind == "GET":
+                if entry["fetched"]:
+                    self.refused.append("ticket for %s used twice" % entry["host"])
+                    return "ERR already used"
+                if time.time() - entry["created"] > TICKET_LIFETIME:
+                    return "ERR ticket expired"
+                if entry["pid"] not in (pid, parent_pid(pid)):
+                    self.refused.append("pid %s is not the pane for %s" % (pid, entry["host"]))
+                    return "ERR wrong process"
+                entry["fetched"] = True
+                user, password = self.credentials()
+                return "OK " + json.dumps({"user": user, "password": password or ""})
+        return "ERR refused"
+
+    @property
+    def pending(self):
+        with self.lock:
+            return any(not e["fetched"] for e in self.tickets.values())
+
+    def take_refusals(self):
+        with self.lock:
+            refused, self.refused = self.refused, []
+        return refused
+
+    def close(self):
+        """Stop listening and remove the socket; panes that still hold a ticket can no
+        longer fetch a login (they ask the user instead) and cannot report back."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.server.close()
+        except OSError:
+            pass
+        for path in (self.path, self.dir):
+            try:
+                os.remove(path) if path == self.path else os.rmdir(path)
+            except OSError:
+                pass
+
+
+def handover_request(path, line):
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5)
+    try:
+        conn.connect(path)
+        conn.sendall(line.encode("utf-8") + b"\n")
+        answer = b""
+        while not answer.endswith(b"\n") and len(answer) < 65536:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            answer += chunk
+        return answer.decode("utf-8", "replace").strip()
+    finally:
+        conn.close()
+
+
+def pane_main(cfg, socket_path, ticket, host, name):
+    """`tree-li --pane ...` runs inside one tmux pane: fetch the login once, connect,
+    report back, then the pane closes."""
+    colors = os.environ.get("TERM", "dumb") not in ("", "dumb")
+    gt = CHARSETS[detect_charset(cfg.charset_setting)]["gt"]
+
+    def note(*lines):
+        return note_text(lines, colors, gt)
+    if not valid_host(host):
+        terminal_wait_key(note("'%s' is not a usable host." % host, "Press any key to close this pane ..."))
+        return 1
+    user, password = cfg.user, None
+    try:
+        answer = handover_request(socket_path, "GET %s" % ticket)
+        if not answer.startswith("OK "):
+            raise ValueError(answer)
+        login = json.loads(answer[3:])
+        user, password = login["user"], login["password"] or None
+    except (OSError, ValueError, KeyError) as e:
+        os.write(sys.stdout.fileno(), note(
+            "Could not get the login from TRee-Li (%s)." % e,
+            "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
+    result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
+    password = None
+    if result.auth_failed:
+        terminal_wait_key(note("Login failed on %s - wrong password?" % name,
+                               "Press any key to close this pane ..."))
+    state = SSH_OK if not (result.failed or result.hostkey_changed) else SSH_FAILED
+    # The status file is shared and merges by time, so the pane records its own result;
+    # TRee-Li picks it up when it comes back, however long this session ran.
+    user_state = UserState(cfg.state_dir)
+    user_state.save_status({"ping": {}, "ssh": {host: state}}, {("ssh", host): time.time()})
+    if state == SSH_OK:
+        user_state.touch(name or host)
+    return 0
+
+
+# tmux starts panes from the tmux SERVER's environment, which can differ from ours
+# (a server started earlier, or with another HOME).  These decide where TRee-Li reads
+# its config and writes favourites, results and logs, so they are passed on explicitly.
+PANE_ENV = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+            "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+
+
+def pane_command(cfg, socket_path, ticket, host, name):
+    argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
+    argv += [sys.executable, os.path.realpath(os.path.abspath(__file__))]
+    if cfg.config_file:
+        argv += ["--config", cfg.config_file]
+    if cfg.debug:
+        argv += ["--debug"]
+    if cfg.session_log:
+        argv += ["--log"]
+    argv += ["--pane", socket_path, ticket, host, name]
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def open_panes(cfg, devices, handover):
+    """Create a tmux session with one pane per switch and return its name."""
+    session = SESSION_PREFIX + time.strftime("%H%M%S")
+    first, rest = devices[0], devices[1:]
+
+    def start(dev, *extra):
+        ticket = handover.issue(dev.host)
+        command = pane_command(cfg, handover.path, ticket, dev.host, dev.name)
+        out = tmux_run(*(list(extra) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
+        pid, _, pane_id = out.strip().partition(" ")
+        handover.bind(ticket, int(pid or 0))
+        tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (dev.name, dev.host))
+
+    start(first, "new-session", "-d", "-s", session)
+    for dev in rest:
+        start(dev, "split-window", "-t", session)
+        tmux_try("select-layout", "-t", session, "tiled")
+    tmux_try("select-layout", "-t", session, "tiled")
+    tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
+    tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
+    tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
+    tmux_try("set-option", "-t", session, "status-left", "[TRee-Li]  ")
+    tmux_try("set-option", "-t", session, "status-right",
+             " Ctrl-b d = back to TRee-Li   Ctrl-b o = next pane   Ctrl-b & = close all ")
+    tmux_try("set-option", "-t", session, "status-right-length", "70")
+    return session
+
+
+def wait_for_logins(handover, deadline=TICKET_LIFETIME):
+    """Give the panes their short window to fetch the login.  Returns True if all of
+    them did; after this the socket is no longer needed for logins."""
+    end = time.time() + deadline
+    while handover.pending and time.time() < end:
+        time.sleep(0.05)
+    return not handover.pending
+
+
+def attach_session(session):
+    """Hand the terminal to tmux until the user detaches (Ctrl-b d) or the session ends."""
+    try:
+        return subprocess.call(["tmux", "attach-session", "-t", session])
+    except (OSError, subprocess.SubprocessError) as e:
+        return e
+
+
 def harden_process():
     """The password lives in this process's memory, so keep that memory to ourselves:
     - no core dumps: a crash must not write the password into a file on disk
@@ -1167,6 +1574,7 @@ MOUSE = {"event": None}           # the last mouse event (x, y, buttons), read b
 WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0)
 WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0)   # only with ncurses mouse version 2 (RHEL 8+)
 CLICK, DOUBLE_CLICK = curses.BUTTON1_CLICKED, curses.BUTTON1_DOUBLE_CLICKED
+RIGHT_CLICK = getattr(curses, "BUTTON3_CLICKED", 0)       # marks a switch for multi-ssh
 for _n in range(1, 13):
     CURSES_KEYS[curses.KEY_F0 + _n] = "F%d" % _n
 
@@ -1350,6 +1758,8 @@ PALETTE = {
     "down_sel":    ((217, 25, "b"), ("red", "blue", "b")),
     "wait_sel":    ((223, 25, ""),  ("yellow", "blue", "")),
     "fav":         ((214, -1, "b"), ("yellow", -1, "b")),
+    "mark":        ((120, -1, "b"), ("green", -1, "b")),
+    "mark_sel":    ((120, 25, "b"), ("green", "blue", "b")),
     "fav_sel":     ((214, 25, "b"), ("yellow", "blue", "b")),
     "match":       ((111, -1, "bu"), ("cyan", -1, "bu")),
     "match_sel":   ((189, 25, "bu"), ("white", "blue", "bu")),
@@ -1376,7 +1786,7 @@ PALETTE = {
     "banner5":     ((189, -1, "b"), ("cyan", -1, "b")),
 }
 # Without colours: attributes only.
-MONO = {"match": "bu", "match_sel": "rbu", "fav": "b", "fav_sel": "r", "brand": "b", "info": "d", "tab_active": "r", "prompt": "b", "cursor": "r",
+MONO = {"mark": "b", "mark_sel": "r", "match": "bu", "match_sel": "rbu", "fav": "b", "fav_sel": "r", "brand": "b", "info": "d", "tab_active": "r", "prompt": "b", "cursor": "r",
         "placeholder": "d", "head": "b", "sort": "b", "sel": "r", "marker": "b", "up": "b", "down": "b",
         "up_sel": "r", "down_sel": "r", "wait_sel": "r", "key": "b", "hint": "d", "err": "b", "field": "r",
         "backdrop": "d", "win_title": "b", "win_label": "b", "win_key": "b", "win_err": "b", "field_idle": "u",
@@ -1453,6 +1863,10 @@ class App(object):
         self.headers, self.delimiter, self.issues = [], ";", []
         self.spans = {"tabs": [], "head": [], "y_tabs": -1, "y_head": -1, "y_body": -1}   # for mouse clicks
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
+        self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
+        self.my_sessions = []          # tmux sessions this TRee-Li started
+        self.sessions = []             # ... the ones still running (checked every few seconds)
+        self._sessions_checked = 0.0
         self.batch = None
         self.creds = None              # (user, password or None) - memory only
         self.state = UserState(cfg.state_dir)
@@ -1494,11 +1908,19 @@ class App(object):
     def status(self):
         return [self.ping, self.ssh]
 
+    def marked_devices(self):
+        """The marked switches, in the order they appear on screen."""
+        return [d for d in self.view if device_key(d) in self.marked]
+
+    def toggle_mark(self, dev):
+        key = device_key(dev)
+        self.marked.discard(key) if key in self.marked else self.marked.add(key)
+
     def mouse(self, on):
         if not self.cfg.mouse:
             return
         try:
-            curses.mousemask((CLICK | DOUBLE_CLICK | WHEEL_UP | WHEEL_DOWN) if on else 0)
+            curses.mousemask((CLICK | DOUBLE_CLICK | RIGHT_CLICK | WHEEL_UP | WHEEL_DOWN) if on else 0)
             curses.mouseinterval(300)          # ms between two clicks of a double-click
         except curses.error:
             pass
@@ -1511,6 +1933,17 @@ class App(object):
         self.state.save_status({"ping": self.ping, "ssh": self.ssh}, self.checked)
         if self.state.error:
             self.message(self.state.error, error=True, seconds=10)
+
+    def reload_status(self):
+        """Pick up results another TRee-Li - or one of our tmux panes - has written."""
+        saved, checked = self.state.load_status()
+        for kind, states in saved.items():
+            mine = {"ping": self.ping, "ssh": self.ssh}[kind]
+            for host, state in states.items():
+                if checked.get((kind, host), 0) >= self.checked.get((kind, host), 0):
+                    mine[host], self.checked[(kind, host)] = state, checked[(kind, host)]
+        self.state.load()                   # favourites and the recent list too
+        self.status_changed(force=True)
 
     def load(self):
         keep = self.selected()
@@ -1582,6 +2015,20 @@ class App(object):
         elif force or "ping:" in self.query.lower() or "ssh:" in self.query.lower():
             self.refilter(keep)
 
+    def check_sessions(self):
+        """Which of our tmux sessions are still alive - they hold open switch logins.
+        When one ends, its panes have written their results, so pick them up."""
+        if not self.my_sessions or time.time() - self._sessions_checked < 3:
+            return
+        self._sessions_checked = time.time()
+        alive = set(tree_li_sessions())
+        ended = [s for s in self.my_sessions if s not in alive]
+        self.my_sessions = [s for s in self.my_sessions if s in alive]
+        self.sessions = list(self.my_sessions)
+        if ended:
+            self.reload_status()
+            self.message("tmux session %s ended" % ", ".join(ended))
+
     def sync_size(self):
         size = terminal_size()
         if size and size != self.scr.getmaxyx():
@@ -1603,7 +2050,7 @@ class App(object):
     # ───────────────────────────────────────────────────────────────────────  rule
     #  Enter run  ←→ command  ^F favourite  F1-F6 sort  ^R reload  ^C quit       footer
 
-    TABLE_X = 4          # column 1: selection marker, column 2: favourite star
+    TABLE_X = 5          # column 1: selection marker, 2: favourite star, 3: multi-ssh mark
 
     def layout(self):
         h, w = self.scr.getmaxyx()
@@ -1659,13 +2106,20 @@ class App(object):
         right = "%d/%d switches" % (len(self.view), len(self.devices))
         if self.creds:
             right = "%s %s %s" % (self.creds[0], sym["sep"], right)
+        if self.marked:
+            right = "%d marked %s %s" % (len(self.marked), sym["sep"], right)
+        sessions = self.sessions
+        if sessions:
+            right = "%d tmux %s %s" % (len(sessions), sym["sep"], right)
         batch = ""
         if self.batch and self.batch.running and not self.batch.cancelled:
             batch = "batch ping %d%%" % self.batch.percent
             if not self.query:
                 batch += " %s ESC cancels" % sym["sep"]
-        hints = [("Enter", "run"), (sym["lr"], "command"), ("^F", "favourite"),
+        hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^F", "favourite"),
                  ("F1-F%d" % self.ncols(), "sort"), ("^E", "export"), ("^R", "reload"), ("^C", "quit")]
+        if self.sessions:
+            hints.insert(3, ("^T", "back to tmux"))
         if batch:
             self.draw_frame("Switch Manager", right, hints=hints, footer_right=batch, footer_attr=th.wait)
         else:
@@ -1755,6 +2209,8 @@ class App(object):
                 put(scr, y, 2, " " * (w - 4), th.sel)
             if device_key(d) in self.state.favorites:
                 put(scr, y, 2, "*", th.fav_sel if sel else th.fav)
+            if device_key(d) in self.marked:
+                put(scr, y, 3, "+", th.mark_sel if sel else th.mark)
             x = x0
             marks = self.found.get(d, (0, {}))[1]
             for i, value in enumerate(d.cells):
@@ -1790,6 +2246,7 @@ class App(object):
 
     def run(self):
         while True:
+            self.check_sessions()
             if self.batch and not self.batch.running and not self.batch.reported:
                 self.batch.reported = True
                 if not self.batch.cancelled:
@@ -1828,6 +2285,14 @@ class App(object):
             self.cmd = (self.cmd + 1) % len(COMMANDS)
         elif key == "ENTER":
             return self.execute()
+        elif key in ("TAB", "BTAB"):            # mark switches for a multi-switch ssh
+            if key == "BTAB":
+                self.cursor = max(0, self.cursor - 1)
+            dev = self.selected()
+            if dev is not None:
+                self.toggle_mark(dev)
+                if key == "TAB":
+                    self.cursor = min(max(0, n - 1), self.cursor + 1)
         elif key.startswith("F") and key[1:].isdigit():
             self.set_sort(int(key[1:]) - 1)
         elif key == "BACKSPACE":
@@ -1841,10 +2306,13 @@ class App(object):
             words = self.query.split()
             self.query = " ".join(words[:-1]) + (" " if len(words) > 1 else "")
             self.refilter()
-        elif key == "ESC":                   # one step at a time: search, batch ping, sort
+        elif key == "ESC":                   # one step: search, marks, batch ping, sort
             if self.query:
                 self.query = ""
                 self.refilter()
+            elif self.marked:
+                self.marked.clear()
+                self.message("Marks cleared")
             elif self.batch and self.batch.running:
                 self.batch.cancel()
                 self.message("Batch ping cancelled")
@@ -1861,6 +2329,8 @@ class App(object):
                 self.refilter(dev)
         elif key == "CTRL_E":
             self.export()
+        elif key == "CTRL_T":
+            self.reattach()
         elif key == "MOUSE":
             return self.click()
         elif key == "CTRL_R":
@@ -1885,6 +2355,11 @@ class App(object):
             self.cursor = max(0, self.cursor - 3)
         elif buttons & WHEEL_DOWN:
             self.cursor = min(max(0, n - 1), self.cursor + 3)
+        elif RIGHT_CLICK and buttons & RIGHT_CLICK:
+            row = self.top + y - spans["y_body"]
+            if spans["y_body"] <= y < spans["y_body"] + self.body_h and row < n:
+                self.cursor = row
+                self.toggle_mark(self.view[row])
         elif buttons & (CLICK | DOUBLE_CLICK):
             double = buttons & DOUBLE_CLICK
             if y == spans["y_tabs"]:
@@ -1935,7 +2410,8 @@ class App(object):
             self.message("'%s' has no usable IP/host ('%s')" % (dev.name, dev.host), error=True)
             return None
         if command == "ssh":
-            self.connect(dev)
+            marked = [d for d in self.marked_devices() if valid_host(d.host)]
+            self.connect_many(marked) if len(marked) > 1 else self.connect(dev)
         elif command == "ping":
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
                                 env=dict(os.environ, LC_ALL="C"))      # predictable English output
@@ -1960,7 +2436,7 @@ class App(object):
             self.message("'ping' is not installed", error=True)
             return
         hosts, seen = [], set()
-        for d in self.view:
+        for d in self.marked_devices() or self.view:
             if valid_host(d.host) and d.host not in seen:
                 seen.add(d.host)
                 hosts.append(d.host)
@@ -1968,7 +2444,8 @@ class App(object):
             self.message("No switches to ping", error=True)
             return
         self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping}, self.checked)
-        self.message("Batch ping started: %d switches, about %d s" % (len(hosts), len(hosts) // self.cfg.ping_rate + 1))
+        self.message("Batch ping started: %d %sswitches, about %d s"
+                     % (len(hosts), "marked " if self.marked_devices() else "", len(hosts) // self.cfg.ping_rate + 1))
 
     # -- popups -------------------------------------------------------------
 
@@ -2221,93 +2698,91 @@ class App(object):
             return
 
     def note(self, *lines):
-        """Text printed outside curses, around an ssh session: 'TRee-Li > first line', rest indented."""
-        prefix = "TRee-Li"
-        if self.th.colors:
-            prefix = "\033[1;34m%s\033[0m" % prefix          # bold blue: every colour terminal knows it
-        indent = "\r\n" + " " * 10
-        return "\r\n%s %s %s" % (prefix, self.th.sym["gt"], indent.join(lines))
+        return note_text(lines, self.th.colors, self.th.sym["gt"])
 
-    def debug_log(self, dev, argv, password, result):
-        """--debug: append what happened around this login to debug.log (0600).
-        Contains the ssh command, prompts, decisions and the output BEFORE the
-        login - never the password, never the session itself."""
-        lines = [
-            "=== %s  %s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S"), dev.name, dev.host),
-            "command      : %s" % " ".join(shlex.quote(a) for a in argv),
-            "password     : %s" % ("stored, TRee-Li types it" if password else "none stored, you type it"),
-        ] + ["event        : %s" % e for e in result.events] + [
-            "exit code    : %s   failed: %s   auth failed: %s   host key changed: %s" % (
-                result.exit_code, result.failed, result.auth_failed, result.hostkey_changed),
-            "last line    : %s" % result.last_line,
-            "before login :",
-        ] + ["  | " + line for line in result.pre_login.strip("\n").split("\n")[-40:]] + [""]
-        path = os.path.join(self.cfg.state_dir, "debug.log")
+    def reattach(self):
+        """Ctrl-T: back into the tmux session with the open switch sessions."""
+        self.check_sessions()
+        sessions = self.sessions or tree_li_sessions()
+        if not sessions:
+            self.message("No tmux session with open switches (mark 2+ switches with Tab, then ssh)",
+                         seconds=10)
+            return
+        session = sessions[-1]              # the newest one
+        self.mouse(False)
+        curses.endwin()
         try:
-            os.makedirs(self.cfg.state_dir, mode=0o700, exist_ok=True)
-            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a",
-                           encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-        except OSError as e:
-            self.message("cannot write %s: %s" % (path, e.strerror or e), error=True, seconds=10)
+            if os.environ.get("TMUX"):
+                tmux_try("switch-client", "-t", session)
+            else:
+                attach_session(session)
+        finally:
+            self.resume_curses()
+        self.reload_status()
+        self.check_sessions()
+        if len(sessions) > 1:
+            self.message("Back from %s - %d more: %s"
+                         % (session, len(sessions) - 1, ", ".join(sessions[:-1])), seconds=15)
 
-    def open_log(self, dev, user):
+    def connect_many(self, devices):
+        """Several switches at once: one tmux session, one pane each, one login.
+        Ctrl-b d brings you back here; the sessions keep running until you log out."""
+        if not self.cfg.tmux:
+            self.message("Several switches at once needs tmux mode (tmux = yes in tree-li.conf)",
+                         error=True, seconds=10)
+            return
+        if not which("tmux"):
+            self.message("tmux is not installed - connecting to several switches needs it",
+                         error=True, seconds=10)
+            return
+        extra = len(devices) - MAX_PANES
+        devices = devices[:MAX_PANES]
+        if self.creds is None:
+            creds = self.credential_dialog()
+            if creds is None:
+                self.message("ssh cancelled")
+                return
+            self.creds = creds
+        handover = Handover(lambda: self.creds)
         try:
-            os.makedirs(self.cfg.log_dir, mode=0o700, exist_ok=True)
-            name = re.sub(r"[^A-Za-z0-9_.-]", "_", dev.name or dev.host)[:60]
-            path = os.path.join(self.cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), name))
-            f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
-            f.write(("# TRee-Li session log: %s (%s) as %s, %s\n"
-                     % (dev.name, dev.host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
-            return f
-        except OSError as e:
-            os.write(sys.stdout.fileno(), self.note("cannot write session log: %s\r\n" % e).encode("utf-8", "replace"))
-            return None
+            session = open_panes(self.cfg, devices, handover)
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+            handover.close()
+            self.message("tmux failed: %s" % e, error=True, seconds=15)
+            return
+        self.my_sessions.append(session)
+        self.marked.clear()
+        inside = bool(os.environ.get("TMUX"))
+        got_logins = wait_for_logins(handover)       # panes fetch immediately after they start
+        handover.close()                             # the socket is not needed any more
+        refused = handover.take_refusals()
+        self.mouse(False)
+        curses.endwin()
+        try:
+            if inside:                      # tmux refuses to nest: switch instead of attach
+                tmux_try("switch-client", "-t", session)
+            else:
+                attach_session(session)
+        finally:
+            self.resume_curses()
+        self.reload_status()                # the panes write their own results to the status file
+        self.check_sessions()
+        note = "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
+        if not got_logins:
+            note += " - some panes had to ask for the password themselves"
+        if extra > 0:
+            note += " (%d more were not opened - %d panes at most)" % (extra, MAX_PANES)
+        if refused:
+            note += " - REFUSED: %s" % "; ".join(refused[:2])
+        note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in" % self.th.sym["sep"]
+        self.message(note, error=bool(refused), seconds=20)
 
     def run_ssh(self, dev, user, password):
-        out = sys.stdout.fileno()
-        key_removed = False
+        """One session in TRee-Li's own terminal: leave curses, connect, come back."""
         self.mouse(False)                  # the switch session gets the plain terminal
         curses.endwin()
         try:
-            while True:
-                argv = build_ssh_argv(self.cfg, user, dev.host, inject_password=bool(password))
-                os.write(out, (self.note("Connecting to %s (%s) as %s" % (dev.name, dev.host, user),
-                                         "log out to return to TRee-Li, ~. force-disconnects") + "\r\n\r\n")
-                         .encode("utf-8", "replace"))
-                log = self.open_log(dev, user) if self.cfg.session_log else None
-                try:
-                    result = run_session(argv, password, log)
-                finally:
-                    if log is not None:
-                        log.close()
-                if self.cfg.debug:
-                    self.debug_log(dev, argv, password, result)
-                if result.hostkey_changed and not result.auth_failed:
-                    known_hosts = result.known_hosts or os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")
-                    if key_removed:
-                        terminal_wait_key(self.note("The host key is still reported as changed.",
-                                                    "Please check %s by hand." % known_hosts,
-                                                    "Press any key to return to TRee-Li ..."))
-                        return result
-                    answer = terminal_wait_key(self.note(
-                        "The host key of %s (%s) has CHANGED." % (dev.name, dev.host),
-                        "Expected if the switch was replaced - otherwise do NOT continue.",
-                        "Remove the old key from %s and connect again? [y/N] " % known_hosts))
-                    if answer not in (b"y", b"Y"):
-                        return result
-                    ok, text = remove_host_key(dev.host, known_hosts)
-                    os.write(out, (text.replace("\n", "\r\n") + "\r\n").encode("utf-8", "replace"))
-                    if not ok:
-                        terminal_wait_key(self.note("Could not remove the old key.",
-                                                    "Press any key to return to TRee-Li ..."))
-                        return result
-                    key_removed = True
-                    continue
-                if result.failed and not result.auth_failed:
-                    terminal_wait_key(self.note("Connection to %s ended (exit code %d)." % (dev.name, result.exit_code),
-                                                "Press any key to return to TRee-Li ..."))
-                return result
+            return ssh_flow(self.cfg, dev.name, dev.host, user, password, self.note)
         finally:
             self.resume_curses()
 
@@ -2335,9 +2810,11 @@ def help_sections(cfg, ncols, switches):
         ("item", "just type", "search - fuzzy, best matches first (see below)"),
         ("item", "Backspace  Ctrl-W  Ctrl-U", "delete a character / word / the whole search"),
         ("item", "ESC", "clear the search, then: cancel batch ping, then: clear the sort"),
+        ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)"),
         ("item", "Ctrl-F", "mark / unmark the switch as favourite (*)"),
         ("item", "Ctrl-E", "export the current list to CSV (%s)" % cfg.export_dir),
-        ("item", "mouse", "click: select, double-click: run, header: sort, wheel: scroll"),
+        ("item", "mouse", "click: select, double-click: run, right-click: mark,"),
+        ("item", "", "header: sort, wheel: scroll"),
         ("item", "F1..F%d" % ncols, "sort by column: press again for reverse, a third time for off"),
         ("item", "Ctrl-R", "reload the switch list"),
         ("item", "Ctrl-C", "quit"),
@@ -2354,9 +2831,12 @@ def help_sections(cfg, ncols, switches):
         ("section", "Commands"),
         ("item", "ssh", "connect - user/password are asked once and kept in memory"),
         ("item", "", "only. Log out of the switch to come back."),
+        ("item", "", "With 2+ marked (Tab): one tmux session, one pane each,"),
+        ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
+        ("item", "", "logged in until you log out or close them."),
         ("item", "ping", "ping the selected switch (4 packets, live output)"),
-        ("item", "batch ping", "ping every switch in the current list -> PING column."),
-        ("item", "", "ICMP only, at most %d per second. ESC cancels." % cfg.ping_rate),
+        ("item", "batch ping", "ping the marked switches, or the whole current list"),
+        ("item", "", "-> PING column. ICMP only, at most %d per second." % cfg.ping_rate),
         ("item", "details", "all fields of the selected switch"),
         ("item", "help", "this screen"),
         ("item", "exit", "quit TRee-Li and forget the credentials"),
@@ -2364,6 +2844,18 @@ def help_sections(cfg, ncols, switches):
         ("item", "PING", "result of the last ping / batch ping"),
         ("item", "SSH", "how your last real ssh attempt went - TRee-Li never"),
         ("item", "", "probes SSH on its own, so it makes no extra traffic"),
+        ("section", "Several switches at once (tmux)"),
+        ("item", "Tab", "mark switches, then run ssh with 2 or more marked"),
+        ("item", "Ctrl-b d", "back to TRee-Li - the switches stay logged in"),
+        ("item", "Ctrl-T", "back into the tmux session from TRee-Li"),
+        ("item", "Ctrl-b o", "next pane      Ctrl-b z  zoom one pane in / out"),
+        ("item", "Ctrl-b &", "close the window and all its switch sessions (asks y/n)"),
+        ("item", "exit  or  Ctrl-d", "in a pane: log out of that one switch; when the last"),
+        ("item", "", "pane closes, the tmux session ends by itself"),
+        ("item", "tmux ls", "from any shell: list the sessions that are still running"),
+        ("item", "tmux attach -t NAME", "from any shell: go back into one"),
+        ("item", "tmux kill-session -t NAME", "from any shell: close one and its logins"),
+        ("item", "tmux", "%s" % ("on" if cfg.tmux else "off (tmux = yes in tree-li.conf)")),
         ("section", "Inside an ssh session"),
         ("item", "~.", "(at the start of a line) force-disconnect a hanging session"),
         ("section", "Setup"),
@@ -2420,6 +2912,8 @@ def main(argv=None):
                              "directory (tree-li --check prints the path)")
     parser.add_argument("--ascii", action="store_true", help="plain ASCII screen (if lines/symbols look garbled)")
     parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
+    parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
+                        help=argparse.SUPPRESS)        # internal: one switch inside a tmux pane
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
     args = parser.parse_args(argv)
 
@@ -2430,6 +2924,13 @@ def main(argv=None):
         return 2
     if args.check:
         return check(cfg)
+    if args.pane:                                 # started by TRee-Li inside a tmux pane
+        harden_process()
+        try:
+            locale.setlocale(locale.LC_ALL, "")
+        except locale.Error:
+            pass
+        return pane_main(cfg, *args.pane)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("tree-li: must be run in an interactive terminal", file=sys.stderr)
         return 2
@@ -2450,6 +2951,9 @@ def main(argv=None):
         print("tree-li: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
         return 1
     print("TRee-Li closed - credentials forgotten.")
+    for session in tree_li_sessions():
+        print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"
+              % (session, session))
     return 0
 
 
