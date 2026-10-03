@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.1.0"          # bump before building a bundle (tools/make-bundle.py)
+VERSION = "1.2.0-tmux"     # experimental tmux branch; bump before building a bundle
 TITLE = "TRee-Li: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
