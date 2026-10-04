@@ -24,6 +24,8 @@ Every idea is measured against the standing rules in [COUNCIL.md](../COUNCIL.md#
 | Latency column in batch ping | idea | |
 | LLDP neighbours, jump to neighbour | idea | Fabric Engine-specific parsing |
 | Tree view by site / location | idea | |
-| Copy IP to clipboard (OSC 52) | idea | works in Tabby, partly in PuTTY |
+| Copy IP to clipboard (OSC 52) | idea | works in Tabby, partly in PuTTY. The only reason to want a pointer back |
+| ~~Mouse support~~ | **REMOVED** (D29): cost Shift-to-select daily for a rarely used click | |
+| Session logging: keep or cut? | **kept for now** (user, 2026-10-04), reachable with `Ctrl-G` | still no demonstrated user; PuTTY and Tabby both log sessions natively and better |
 | Live monitor (repeat batch ping every N minutes) | **probably not**: the network already has good monitoring, and the noise concern applies | |
 | Active SSH reachability test | **rejected** (D20): too noisy, the monitoring noticed it | |

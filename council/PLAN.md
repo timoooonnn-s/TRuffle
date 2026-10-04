@@ -47,6 +47,17 @@
 - [x] 102 tests
 - [ ] **PuTTY: confirm bracketed paste with Ruffy** - until then it is a Tabby-only win
 
+## Milestone 1h: review round 6. DONE (2026-10-04)
+- [x] 11 findings fixed, incl. two in the paste feature built the same day: an oversized paste
+      leaked 87 Enter presses, and the terminal kept our paste mode after exit (D29)
+- [x] Stale latency on a down host, and 0.0 ms sorting as "never measured" - both with
+      regression tests that were checked to FAIL on the old code
+- [x] **Mouse support removed** (user): it cost Shift-to-select every day for a rarely used click
+- [x] **Settings page on `Ctrl-G`**: session log, debug log, tmux, symbols, forget password now.
+      `Ctrl-O` was built first and silently did nothing - `^O` is the tty discard character
+- [x] Old-config back-compat (`OBSOLETE`) and `BIND_GRACE` deleted
+- [x] 108 tests, VERSION 1.3.0-tmux
+
 ## Milestone 2: field test (needs the user)
 - [x] `./tree-li --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu

@@ -132,7 +132,7 @@ class TestConfig(TempDir):
         self.assertFalse(cfg.session_log)
 
     def test_config_file_relative_data_and_overrides(self):
-        conf = self.write("my.conf", "[tree-li]\ndata = lists/sw.csv\ndelimiter = ;\n"     # obsolete: ignored
+        conf = self.write("my.conf", "[tree-li]\ndata = lists/sw.csv\n"
                           "columns = Name, location:Where\nsession_log = yes\nuser = netadmin\n")
         cfg = tl.load_config(args(config=conf))
         self.assertEqual(cfg.data, os.path.join(self.tmp, "lists", "sw.csv"))
@@ -308,11 +308,14 @@ class TestCheck(TempDir):
         finally:
             sys.stdout = stdout
 
-    def test_obsolete_options_are_reported(self):
-        code, out = self.run_check(self.COLUMNS + "sw1;10.0.0.1;a;b;c\n", conf="ping_workers = 200\n")
-        self.assertIn("ping_workers", out)
-        self.assertIn("older version", out)
-        self.assertEqual(code, 0)             # a note, not a warning
+    def test_a_retired_option_is_a_hard_error_not_a_silent_note(self):
+        """Back-compat for old config files was dropped on purpose: a stale option now
+        refuses to start and names itself, instead of being quietly ignored."""
+        data = self.write("sw.csv", self.COLUMNS + "sw1;10.0.0.1;a;b;c\n")
+        path = self.write("c.conf", "[tree-li]\ndata = %s\nping_workers = 200\n" % data)
+        with self.assertRaises(tl.ConfigError) as caught:
+            tl.load_config(args(config=path))
+        self.assertIn("ping_workers", str(caught.exception))
 
 
 class TestSearchSyntax(unittest.TestCase):
@@ -435,6 +438,24 @@ class TestUserState(TempDir):
         self.assertEqual(status["ssh"], {"10.0.0.1": "failed"})
         self.assertEqual(checked[("ping", "10.0.0.1")], 100)
 
+    def test_a_host_that_stops_answering_loses_its_old_round_trip_time(self):
+        """App.save_detail rebuilds the ping details from self.rtt.  Copying self.detail
+        instead kept yesterday's ms next to today's "down", and reloaded it at startup."""
+        detail = {("ping", "10.0.0.9"): "1.20", ("ssh", "10.0.0.9"): "Connection timed out"}
+        rtt = {}                                   # the batch ping got no reply -> popped
+        rebuilt = dict((k, v) for k, v in detail.items() if k[0] != "ping")
+        for host, ms in rtt.items():
+            rebuilt[("ping", host)] = tl.format_rtt(ms)
+        self.assertNotIn(("ping", "10.0.0.9"), rebuilt)          # the stale ms is gone
+        self.assertIn(("ssh", "10.0.0.9"), rebuilt)              # the ssh reason is kept
+
+    def test_set_or_clear_drops_empty_values(self):
+        m = {("ssh", "h"): "old"}
+        tl.set_or_clear(m, ("ssh", "h"), "")
+        self.assertEqual(m, {})
+        tl.set_or_clear(m, ("ssh", "h"), "why")
+        self.assertEqual(m, {("ssh", "h"): "why"})
+
     def test_the_detail_field_round_trips_and_stays_backward_compatible(self):
         """The 5th field carries the ping's ms and the reason a ssh attempt failed.
         Rows without it must keep working - an older TRee-Li writes only 4 fields,
@@ -532,11 +553,34 @@ class TestIdleAndMarks(unittest.TestCase):
         self.assertFalse(tl.creds_expired(now, now, life))
         self.assertFalse(tl.creds_expired(now, now - 100 * 3600, 0))        # 0 = never
 
-    def test_password_lifetime_is_configurable_and_the_old_name_is_ignored(self):
+    def test_password_lifetime_is_configurable_and_bounded(self):
         self.assertEqual(tl.load_config(args()).password_lifetime, tl.PASSWORD_LIFETIME_MINUTES)
-        self.assertIn("password_timeout", tl.OBSOLETE)                # an old conf keeps working
         with self.assertRaises(tl.ConfigError):
             tl.parse_int("1441", "password_lifetime", 0, 1440)
+
+    def test_minutes_are_never_reported_as_a_rounded_lie(self):
+        self.assertEqual(tl.minutes_text(600), "10 h")
+        self.assertEqual(tl.minutes_text(90), "1 h 30 min")       # was reported as "2 h"
+        self.assertEqual(tl.minutes_text(60), "1 h")
+        self.assertEqual(tl.minutes_text(45), "45 min")
+
+
+START, END = "\x1b[200~", "\x1b[201~"
+
+
+class FakeWin(object):
+    """Feeds a character stream to read_key the way curses would."""
+
+    def __init__(self, text):
+        self.buf = list(text)
+
+    def timeout(self, ms):
+        pass
+
+    def get_wch(self):
+        if not self.buf:
+            raise tl.curses.error("no input")
+        return self.buf.pop(0)
 
 
 class TestPaste(unittest.TestCase):
@@ -560,6 +604,28 @@ class TestPaste(unittest.TestCase):
     def test_the_markers_are_parsed_as_keys(self):
         self.assertEqual(tl.parse_escape_sequence("[200~"), "PASTE_START")
         self.assertEqual(tl.parse_escape_sequence("[201~"), "PASTE_END")
+
+    def test_an_oversized_paste_is_fully_drained(self):
+        """The cap limits what we KEEP, never what we consume.  Stopping early left the
+        rest of the paste in the input queue, where its newlines became Enter again -
+        and Enter runs ssh on the selected switch."""
+        keys = self.drain(START + "10.0.0.1\n" * 200 + END)
+        self.assertEqual([k for k in keys if k != "PASTE"], [],
+                         "characters leaked out of the paste and were read as keys")
+        self.assertEqual(keys.count("PASTE"), 1)
+
+    def test_a_paste_without_an_end_marker_still_terminates(self):
+        keys = self.drain(START + "abc")            # terminal stops mid-paste
+        self.assertEqual(keys, ["PASTE"])
+
+    def drain(self, text):
+        """Every key read_key reports for this character stream, as the app sees it."""
+        win, out = FakeWin(text), []
+        while win.buf:
+            key = tl.read_key(win, 250)
+            if key is not None:
+                out.append(key)
+        return out
 
 
 class TestLatency(unittest.TestCase):
@@ -587,6 +653,21 @@ class TestLatency(unittest.TestCase):
         col = len(cfg.columns) + tl.STATUS_KINDS.index("rtt")
         order = [d.name for d in tl.sort_devices(devices, col, False, status)]
         self.assertEqual(order, ["b", "c", "a", "d"])        # slowest first, unknown last
+
+    def test_zero_ms_is_a_measurement_not_a_missing_value(self):
+        """0.0 is falsy, so a truthiness test put a real reading in the never-measured
+        group at the bottom while draw() still printed it.  The row order matters here:
+        'never' comes first in the CSV, so a 0.0 wrongly grouped with it ends up AFTER
+        it - which is how this test tells the two behaviours apart."""
+        headers = ["Name", "IP"]
+        rows = [dict(zip(headers, r)) for r in (("never", "10.0.0.3"), ("zero", "10.0.0.1"),
+                                                ("slow", "10.0.0.2"))]
+        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
+        devices = tl.build_devices(headers, rows, cfg)[0]
+        status = [{}, {"10.0.0.1": 0.0, "10.0.0.2": 5.0}, {}]
+        col = len(cfg.columns) + tl.STATUS_KINDS.index("rtt")
+        order = [d.name for d in tl.sort_devices(devices, col, False, status)]
+        self.assertEqual(order, ["slow", "zero", "never"])    # measured first, 0.0 included
 
 
 class TestSecurityHelpers(unittest.TestCase):

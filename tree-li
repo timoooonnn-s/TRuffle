@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.2.2-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.3.0-tmux"     # experimental tmux branch; bump before building a bundle
 TITLE = "TRee-Li: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
@@ -91,6 +91,7 @@ PASSWORD_LIFETIME_MINUTES = 600
 PASTE_ON, PASTE_OFF = b"\033[?2004h", b"\033[?2004l"
 PASTE = {"text": ""}                  # the last pasted block, read by read_key's callers
 MAX_PASTE = 512
+HUGE_PASTE = 1 << 20                  # hard stop: a terminal that never sends the end marker
 
 # "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"  (ping runs with LC_ALL=C)
 RTT_RE = re.compile(r"\btime[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
@@ -118,15 +119,9 @@ DEFAULTS = {
     "ping_timeout": "1",
     "password_lifetime": str(PASSWORD_LIFETIME_MINUTES),
     "charset": "auto",
-    "mouse": "yes",
     "tmux": "yes",
     "export_dir": "~",
 }
-
-# Options of older versions: accepted and ignored, so an old tree-li.conf keeps working.
-OBSOLETE = ("trace_command", "delimiter", "host_column", "name_column", "ping_workers", "ssh_port",
-            "ssh_check_timeout", "password_timeout")
-
 
 class ConfigError(Exception):
     pass
@@ -200,7 +195,7 @@ def load_config(args):
         candidates.append(args.config)
 
     cfg = Config()
-    cfg.files, cfg.obsolete = [], []
+    cfg.files = []
     for path in candidates:
         if not os.path.isfile(path):
             continue
@@ -213,9 +208,6 @@ def load_config(args):
         if not parser.has_section(CONFIG_SECTION):
             raise ConfigError("%s: missing the [%s] section" % (path, CONFIG_SECTION))
         for key, value in parser.items(CONFIG_SECTION):
-            if key in OBSOLETE:
-                cfg.obsolete.append((key, path))
-                continue
             if key not in DEFAULTS:
                 raise ConfigError("%s: unknown option '%s'" % (path, key))
             raw[key] = value.strip()
@@ -250,7 +242,6 @@ def load_config(args):
     if charset not in ("auto", "unicode", "ascii"):
         raise ConfigError("charset: use auto, unicode or ascii")
     cfg.charset_setting = charset
-    cfg.mouse = parse_bool(raw["mouse"], "mouse")
     cfg.tmux = parse_bool(raw["tmux"], "tmux")
     cfg.debug = args.debug
     cfg.config_file = args.config
@@ -612,6 +603,24 @@ def marked_label(total, shown):
     return "%d marked (+%d hidden)" % (shown, total - shown)
 
 
+def set_or_clear(mapping, key, text):
+    """Store text under key, or drop the key when there is nothing to store - so an
+    empty detail never lingers as an empty string."""
+    if text:
+        mapping[key] = text
+    else:
+        mapping.pop(key, None)
+
+
+def minutes_text(minutes):
+    """'10 h', '1 h 30 min', '45 min' - never a rounded-off lie like '2 h' for 90."""
+    if minutes >= 60 and minutes % 60 == 0:
+        return "%d h" % (minutes // 60)
+    if minutes > 60:
+        return "%d h %d min" % (minutes // 60, minutes % 60)
+    return "%d min" % minutes
+
+
 def creds_expired(now, entered_at, minutes):
     """True when the password was typed more than `minutes` ago (0 minutes = never).
 
@@ -704,10 +713,7 @@ class UserState(object):
                     continue
                 if stamp >= checked.get((kind, host), 0):
                     status[kind][host], checked[(kind, host)] = state, stamp
-                    text = parts[4].strip() if len(parts) == 5 else ""
-                    detail[(kind, host)] = text
-                    if not text:
-                        detail.pop((kind, host), None)
+                    set_or_clear(detail, (kind, host), parts[4].strip() if len(parts) == 5 else "")
         return status, checked, detail
 
     def save_status(self, status, checked, detail=None):
@@ -723,10 +729,7 @@ class UserState(object):
                 stamp = checked.get((kind, host), 0)
                 if state in CHECKED_STATES and stamp >= saved_checked.get((kind, host), 0):
                     saved[kind][host], saved_checked[(kind, host)] = state, stamp
-                    text = clean(str(detail.get((kind, host), "")))
-                    saved_detail[(kind, host)] = text
-                    if not text:
-                        saved_detail.pop((kind, host), None)
+                    set_or_clear(saved_detail, (kind, host), clean(str(detail.get((kind, host), ""))))
         lines = []
         for kind in STATE_KINDS:
             for host, state in sorted(saved[kind].items()):
@@ -805,8 +808,10 @@ def sort_devices(devices, col, desc, status=()):
         def value(d):
             return d.cells[col]
         key = lambda d: natural_key(value(d))
-    filled = [d for d in devices if value(d)]
-    empty = [d for d in devices if not value(d)]
+    # "" means "no value".  Not falsiness: a round-trip time of 0.0 is a real
+    # measurement and must sort with the others, not with the never-measured hosts.
+    filled = [d for d in devices if value(d) != ""]
+    empty = [d for d in devices if value(d) == ""]
     return sorted(filled, key=key, reverse=desc) + empty
 
 
@@ -878,11 +883,9 @@ def format_rtt(ms):
 class BatchPing(object):
     """Pings many hosts, quietly: at most cfg.ping_rate pings are started per second."""
 
-    def __init__(self, hosts, cfg, status, checked, rtt=None):
+    def __init__(self, hosts, cfg, status, checked):
         self.cfg, self.states, self.checked = cfg, status["ping"], checked
-        self.rtt = status.get("rtt") if rtt is None else rtt      # host -> ms of the last reply
-        if self.rtt is None:
-            self.rtt = {}
+        self.rtt = status["rtt"]                 # host -> ms of the last reply, updated live
         self.hosts = hosts
         self.done = 0
         self.counts = {}
@@ -1431,7 +1434,6 @@ def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
 MAX_PANES = 9
 SESSION_PREFIX = "tree-li-"
 TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
-BIND_GRACE = 2.0                         # seconds a pane may be faster than tmux's pane-pid report
 
 
 def tmux_run(*args, **kw):
@@ -1574,20 +1576,12 @@ class Handover(object):
             if time.time() - entry["created"] > TICKET_LIFETIME:
                 return "ERR ticket expired"
             expected, host = entry["pid"], entry["host"]
-        # tmux reports the pane's pid only after it has started the process, so a very
-        # fast pane can ask before bind() ran.  Wait for the binding instead of refusing
-        # it - an unbound ticket is never answered, it only stops being a race.
-        deadline = time.time() + BIND_GRACE
-        while expected is None and time.time() < deadline:
-            time.sleep(0.02)
-            with self.lock:
-                entry = self.tickets.get(ticket)
-                if entry is None:
-                    return "ERR unknown ticket"
-                expected = entry["pid"]
+        # An unbound ticket (tmux has not reported the pane's pid yet) is simply refused.
+        # The pane then asks for the password itself - a rare, harmless fallback, and far
+        # better than waiting here and widening the window in which anything may ask.
         # Looking up a parent pid runs `ps` on macOS, so it happens outside the lock -
         # otherwise one slow lookup would hold up every other pane.
-        if expected not in (pid, parent_pid(pid)):
+        if pid != expected and parent_pid(pid) != expected:    # ps only when it is needed
             with self.lock:
                 self.refused.append("pid %s is not the pane for %s" % (pid, host))
             return "ERR wrong process"
@@ -1849,13 +1843,8 @@ CURSES_KEYS = {
     curses.KEY_PPAGE: "PGUP", curses.KEY_NPAGE: "PGDN", curses.KEY_HOME: "HOME", curses.KEY_END: "END",
     curses.KEY_FIND: "HOME", curses.KEY_SELECT: "END", curses.KEY_ENTER: "ENTER",
     curses.KEY_BACKSPACE: "BACKSPACE", curses.KEY_DC: "DELETE", curses.KEY_BTAB: "BTAB",
-    curses.KEY_RESIZE: "RESIZE", curses.KEY_MOUSE: "MOUSE",
+    curses.KEY_RESIZE: "RESIZE",
 }
-MOUSE = {"event": None}           # the last mouse event (x, y, buttons), read by read_key
-WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0)
-WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0)   # only with ncurses mouse version 2 (RHEL 8+)
-CLICK, DOUBLE_CLICK = curses.BUTTON1_CLICKED, curses.BUTTON1_DOUBLE_CLICKED
-RIGHT_CLICK = getattr(curses, "BUTTON3_CLICKED", 0)       # marks a switch for multi-ssh
 for _n in range(1, 13):
     CURSES_KEYS[curses.KEY_F0 + _n] = "F%d" % _n
 
@@ -1919,22 +1908,27 @@ def read_paste(win, timeout_ms):
     """Collect a bracketed paste up to its ESC[201~ end marker and return it as text.
 
     Everything in between is text, never keys: this is what stops a pasted newline from
-    running ssh on whatever switch happened to be selected."""
-    out = []
+    running ssh on whatever switch happened to be selected.  The whole paste is always
+    DRAINED, even when it is longer than we keep - stopping early would leave the rest
+    of it in the input queue, where the newlines become Enter again."""
+    out, kept, seen = [], 0, 0
     win.timeout(200)                     # the terminal sends a paste in one burst
     try:
-        while len("".join(out)) < MAX_PASTE * 2:
+        while seen < HUGE_PASTE:         # a terminal that never ends the paste cannot hang us
             try:
                 c = win.get_wch()
             except curses.error:
                 break                    # terminal stopped mid-paste: take what we have
+            seen += 1
             if isinstance(c, int):
                 continue
             if c == "\x1b":
                 if read_escape(win, 200) == "PASTE_END":
                     break
                 continue                 # any other sequence inside a paste is dropped
-            out.append(c)
+            if kept < MAX_PASTE * 2:     # keep draining past the cap, just stop collecting
+                out.append(c)
+                kept += 1
     finally:
         win.timeout(timeout_ms)
     return "".join(out)
@@ -1949,12 +1943,6 @@ def read_key(win, timeout_ms):
     except curses.error:
         return None
     if isinstance(ch, int):
-        if ch == curses.KEY_MOUSE:
-            try:
-                _, x, y, _, buttons = curses.getmouse()
-                MOUSE["event"] = (x, y, buttons)
-            except curses.error:
-                return None
         return CURSES_KEYS.get(ch)
     if ch == "\x1b":
         name = read_escape(win, timeout_ms)
@@ -2178,7 +2166,6 @@ class App(object):
         self.checked = {}              # (kind, host) -> time of that ping / SSH result
         self.detail = {}               # (kind, host) -> ms for a ping, the reason for a failed ssh
         self.headers, self.delimiter, self.issues = [], ";", []
-        self.spans = {"tabs": [], "head": [], "y_tabs": -1, "y_head": -1, "y_body": -1}   # for mouse clicks
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
         self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
         self.my_sessions = []          # tmux sessions this TRee-Li started
@@ -2201,7 +2188,6 @@ class App(object):
             ms = parse_float(self.detail.get(("ping", host)))
             if ms is not None:
                 self.rtt[host] = ms
-        self.mouse(True)
         bracketed_paste(True)
         self.load()
         if self.state.error:
@@ -2230,10 +2216,27 @@ class App(object):
     def ncols(self):
         return len(self.columns) + len(STATUS_COLUMNS)
 
-    def status(self):
-        """The status columns' data, in STATUS_COLUMNS order."""
-        by_kind = {"ping": self.ping, "rtt": self.rtt, "ssh": self.ssh}
-        return [by_kind[kind] for kind in STATUS_KINDS]
+    def results(self):
+        """The one place that maps a status kind to the dict holding it."""
+        return {"ping": self.ping, "rtt": self.rtt, "ssh": self.ssh}
+
+    def column_results(self):
+        """One dict per status column, in STATUS_COLUMNS order (for drawing / sorting)."""
+        data = self.results()
+        return [data[kind] for kind in STATUS_KINDS]
+
+    def word_results(self):
+        """Only the kinds stored as words - what the status file saves and loads."""
+        data = self.results()
+        return dict((kind, data[kind]) for kind in STATE_KINDS)
+
+    def save_detail(self):
+        """The details to save: ping details are rebuilt from self.rtt, so a host that
+        no longer has a round-trip time (it stopped answering) cannot keep the old one."""
+        detail = dict((key, text) for key, text in self.detail.items() if key[0] != "ping")
+        for host, ms in list(self.rtt.items()):
+            detail[("ping", host)] = format_rtt(ms)
+        return detail
 
     def marked_devices(self):
         """The marked switches, in the order they appear on screen."""
@@ -2243,33 +2246,15 @@ class App(object):
         key = device_key(dev)
         self.marked.discard(key) if key in self.marked else self.marked.add(key)
 
-    def mouse(self, on):
-        if not self.cfg.mouse:
-            return
-        try:
-            curses.mousemask((CLICK | DOUBLE_CLICK | RIGHT_CLICK | WHEEL_UP | WHEEL_DOWN) if on else 0)
-            curses.mouseinterval(300)          # ms between two clicks of a double-click
-        except curses.error:
-            pass
-
     def set_status(self, kind, host, state, detail=None):
         """One result.  detail is the round-trip time for a ping and the reason for a
         failed ssh; it is saved with the result and shows up in details and the export."""
-        {"ping": self.ping, "ssh": self.ssh}[kind][host] = state
+        self.results()[kind][host] = state
         self.checked[(kind, host)] = time.time()
-        if detail:
-            self.detail[(kind, host)] = str(detail)
-        else:
-            self.detail.pop((kind, host), None)
-
-    def states(self):
-        return {"ping": self.ping, "ssh": self.ssh}
+        set_or_clear(self.detail, (kind, host), str(detail) if detail else "")
 
     def save_status(self):
-        detail = dict(self.detail)
-        for host, ms in list(self.rtt.items()):        # the ms travels as the ping's detail
-            detail[("ping", host)] = format_rtt(ms)
-        self.state.save_status(self.states(), self.checked, detail)
+        self.state.save_status(self.word_results(), self.checked, self.save_detail())
         if self.state.error:
             self.message(self.state.error, error=True, seconds=10)
 
@@ -2290,18 +2275,16 @@ class App(object):
     def reload_status(self):
         """Pick up results another TRee-Li - or one of our tmux panes - has written."""
         saved, checked, detail = self.state.load_status()
-        mine_by_kind = self.states()
+        mine_by_kind = self.word_results()
         for kind, states in saved.items():
             mine = mine_by_kind[kind]
             for host, state in states.items():
                 if checked.get((kind, host), 0) >= self.checked.get((kind, host), 0):
                     mine[host], self.checked[(kind, host)] = state, checked[(kind, host)]
                     text = detail.get((kind, host), "")
-                    if text:
-                        self.detail[(kind, host)] = text
-                    else:
-                        self.detail.pop((kind, host), None)
+                    set_or_clear(self.detail, (kind, host), text)
                     if kind == "ping":
+                        # not set_or_clear: 0.0 ms is a real reading, only None clears
                         ms = parse_float(text)       # a newer result with no ms clears the old one
                         if ms is None:
                             self.rtt.pop(host, None)
@@ -2343,7 +2326,7 @@ class App(object):
         self.apply_sort(keep)
 
     def apply_sort(self, keep=None):
-        self.devices = sort_devices(self.loaded, self.sort_col, self.sort_desc, self.status())
+        self.devices = sort_devices(self.loaded, self.sort_col, self.sort_desc, self.column_results())
         self.refilter(keep)
 
     def refilter(self, keep=None):
@@ -2487,7 +2470,8 @@ class App(object):
             if not self.query:
                 batch += " %s ESC cancels" % sym["sep"]
         hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^F", "favourite"),
-                 ("F1-F%d" % self.ncols(), "sort"), ("^E", "export"), ("^R", "reload"), ("^C", "quit")]
+                 ("F1-F%d" % self.ncols(), "sort"), ("^G", "settings"), ("^E", "export"),
+                 ("^R", "reload"), ("^C", "quit")]
         if self.sessions:
             hints.insert(3, ("^T", "back to tmux"))
             hints.insert(4, ("^K", "close tmux"))
@@ -2497,21 +2481,16 @@ class App(object):
             self.draw_frame("Switch Manager", right, hints=hints, footer_right=CREDIT, footer_attr=th.placeholder)
 
         # command tabs
-        spans = self.spans
-        spans.update(tabs=[], head=[], y_tabs=y_tabs, y_head=y_head, y_body=y_head + 2)
         if 2 + sum(len(c) + 3 for c in COMMANDS) <= w:
             x = 2
             for i, name in enumerate(COMMANDS):
                 put(scr, y_tabs, x, " %s " % name, th.tab_active if i == self.cmd else th.tab)
-                spans["tabs"].append((x, x + len(name) + 2, i))
                 x += len(name) + 3
         else:                                       # narrow terminal: only the selected command
-            n, name = len(COMMANDS), COMMANDS[self.cmd]
+            name = COMMANDS[self.cmd]
             put(scr, y_tabs, 2, sym["lt"], th.tab)
             put(scr, y_tabs, 4, " %s " % name, th.tab_active)
             put(scr, y_tabs, 7 + len(name), sym["gt"], th.tab)
-            spans["tabs"] = [(1, 4, (self.cmd - 1) % n), (4, 6 + len(name), self.cmd),
-                             (6 + len(name), 9 + len(name), (self.cmd + 1) % n)]
 
         # search: "-" and "field:" parts of terms are highlighted
         put(scr, y_search, 2, sym["prompt"], th.prompt)
@@ -2538,12 +2517,16 @@ class App(object):
         widths = fit_widths(self.widths, w - x0 - 3 - 2 * (len(self.widths) - 1))
         table_w = sum(widths) + 2 * (len(widths) - 1)
         labels = [label for _, label in self.columns] + [label for label, _, _, _ in STATUS_COLUMNS]
+        numeric = [False] * len(self.columns) + [flag for _, _, _, flag in STATUS_COLUMNS]
         x = x0
         for i, label in enumerate(labels):
             label = label.upper()
-            put(scr, y_head, x, fit(label, widths[i], sym["more"]), th.head)
-            spans["head"].append((x, x + widths[i] + 1, i))
-            if i == self.sort_col and len(label) + 2 <= widths[i]:
+            # a numeric column is right-aligned, so its header sits over the digits
+            put(scr, y_head, x, label.rjust(widths[i])[:widths[i]] if numeric[i]
+                else fit(label, widths[i], sym["more"]), th.head)
+            if i == self.sort_col and numeric[i]:
+                put(scr, y_head, x, sym["down"] if self.sort_desc else sym["up"], th.sort)
+            elif i == self.sort_col and len(label) + 2 <= widths[i]:
                 put(scr, y_head, x + len(label) + 1, sym["down"] if self.sort_desc else sym["up"], th.sort)
             x += widths[i] + 2
         put(scr, y_head + 1, x0, sym["hline"] * table_w, th.rule)
@@ -2594,13 +2577,13 @@ class App(object):
                     if pos < visible:
                         put(scr, y, x + pos, value[pos], th.match_sel if sel else th.match)
                 x += widths[i] + 2
-            for k, values in enumerate(self.status()):
+            for k, values in enumerate(self.column_results()):
                 value = values.get(d.host)
                 width = widths[len(d.cells) + k]
                 if value is not None and value != "":
-                    if STATUS_COLUMNS[k][3]:               # numeric: the plain number, no dot
-                        put(scr, y, x, fit(format_rtt(value), width),
-                            th.sel if sel else th.text)
+                    if STATUS_COLUMNS[k][3]:               # numeric: right-aligned, no dot,
+                        text = format_rtt(value)[:width]   # so magnitudes line up by eye
+                        put(scr, y, x, text.rjust(width), th.sel if sel else th.text)
                     else:
                         style = STATUS_STYLE.get(value, "wait") + ("_sel" if sel else "")
                         put(scr, y, x, fit("%s %s" % (sym["dot"], value), width), getattr(th, style))
@@ -2641,7 +2624,7 @@ class App(object):
         if self.batch:
             self.batch.cancel()
             self.save_status()                        # finished pings are not thrown away
-        self.mouse(False)
+        bracketed_paste(False)       # never leave the terminal in a mode we switched on
 
     def check_password_lifetime(self):
         """Forget the password password_lifetime minutes after it was typed.
@@ -2650,9 +2633,7 @@ class App(object):
         switch session you are sitting in is not interrupted (this check only runs while
         TRee-Li has the screen), and tmux panes keep running and stay logged in."""
         if self.creds and creds_expired(time.time(), self.creds_at, self.cfg.password_lifetime):
-            hours = self.cfg.password_lifetime / 60.0
-            self.forget_creds("typed %s ago" % ("%.0f h" % hours if hours >= 1
-                                                else "%d min" % self.cfg.password_lifetime))
+            self.forget_creds("typed %s ago" % minutes_text(self.cfg.password_lifetime))
 
     def set_creds(self, creds):
         self.creds = creds
@@ -2736,8 +2717,8 @@ class App(object):
             self.reattach()
         elif key == "CTRL_K":
             self.close_sessions()
-        elif key == "MOUSE":
-            return self.click()
+        elif key == "CTRL_G":
+            self.settings()
         elif key == "CTRL_R":
             self.load()
             if not self.load_error:
@@ -2749,39 +2730,6 @@ class App(object):
             self.refilter()
         return None
 
-    def click(self):
-        """Mouse: click a tab / row to select it, double-click to run, click a column
-        header to sort, wheel to scroll."""
-        if not MOUSE["event"]:
-            return None
-        x, y, buttons = MOUSE["event"]
-        spans, n = self.spans, len(self.view)
-        if buttons & WHEEL_UP:
-            self.cursor = max(0, self.cursor - 3)
-        elif buttons & WHEEL_DOWN:
-            self.cursor = min(max(0, n - 1), self.cursor + 3)
-        elif RIGHT_CLICK and buttons & RIGHT_CLICK:
-            row = self.top + y - spans["y_body"]
-            if spans["y_body"] <= y < spans["y_body"] + self.body_h and row < n:
-                self.cursor = row
-                self.toggle_mark(self.view[row])
-        elif buttons & (CLICK | DOUBLE_CLICK):
-            double = buttons & DOUBLE_CLICK
-            if y == spans["y_tabs"]:
-                for x0, x1, i in spans["tabs"]:
-                    if x0 <= x < x1:
-                        self.cmd = i
-                        return self.execute() if double else None
-            elif y == spans["y_head"]:
-                for x0, x1, i in spans["head"]:
-                    if x0 <= x < x1:
-                        self.set_sort(i)
-            elif spans["y_body"] <= y < spans["y_body"] + self.body_h and self.top + y - spans["y_body"] < n:
-                self.cursor = self.top + y - spans["y_body"]
-                if double:
-                    return self.execute()
-        return None
-
     def export(self):
         """Ctrl-E: the current list (filter + order) with all CSV columns and the
         ping / SSH results to a new CSV file."""
@@ -2790,11 +2738,8 @@ class App(object):
             return
         path = os.path.join(self.cfg.export_dir, "tree-li-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
         try:
-            detail = dict(self.detail)
-            for host, ms in list(self.rtt.items()):
-                detail[("ping", host)] = format_rtt(ms)
             path = export_csv(path, self.view, self.headers, self.delimiter,
-                              self.states(), self.checked, detail)
+                              self.word_results(), self.checked, self.save_detail())
         except OSError as e:
             self.message("Export failed: %s" % (e.strerror or e), error=True, seconds=10)
             return
@@ -2912,16 +2857,8 @@ class App(object):
                 scr.refresh()
 
                 key = read_key(scr, 150)
-                if key == "MOUSE" and MOUSE["event"]:
-                    buttons = MOUSE["event"][2]
-                    key = "WHEEL_UP" if buttons & WHEEL_UP else "WHEEL_DOWN" if buttons & WHEEL_DOWN else None
                 if key in ("ESC", "ENTER", "q", "Q"):
                     break
-                elif key == "WHEEL_UP":
-                    offset, follow = offset - 3, False
-                elif key == "WHEEL_DOWN":
-                    offset += 3
-                    follow = stream is not None and offset >= max_off
                 elif key == "UP":
                     offset, follow = offset - 1, False
                 elif key == "DOWN":
@@ -3017,6 +2954,76 @@ class App(object):
         if subtitle:
             put(scr, y0, x0 + 4 + len(title), "%s %s " % (th.sym["sep"], subtitle), th.win_frame)
         return y0, x0
+
+    # Settings you may want to flip in the middle of a day.  Everything else
+    # (columns, ping rate, paths) is set once in tree-li.conf and left alone.
+    #   key, label, what it changes
+    TOGGLES = [("l", "Session log", "session_log"),
+               ("d", "Debug log", "debug"),
+               ("t", "Several switches at once (tmux)", "tmux")]
+
+    def settings(self):
+        """Ctrl-G: turn the things on that you only want for the next hour.
+
+        Ctrl-G and not Ctrl-O: ^O is the tty "discard" character (VDISCARD), which the
+        terminal driver eats before curses ever sees it, because cbreak() clears ICANON
+        but not IEXTEN.  ^U / ^W / ^R are ICANON-only, which is why those do arrive.
+
+        Session-only on purpose: writing these back would rewrite tree-li.conf and
+        throw away its comments, and "just for now" is what this screen is for."""
+        scr, th = self.scr, self.th
+        while True:
+            rows = []
+            for key, label, option in self.TOGGLES:
+                on = getattr(self.cfg, option)
+                extra = ""
+                if option == "session_log" and on:
+                    extra = self.cfg.log_dir
+                elif option == "debug" and on:
+                    extra = os.path.join(self.cfg.state_dir, "debug.log")
+                rows.append((key, label, "on" if on else "off", extra))
+            rows.append(("c", "Screen symbols", self.cfg.charset_setting +
+                         ("" if self.cfg.charset_setting != "auto" else " (%s)" % self.cfg.charset), ""))
+            rows.append(("p", "Forget the stored password now",
+                         "held" if self.creds else "not held", ""))
+            width = min(80, max(56, scr.getmaxyx()[1] - 6))
+            label_w, value_x = 34, 3 + 4 + 34 + 2
+            y0, x0 = self.draw_window("Settings", "for this TRee-Li only", len(rows) + 7, width)
+            for i, (key, label, value, extra) in enumerate(rows):
+                y = y0 + 2 + i
+                put(scr, y, x0 + 3, key, th.win_key)
+                put(scr, y, x0 + 7, fit(label, label_w).rstrip(), th.win_label)
+                text = value if not extra else "%s  %s" % (value, extra)
+                put(scr, y, x0 + value_x, fit(text, width - value_x - 3, self.th.sym["more"]).rstrip(),
+                    th.win_key if value == "on" else th.win_hint)
+            put(scr, y0 + len(rows) + 3, x0 + 3,
+                "Not saved - put it in tree-li.conf to keep it"[:width - 6], th.win_hint)
+            put(scr, y0 + len(rows) + 5, x0 + 3, "ESC", th.win_key)
+            put(scr, y0 + len(rows) + 5, x0 + 7, "close", th.win_hint)
+            scr.refresh()
+
+            key = read_key(scr, -1)
+            if key in ("ESC", "ENTER", "q", "Q", "CTRL_G"):
+                return
+            if key == "RESIZE":
+                self.sync_size()
+                continue
+            for k, label, option in self.TOGGLES:
+                if key == k:
+                    setattr(self.cfg, option, not getattr(self.cfg, option))
+                    self.message("%s %s" % (label, "on" if getattr(self.cfg, option) else "off"))
+            if key == "c":
+                order = ["auto", "unicode", "ascii"]
+                nxt = order[(order.index(self.cfg.charset_setting) + 1) % len(order)]
+                self.cfg.charset_setting = nxt
+                self.cfg.charset = detect_charset(nxt)
+                self.th = Theme(self.cfg.charset)        # rebuild: symbols change at once
+                self.message("Screen symbols: %s" % nxt)
+            elif key == "p":
+                if self.creds:
+                    self.forget_creds("you asked")
+                else:
+                    self.message("No password is stored")
 
     def confirm(self, title, question, detail=()):
         """A y/n window.  Anything other than y / Enter means no."""
@@ -3287,8 +3294,7 @@ class App(object):
         self.message(note, error=bool(refused or lost), seconds=20)
 
     def leave_curses(self):
-        """Give the plain terminal to ssh or tmux: our mouse and paste modes go with it."""
-        self.mouse(False)
+        """Give the plain terminal to ssh or tmux: our paste mode goes with it."""
         bracketed_paste(False)
         curses.endwin()
 
@@ -3301,7 +3307,6 @@ class App(object):
             self.resume_curses()
 
     def resume_curses(self):
-        self.mouse(True)
         bracketed_paste(True)
         self.scr.keypad(True)
         curses.flushinp()
@@ -3332,8 +3337,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)"),
         ("item", "Ctrl-F", "mark / unmark the switch as favourite (*)"),
         ("item", "Ctrl-E", "export the current list to CSV (%s)" % cfg.export_dir),
-        ("item", "mouse", "click: select, double-click: run, right-click: mark,"),
-        ("item", "", "header: sort, wheel: scroll"),
+        ("item", "Ctrl-G", "settings for this session (logging, tmux, symbols)"),
         ("item", "F1..F%d" % ncols, "sort by column: press again for reverse, a third time for off"),
         ("item", "Ctrl-R", "reload the switch list"),
         ("item", "Ctrl-C", "quit"),
@@ -3351,10 +3355,8 @@ def help_sections(cfg, ncols, switches):
         ("item", "ssh", "connect - user/password are asked once and kept in memory"),
         ("item", "", "only. Log out of the switch to come back."),
         ("item", "", "The password is forgotten %s. Sessions and tmux"
-                     % (("%.0f h after you typed it" % (cfg.password_lifetime / 60.0))
-                        if cfg.password_lifetime >= 60 else
-                        ("%d min after you typed it" % cfg.password_lifetime) if cfg.password_lifetime
-                        else "only when TRee-Li exits (password_lifetime = 0)")),
+                     % ("%s after you typed it" % minutes_text(cfg.password_lifetime)
+                        if cfg.password_lifetime else "only when TRee-Li exits")),
         ("item", "", "panes you already have are never touched by that."),
         ("item", "", "With 2+ marked (Tab): one tmux session, one pane each,"),
         ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
@@ -3401,8 +3403,6 @@ def check(cfg):
     ok, clean = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
-    for key, where in cfg.obsolete:
-        print("  note: '%s' in %s is from an older version and is ignored" % (key, where))
     print("switch list  : %s" % cfg.data)
     try:
         report = {}
@@ -3425,9 +3425,8 @@ def check(cfg):
         ok = ok and path is not None
     print("state dir    : %s" % cfg.state_dir)
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
-    print("password     : %s" % ("forgotten %d min (%.1f h) after you type it, sessions untouched"
-                                 % (cfg.password_lifetime, cfg.password_lifetime / 60.0)
-                                 if cfg.password_lifetime
+    print("password     : %s" % ("forgotten %s after you type it, sessions untouched"
+                                 % minutes_text(cfg.password_lifetime) if cfg.password_lifetime
                                  else "kept until TRee-Li exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
@@ -3482,6 +3481,10 @@ def main(argv=None):
     except curses.error as e:
         print("tree-li: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
         return 1
+    finally:
+        # Also on the paths where run() never reached its end (a failed startup, a
+        # curses error): the terminal must not keep a mode we switched on.
+        bracketed_paste(False)
     print("TRee-Li closed - credentials forgotten.")
     for session in tree_li_sessions():
         print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"

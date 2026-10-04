@@ -290,3 +290,78 @@ produces a list someone else can act on.
   limits, and the fact that background sessions - bounded by the 900 s switch timeout - were always the
   bigger exposure than the password. It ships with the tool, unlike `council/`.
 - `VERSION` 1.2.2-tmux. 102 tests.
+
+## D29: Review round 6 - mouse out, settings page in, 11 findings fixed (2026-10-04)
+A full review of the 695 lines added in round 5. Eleven findings, four of them bugs in code written
+that same day. 108 tests.
+
+### The two that mattered
+- **An oversized paste put the newlines back (*Architect*).** `read_paste` stopped consuming at its
+  cap **without draining to the `ESC[201~` end marker**, so everything past 1024 characters stayed in
+  the input queue and was read as ordinary keys. Measured on a 200-line paste: **87 leaked `ENTER`
+  presses**, each running ssh on the selected switch. Strictly worse than having no bracketed paste,
+  because the user now trusts pasting. The cap now limits what is **kept**, never what is consumed,
+  with a hard `HUGE_PASTE` stop so a terminal that never ends a paste cannot hang us.
+- **The terminal kept our paste mode after exit.** `bracketed_paste(False)` existed only in the
+  ssh/tmux hand-off; neither `run()` nor `main()` ever switched it off, so quitting left DECSET 2004
+  enabled and later pastes in an unaware shell arrived wrapped in literal `200~`. Now switched off at
+  the end of `run()` **and** in a `finally` around `curses.wrapper`, so a failed startup cannot leak it.
+
+### Data correctness
+- **Stale latency survived a host going down.** `save_status` copied `self.detail` and only overwrote
+  the hosts still in `self.rtt`, so a switch that stopped answering kept yesterday's ms and showed
+  `● down  1.20` after a restart - and the export said the same. One `App.save_detail()` now rebuilds
+  the ping details from `self.rtt`, which removes a duplicated three-line block at the same time.
+- **A 0.0 ms reading sorted as "never measured".** `sort_devices` split rows on truthiness, and `0.0`
+  is falsy, so a real measurement landed with the unmeasured hosts while `draw()` still printed it.
+  Now `!= ""`. *Tester:* the first regression test for this **passed on the broken code too** - with
+  only one other measured host the two orders coincide. The test now puts an unmeasured host first in
+  CSV order, which is what actually tells the behaviours apart. A test that cannot fail is worse than
+  no test.
+
+### Mouse support removed (user, 2026-10-04)
+Reversing D17's mouse decision. It was the one feature that **made something done constantly worse in
+exchange for something done rarely**: while TRee-Li held the mouse, PuTTY and Tabby needed Shift to
+select text, so copying an IP out of the list - the most common action in the tool - got worse, in
+exchange for clicking a row instead of pressing a key that is already under your finger. Gone with it:
+`mousemask`/`mouseinterval`, the `MOUSE` dict and button constants, `App.click()`, the whole `spans`
+bookkeeping threaded through `draw()`, the wheel handling in `show_text`, the `mouse` option and the
+README troubleshooting row that existed only to explain the damage. The user: "haven't used it that
+much."
+
+### Settings page: Ctrl-G (user request)
+Every setting was judged on one question: *would you want to flip this in the middle of a day?* Five
+were: **session log**, **debug log**, **tmux mode**, **screen symbols**, and "forget the password
+now". Those are the settings page. Columns, ping rate, paths and the password lifetime are set once
+in `tree-li.conf` and stay there.
+- **Session-only on purpose.** Writing them back would rewrite `tree-li.conf` with configparser and
+  destroy its comments, and "just for now" is the whole point of the screen. It says so on screen.
+- ***Operator:* `Ctrl-G`, not `Ctrl-O`.** `Ctrl-O` was built first and silently did nothing: `^O` is
+  the tty **discard** character (`VDISCARD`), which the terminal driver eats before curses sees it,
+  because `cbreak()` clears `ICANON` but not `IEXTEN`. `^U`/`^W`/`^R` are `ICANON`-only, which is why
+  those have always worked. Caught by driving the real UI, not by reading the code. Recorded in
+  [KNOWLEDGE.md](KNOWLEDGE.md).
+
+### Cut, and why
+- **Old-config back-compat (`OBSOLETE`) deleted** (user: "No need to keep stuff for old configs").
+  The tool has only ever run on one or two test machines and `tree-li.conf` is git-ignored, so the
+  entire population of old config files is those machines. A retired option is now a hard startup
+  error that names itself, which `--check` also reports - a ten-second fix instead of a permanent
+  carrying cost. **Kept** on purpose: `load_status` still accepts 4 **or** 5 fields, because that is
+  tolerant parsing of files the test machines already have, not back-compat theatre.
+- **`BIND_GRACE` deleted** - my own over-engineering from D26. The race it closed was theoretical
+  (Python startup is ~50 ms, `bind()` lands microseconds after `tmux_run` returns), the fallback was
+  already graceful, and the 2 s wait widened the window in which anything could ask while pushing
+  macOS towards the client's 5 s timeout. An unbound ticket is refused at once again.
+- **`parent_pid` no longer runs on every handover request:** `expected not in (pid, parent_pid(pid))`
+  built the tuple eagerly, forking `ps` on macOS even when the pid already matched.
+
+### Smaller
+- `set_or_clear()` replaces four copies of "store it unless it is empty". Not used for `self.rtt`,
+  where `0.0` is a real value and only `None` clears - the same trap as the sort bug.
+- One `App.results()` now maps kind to dict; `column_results()` (drawing/sorting, STATUS_COLUMNS
+  order) and `word_results()` (what the status file saves) derive from it, so adding a column cannot
+  make `reload_status` raise. The old `status()`/`states()` pair was a mix-up waiting to happen.
+- `minutes_text()`: `password_lifetime = 90` used to report "typed 2 h ago".
+- The `MS` column and its header are right-aligned, so magnitudes line up without sorting.
+- `VERSION` 1.3.0-tmux (mouse removed and the config contract changed - not a patch release).

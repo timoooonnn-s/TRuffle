@@ -85,6 +85,7 @@ All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something loo
 - [Commands](#commands)
 - [Search](#search)
 - [Several switches at once (tmux)](#several-switches-at-once-tmux)
+- [Settings](#settings)
 - [Favourites and recent switches](#favourites-and-recent-switches)
 - [Saved check results](#saved-check-results)
 - [Export](#export)
@@ -116,7 +117,7 @@ All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something loo
     ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    1.24    ● ok
 
 ───────────────────────────────────────────────────────────────────────────────────
-  Enter run  ←→ command  ^F favourite  F1-F8 sort  ^R reload  ^C quit
+  Enter run  ←→ command  ^F favourite  F1-F8 sort  ^G settings  ^R reload  ^C quit
 ```
 
 From top to bottom:
@@ -152,6 +153,7 @@ From top to bottom:
 | `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`) |
 | `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
+| `Ctrl-G` | [settings](#settings) for this session: session log, debug log, tmux, symbols, forget password |
 | `Ctrl-E` | [export](#export) the current list to a CSV file |
 | `Ctrl-R` | reload the switch list |
 | `Ctrl-L` | redraw the screen |
@@ -159,14 +161,8 @@ From top to bottom:
 
 In full-screen output (ping, details, help): `↑` `↓` `PgUp` `PgDn` scroll, and `ESC` / `Enter` / `q` closes.
 
-**Mouse:**
-- **Click:** a row or tab selects it.
-- **Right-click:** marks a row for [several at once](#several-switches-at-once-tmux).
-- **Double-click:** runs the selected command (e.g. ssh on a switch).
-- **Column header:** sorts by that column.
-- **Wheel:** scrolls.
-
-While TRee-Li has the mouse, PuTTY and Tabby select text only with **Shift** held down. If you'd rather keep normal selection, set `mouse = no`.
+**No mouse.** TRee-Li is keyboard-only on purpose, so selecting text in PuTTY or Tabby works
+normally — no Shift needed.
 
 ## Commands
 
@@ -203,7 +199,7 @@ Press `Ctrl-E` on that and you have the list [exported](#export) — with the re
 
 > **Experimental**, on the `tmux-version` branch. Needs `tmux` on the server. Turn it off with `tmux = no`.
 
-Mark switches with **`Tab`** (or right-click), then run **ssh**. With **two or more** marked, TRee-Li opens its
+Mark switches with **`Tab`**, then run **ssh**. With **two or more** marked, TRee-Li opens its
 own tmux session with **one pane per switch**, up to **9**. You type your password **once** and every pane
 logs in by itself.
 
@@ -253,6 +249,26 @@ only clears it inside TRee-Li and leaves running panes alone.
 the whole mechanism from first principles — what a Unix socket is, why the ticket is deliberately public,
 who could and could not get the password, and what we honestly do *not* claim. It's written to be handed
 to a colleague who doesn't work in Linux every day.
+
+## Settings
+
+Some things you only want for the next hour — recording a change window, or chasing one switch
+that won't log in. **`Ctrl-G`** opens them without restarting TRee-Li:
+
+| Key | Setting | What it does |
+|---|---|---|
+| `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)). Shows the folder while on |
+| `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
+| `t` | Several at once (tmux) | turn the [multi-switch panes](#several-switches-at-once-tmux) on or off |
+| `c` | Screen symbols | `auto` → `unicode` → `ascii`, applied at once if lines look garbled |
+| `p` | Forget the stored password | drops it now, e.g. before you leave your desk. Running sessions and tmux panes are untouched |
+| `ESC` | | close |
+
+Changes apply to **this TRee-Li only** and take effect on the next connection — put them in
+[`tree-li.conf`](#configuration) to make them permanent.
+
+Everything else (columns, ping rate, paths, password lifetime) is set once in the configuration
+file; nothing else is worth flipping mid-day.
 
 ## Favourites and recent switches
 
@@ -378,14 +394,16 @@ git status                         # if it's a git checkout: review, commit, pus
 
 ## Session logging
 
-Off by default. Turn it on with `--log` or `session_log = yes`. Each ssh session is written to
+Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRee-Li when
+you want it just for the next session (a change window, say). Each ssh session is written to
 `~/.local/state/tree-li/logs/<date>-<time>_<switch>.log`, readable only by you.
 The log contains what was on screen, never the password TRee-Li typed. Commands like
 `show running-config` can still put secrets into it.
 
 ## Debug log
 
-`tree-li --debug` appends a short report of every ssh login to `~/.local/state/tree-li/debug.log`
+`tree-li --debug` — or **`Ctrl-G`** inside TRee-Li, when a switch starts misbehaving and you don't
+want to restart — appends a short report of every ssh login to `~/.local/state/tree-li/debug.log`
 (readable only by you):
 - the ssh command
 - which password prompts TRee-Li saw
@@ -441,7 +459,6 @@ The password and the session itself are never in it.
 | TRee-Li says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `tree-li --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
 | Login works with plain ssh but not in TRee-Li | Start with `tree-li --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled | `Ctrl-L` |
-| Can't select text with the mouse | Hold **Shift** while selecting, or set `mouse = no` |
 | Not sure what's wrong | `tree-li --check` |
 
 ## Development

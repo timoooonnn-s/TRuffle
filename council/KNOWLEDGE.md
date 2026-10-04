@@ -103,6 +103,17 @@ Maintained by **the Researcher**. Facts only; decisions go in `DECISIONS.md`.
 - **Platform reminder (R2):** development and these local test runs happen on macOS, the real
   deployment is RHEL. macOS-only evidence does not count as tested.
 
+### Terminal keys that never arrive (2026-10-04)
+`curses.wrapper` puts the terminal in **cbreak**, which clears `ICANON` but **not `IEXTEN`**. So:
+- `^U` (kill), `^W` (werase), `^R` (rprnt) are `ICANON`-only specials and **do** reach the
+  application - which is why TRee-Li has always been able to bind them.
+- `^O` (**discard**, `VDISCARD`) and `^V` (lnext) are `IEXTEN` specials: the tty driver consumes
+  them and curses never sees them. A shortcut bound to `^O` silently does nothing.
+- Also unusable: `^S`/`^Q` (flow control - `^S` freezes the terminal), `^C` (intr), `^Z` (susp),
+  `^D` (eof), `^\` (quit), and `^H`/`^I`/`^M` (which are Backspace/Tab/Enter).
+- Free and safe, and why the settings page is on `Ctrl-G`: `^G`, `^A`, `^N`, `^P`, `^X`, `^Y`.
+  Avoid `^B` as well - tmux eats it as its prefix when TRee-Li runs inside tmux.
+
 ### Pane timestamps, the hard way (2026-10-04)
 A tmux pane reporting a failed login writes its timestamp into the shared state directory. Written as
 whole seconds (`%d`), a pane that fails in the *same second* the password was typed looks **older** than

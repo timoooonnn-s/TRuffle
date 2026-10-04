@@ -32,7 +32,8 @@
 #connect_timeout = 10
 
 # Record ssh sessions (what you see on screen, never the password).
-# Logs are per user and only readable by you. Also: tree-li --log
+# Logs are per user and only readable by you. Also: tree-li --log, or Ctrl-G in TRee-Li
+# to switch it on just for this session.
 #session_log = no
 #log_dir = ~/.local/state/tree-li/logs
 
@@ -56,10 +57,6 @@
 # Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
 # and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
 #tmux = yes
-
-# Mouse: click to select, double-click to run, wheel to scroll.
-# While on, select text in PuTTY / Tabby with Shift held down.
-#mouse = yes
 
 # Where Ctrl-E writes the exported list.
 #export_dir = ~

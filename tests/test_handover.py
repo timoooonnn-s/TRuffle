@@ -71,24 +71,23 @@ class HandoverTest(unittest.TestCase):
         h.tickets[ticket]["created"] -= tl.TICKET_LIFETIME + 1
         self.assertEqual(self.ask(h, ticket), "ERR ticket expired")
 
-    def test_an_unbound_ticket_is_refused(self):
-        """issue() without bind() means tmux never reported a pane - nobody may use it."""
+    def test_an_unbound_ticket_is_refused_at_once(self):
+        """issue() without bind() means tmux has not reported a pane yet - nobody may use
+        that ticket, and the answer is immediate: no waiting, so no window in which
+        anything running as us could keep asking."""
         h = self.make()
         start = time.time()
         self.assertEqual(self.ask(h, h.issue("10.0.0.1")), "ERR wrong process")
-        self.assertLess(time.time() - start, tl.BIND_GRACE + 3, "the bind wait is not bounded")
+        self.assertLess(time.time() - start, 1.0, "an unbound ticket must be refused at once")
 
-    def test_a_pane_faster_than_tmux_still_gets_its_login(self):
-        """tmux reports the pane's pid only after starting the process, so the pane can
-        ask before bind() ran.  That is a race, not an attack: wait for the binding."""
+    def test_a_ticket_bound_after_the_request_is_still_refused(self):
+        """The pane that lost the race asks the user for the password itself.  We do NOT
+        hold the request open waiting for the binding - that only widens the window."""
         h = self.make()
         ticket = h.issue("10.0.0.1")
-        late = threading.Timer(0.4, lambda: h.bind(ticket, os.getpid()))
-        late.start()
-        try:
-            self.assertTrue(self.ask(h, ticket).startswith("OK "))
-        finally:
-            late.cancel()
+        self.assertEqual(self.ask(h, ticket), "ERR wrong process")
+        h.bind(ticket, os.getpid())                   # tmux reports the pid a moment later
+        self.assertTrue(self.ask(h, ticket).startswith("OK "))   # a later, bound ask works
 
     # -- the files on disk --------------------------------------------------
 
