@@ -26,13 +26,36 @@
 
 ## Milestone 1e: review round 3 + data check, export, saved results, mouse. DONE (2026-10-02)
 
+## Milestone 1f: review round 5 + the idle timeout. DONE (2026-10-04)
+- [x] Standing rules written down: R1 (as few dependencies as possible), R2 (RHEL is the target,
+      macOS is only a test bench) - see [COUNCIL.md](COUNCIL.md#standing-rules), D25
+- [x] All 7 findings and 6 observations fixed (D26): the save_status crash, the unreported pane
+      login failure, the lying "N marked" counter, the blocked multi-ssh, Ctrl-K/Ctrl-T on foreign
+      sessions, the wrong ESC chain in help + README
+- [x] Idle password timeout built (`password_timeout`, 15 min) - the Warden's condition for
+      background tmux sessions is finally met
+- [x] 92 tests, incl. two tmux end-to-end runs: two marked switches share one login, and a pane
+      that cannot log in makes TRee-Li forget the password
+
+## Milestone 1g: paste safety, latency, failure reasons. DONE (2026-10-04)
+- [x] Password lifetime: 10 h **absolute**, one variable (`PASSWORD_LIFETIME_MINUTES`), never
+      touches a running session or tmux pane (D28)
+- [x] Bracketed paste: a pasted newline can no longer start an ssh session (D28)
+- [x] `MS` column: round-trip time, sortable slowest-first, `LC_ALL=C` (D28)
+- [x] Why a ssh attempt failed: saved, survives a restart, in details + export (D28)
+- [x] `TMUX-SECURITY.md` for the other engineers; switch idle timeout (900 s) recorded as fact
+- [x] 102 tests
+- [ ] **PuTTY: confirm bracketed paste with Ruffy** - until then it is a Tabby-only win
+
 ## Milestone 2: field test (needs the user)
 - [x] `./tree-li --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu
 - [x] Wrong password: one attempt only, then asked again
 - [x] Dead host: ssh gives up after `connect_timeout`, then back in the menu (user likes it)
-- [ ] PuTTY (F-keys, colours, Unicode lines, mouse + Shift-select) and Tabby: not tested yet
-- [ ] Batch ping + SSH check over all ~700 switches: waiting for the full inventory
+- [x] Tabby: tested by the user, works (2026-10-04)
+- [x] PuTTY: tested and approved by Ruffy, the second engineer (2026-10-04)
+- [ ] Batch ping + ssh over all ~700 switches: still waiting for the full inventory.
+      **The last open item of this milestone.**
 
 ## Ideas
 All open ideas, including the parked tmux pane feature: [ideas/README.md](ideas/README.md).

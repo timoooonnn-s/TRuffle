@@ -7,6 +7,8 @@ import os
 import socket
 import subprocess
 import sys
+import threading
+import time
 import unittest
 
 from test_tree_li import tl
@@ -72,7 +74,21 @@ class HandoverTest(unittest.TestCase):
     def test_an_unbound_ticket_is_refused(self):
         """issue() without bind() means tmux never reported a pane - nobody may use it."""
         h = self.make()
+        start = time.time()
         self.assertEqual(self.ask(h, h.issue("10.0.0.1")), "ERR wrong process")
+        self.assertLess(time.time() - start, tl.BIND_GRACE + 3, "the bind wait is not bounded")
+
+    def test_a_pane_faster_than_tmux_still_gets_its_login(self):
+        """tmux reports the pane's pid only after starting the process, so the pane can
+        ask before bind() ran.  That is a race, not an attack: wait for the binding."""
+        h = self.make()
+        ticket = h.issue("10.0.0.1")
+        late = threading.Timer(0.4, lambda: h.bind(ticket, os.getpid()))
+        late.start()
+        try:
+            self.assertTrue(self.ask(h, ticket).startswith("OK "))
+        finally:
+            late.cancel()
 
     # -- the files on disk --------------------------------------------------
 

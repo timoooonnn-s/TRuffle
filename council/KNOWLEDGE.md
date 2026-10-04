@@ -82,3 +82,29 @@ Maintained by **the Researcher**. Facts only; decisions go in `DECISIONS.md`.
 - **PuTTY default F-keys** are `ESC[11~`..`ESC[15~`. Under `TERM=xterm`, ncurses doesn't recognise them, so TRee-Li parses them itself.
 - **Python strings can't be wiped from memory.** The password object lives until the process exits (it is dropped on auth failure). This is acceptable for the threat model: same-user/root memory access already means game over.
 - **ControlPersist in ~/.ssh/config** can keep the pty open after ssh exits. TRee-Li also polls the child with `waitpid` so it doesn't hang.
+
+---
+
+## 6. Hard numbers from the field
+
+| Fact | Value | Why it matters |
+|---|---|---|
+| **Switch idle timeout** | **900 seconds (15 min)** - confirmed by the user, 2026-10-04 | The number the whole tmux security case rests on. After `Ctrl-b d` the panes stay logged in, and anyone who can run commands as you could `tmux attach` into them without a password. That window is **15 minutes**, not hours - which is why the background-session risk (`ideas/tmux-panes.md` risk 5) is acceptable and why a tight password timeout was not needed. Quote this number in any security discussion rather than re-deriving it |
+
+## 7. Field results (2026-10-04)
+
+- **Tabby:** tested by the user. Works, nothing to change.
+- **PuTTY:** tested and approved by Ruffy, the second engineer. So the bets taken for PuTTY hold in
+  practice: TRee-Li's own escape-sequence parser (default F-keys `ESC[11~`..`ESC[15~`, which ncurses
+  does not recognise under `TERM=xterm`), ASCII-only UI chrome, the 8-colour fallback, and the login
+  dialog drawing its own block cursor.
+- **Still unverified:** the full ~700-switch inventory (batch ping timing, ssh pass, screen behaviour
+  with a list that long). Everything so far was measured on small lists.
+- **Platform reminder (R2):** development and these local test runs happen on macOS, the real
+  deployment is RHEL. macOS-only evidence does not count as tested.
+
+### Pane timestamps, the hard way (2026-10-04)
+A tmux pane reporting a failed login writes its timestamp into the shared state directory. Written as
+whole seconds (`%d`), a pane that fails in the *same second* the password was typed looks **older** than
+that password, so the "is this failure about the password I am holding?" test fails and nothing happens.
+Sub-second stamps fix it. Only the end-to-end test surfaced this - reading the code did not.

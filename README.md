@@ -110,13 +110,13 @@ All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something loo
 
   ›  ber core
 
-    NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  SSH
+    NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  MS      SSH
     ─────────────────────────────────────────────────────────────────────────────────────────
- ▌* ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down  ● failed
-    ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    ● ok
+ ▌* ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down          ● failed
+    ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    1.24    ● ok
 
 ───────────────────────────────────────────────────────────────────────────────────
-  Enter run  ←→ command  ^F favourite  F1-F6 sort  ^R reload  ^C quit
+  Enter run  ←→ command  ^F favourite  F1-F8 sort  ^R reload  ^C quit
 ```
 
 From top to bottom:
@@ -127,8 +127,12 @@ From top to bottom:
   - `▌` marks the selected row.
   - `*` marks a [favourite](#favourites-and-recent-switches).
   - `▲`/`▼` shows the sorted column.
-  - **PING** shows the last ping result. **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
-    TRee-Li never tests SSH on its own, so there's no extra traffic.
+  - **PING** shows the last ping result. **MS** is how long that ping took — one packet, so it's one
+    number, not packet loss and not jitter. Sorting MS puts the slowest switches first, which is how you
+    find the one behind a congested link.
+  - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
+    TRee-Li never tests SSH on its own, so there's no extra traffic. When it failed, **details** and the
+    [export](#export) also tell you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
 - **Footer:** key hints, or a message for a few seconds.
 
@@ -141,8 +145,9 @@ From top to bottom:
 | `Enter` | run the selected command on the selected switch |
 | just type | [search](#search) |
 | `Backspace` / `Ctrl-W` / `Ctrl-U` | delete a character / a word / the whole search |
-| `ESC` | step by step: 1. clears the search, 2. cancels a running batch ping, 3. clears the sort |
-| `F1` … `F7` | sort by that column: ▲ ascending → ▼ descending → original order |
+| paste | pasted text goes into the search as **text** — a newline in it no longer runs `ssh` |
+| `ESC` | step by step: 1. clears the search, 2. clears the marks, 3. cancels a running batch ping, 4. clears the sort |
+| `F1` … `F8` | sort by that column: ▲ ascending → ▼ descending → original order |
 | `Ctrl-F` | mark / unmark the selected switch as a [favourite](#favourites-and-recent-switches) |
 | `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`) |
 | `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
@@ -168,7 +173,7 @@ While TRee-Li has the mouse, PuTTY and Tabby select text only with **Shift** hel
 | Command | What it does |
 |---|---|
 | **ssh** | Connects to the selected switch. The first time, TRee-Li asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
-| **ping** | `ping -c 4` with live output; also updates the Ping column. |
+| **ping** | `ping -c 4` with live output; also updates the Ping and MS columns. |
 | **batch ping** | Pings every switch in the **current, filtered** list and fills the PING column. It's deliberately **quiet**: at most 20 pings per second (`ping_rate`), so 700 switches take about 35 s and one site a few seconds. You can keep working meanwhile; `ESC` (with an empty search) cancels. |
 | **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
 | **help** | Keys, search syntax, and the file paths in use. |
@@ -186,12 +191,13 @@ in this order within one visible column. The best matches come first, and the ma
 | `type:core` | the CSV column `type` contains "core". Works for **every** column, even ones not in the table, and for table labels (`alias:munich`) |
 | `location:` | the column is empty |
 | `-test`, `-type:edge` | excludes matches (always exact) |
-| `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet) |
+| `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet; a bare `ping:` means the same) |
 | `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that switch, or `none` (never tried) |
 | `is:fav` | your favourites |
 | `is:recent` | switches you connected to, newest first |
 
 Example: `type:core -ber ping:up ssh:failed` shows core switches outside Berlin that answer ping but where your last ssh attempt failed.
+Press `Ctrl-E` on that and you have the list [exported](#export) — with the reason each one failed.
 
 ## Several switches at once (tmux)
 
@@ -238,6 +244,16 @@ once, within 15 seconds. The socket is deleted as soon as the panes have their l
 Anything running as *your* user could still ask for it during those seconds — that is the trade-off of the
 single login. Set `tmux = no` if you would rather type the password per pane.
 
+**If a pane can't log in,** it says so in that pane and tells TRee-Li, which drops the stored password and
+asks you again. A mistyped password therefore costs you the panes you opened, not every switch you visit
+afterwards. The password is also forgotten 10 hours after you typed it (see [Security](#security)); that
+only clears it inside TRee-Li and leaves running panes alone.
+
+**Worried about the shared login, or asked to justify it?** [TMUX-SECURITY.md](TMUX-SECURITY.md) explains
+the whole mechanism from first principles — what a Unix socket is, why the ticket is deliberately public,
+who could and could not get the password, and what we honestly do *not* claim. It's written to be handed
+to a colleague who doesn't work in Linux every day.
+
 ## Favourites and recent switches
 
 - `Ctrl-F` marks a switch as a favourite (`*`). Favourites are listed first as long as no column is sorted.
@@ -247,7 +263,7 @@ single login. Set `tmux = no` if you would rather type the password per pane.
 
 ## Saved check results
 
-The PING results and your last ssh attempts (SSH), each with its time, are saved per user in
+The PING results (with their ms), and your last ssh attempts with the reason they failed, each with its time, are saved per user in
 `~/.local/state/tree-li/status`. After a restart they're shown again until the next check, and **details** shows when
 each one was taken. Several TRee-Li windows merge their results, and the newest one wins.
 
@@ -256,7 +272,9 @@ each one was taken. Several TRee-Li windows merge their results, and the newest 
 `Ctrl-E` writes the **current list** (filter and order as on screen) to `tree-li-export-<date>-<time>.csv`
 in your home directory (`export_dir` in the [configuration](#configuration)). It contains:
 - all CSV columns
-- **Ping** and your last **SSH** attempt, each with its time
+- **Ping** with its round-trip time in ms, and your last **SSH** attempt with the reason it failed, each with its time
+
+A name that already exists is never overwritten — the next export becomes `...-2.csv`.
 
 Example: search `ping:down`, press `Ctrl-E`, and you have the list of switches that didn't answer.
 The file uses the switch list's delimiter, opens directly in Excel, and is readable only by you.
@@ -397,6 +415,14 @@ The password and the session itself are never in it.
   and says so afterwards, so you always know whether the auto-login fired.
 - **Wrong password:** ssh is stopped right away instead of retrying, the stored password is wiped,
   and you're asked again. This protects a central (TACACS+/RADIUS) account from lockouts.
+  A [tmux pane](#several-switches-at-once-tmux) that can't log in reports it back, so one mistyped
+  password is not spent on switch after switch.
+- **Forgotten after 10 hours.** The password is dropped 10 hours after you **typed** it and you're asked
+  again (`password_lifetime` in minutes, `0` turns it off). It's measured from when you typed it, not from
+  your last keypress, so a window left running for days can't keep a live login — but it never expires in
+  the middle of a working day.
+  **It only deletes the password inside TRee-Li.** A switch session you're sitting in keeps running, and
+  tmux panes keep running and stay logged in. Nothing in your workspace is touched.
 - **Once you type in a session,** TRee-Li stops watching. A later `Password:` prompt on the switch is never answered for you.
 - **Host keys:** new switches are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
   TRee-Li asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.

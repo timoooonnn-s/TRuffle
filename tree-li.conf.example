@@ -45,6 +45,14 @@
 #ping_rate = 20
 #ping_timeout = 1
 
+# Forget the stored password this many minutes after you TYPED it (not after your last
+# keypress, so an open window cannot keep it alive for days).
+# 600 = 10 hours: never expires while you work, always has expired by the next morning.
+# 0 = keep it until TRee-Li exits.
+# This only deletes the password inside TRee-Li. A switch session you are in keeps
+# running, and tmux panes keep running and stay logged in.
+#password_lifetime = 600
+
 # Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
 # and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
 #tmux = yes

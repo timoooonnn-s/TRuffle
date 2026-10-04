@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.2.0-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.2.2-tmux"     # experimental tmux branch; bump before building a bundle
 TITLE = "TRee-Li: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
@@ -53,11 +53,47 @@ COMMANDS = ["ssh", "ping", "batch ping", "details", "help", "exit"]
 # Status words are stored, shown and searched as they are (ping:down, ssh:failed).
 PING_UP, PING_DOWN, WAIT = "up", "down", "wait"
 SSH_OK, SSH_FAILED = "ok", "failed"     # outcome of your last real ssh attempt (no probing)
-STATUS_LABELS = ["Ping", "SSH"]                         # the two status columns after the CSV columns
-STATUS_WIDTHS = [6, 8]                                  # "* down", "* failed"
+# The columns after the CSV columns: (label, width, kind, numeric).
+#   ping -> up / down / wait      rtt -> round-trip time in ms      ssh -> ok / failed
+# A numeric column shows the plain number and sorts worst (slowest) first, like the
+# state columns sort problems first.
+STATUS_COLUMNS = [("Ping", 6, "ping", False), ("ms", 6, "rtt", True), ("SSH", 8, "ssh", False)]
+STATUS_KINDS = [kind for _, _, kind, _ in STATUS_COLUMNS]
+STATE_KINDS = [kind for _, _, kind, numeric in STATUS_COLUMNS if not numeric]   # saved as words
 CHECKED_STATES = (PING_UP, PING_DOWN, SSH_OK, SSH_FAILED)          # results worth keeping
 STATUS_RANK = {PING_DOWN: 0, SSH_FAILED: 0, PING_UP: 2, SSH_OK: 2, WAIT: 3}
 STATUS_STYLE = {PING_UP: "up", SSH_OK: "up", PING_DOWN: "down", SSH_FAILED: "down", WAIT: "wait"}
+
+# ---------------------------------------------------------------------------
+# How long TRee-Li keeps the password you typed.
+#
+# THIS IS THE ONE NUMBER TO CHANGE if the team wants it longer or shorter.  It is the
+# default for `password_lifetime` in tree-li.conf, so a single site can still override
+# it without touching the code.
+#
+#   600 = 10 hours  (one long working day: never expires while you work, always has
+#                    expired by the next morning)
+#    60 = 1 hour    0 = never forget it, keep it until TRee-Li exits
+#
+# It is measured from the moment you TYPED the password, not from your last keypress -
+# so touching the window cannot keep it alive for days.
+#
+# What expiry does and does NOT do:
+#   does      - forget the password inside TRee-Li, so the next ssh asks again
+#   does NOT  - touch anything you are connected to.  A switch session you are sitting
+#               in keeps running, and tmux panes keep running and stay logged in.  The
+#               password is only deleted from TRee-Li, never from your workspace.
+# ---------------------------------------------------------------------------
+PASSWORD_LIFETIME_MINUTES = 600
+
+# Bracketed paste: the terminal wraps pasted text in ESC[200~ ... ESC[201~, so a pasted
+# newline is text and not Enter (which would have run ssh on whatever row was selected).
+PASTE_ON, PASTE_OFF = b"\033[?2004h", b"\033[?2004l"
+PASTE = {"text": ""}                  # the last pasted block, read by read_key's callers
+MAX_PASTE = 512
+
+# "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"  (ping runs with LC_ALL=C)
+RTT_RE = re.compile(r"\btime[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
 
 # fork() while batch-ping threads run raises a DeprecationWarning on Python 3.12+.
 # The child execs immediately, so it is safe; the warning would only garble the screen.
@@ -80,6 +116,7 @@ DEFAULTS = {
     "state_dir": "",
     "ping_rate": "20",
     "ping_timeout": "1",
+    "password_lifetime": str(PASSWORD_LIFETIME_MINUTES),
     "charset": "auto",
     "mouse": "yes",
     "tmux": "yes",
@@ -88,7 +125,7 @@ DEFAULTS = {
 
 # Options of older versions: accepted and ignored, so an old tree-li.conf keeps working.
 OBSOLETE = ("trace_command", "delimiter", "host_column", "name_column", "ping_workers", "ssh_port",
-            "ssh_check_timeout")
+            "ssh_check_timeout", "password_timeout")
 
 
 class ConfigError(Exception):
@@ -208,6 +245,7 @@ def load_config(args):
     cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "tree-li")))
     cfg.ping_rate = parse_int(raw["ping_rate"], "ping_rate", 1, 100)
     cfg.ping_timeout = parse_int(raw["ping_timeout"], "ping_timeout", 1, 30)
+    cfg.password_lifetime = parse_int(raw["password_lifetime"], "password_lifetime", 0, 1440)
     charset = "ascii" if args.ascii else (raw["charset"] or "auto").lower()
     if charset not in ("auto", "unicode", "ascii"):
         raise ConfigError("charset: use auto, unicode or ascii")
@@ -376,19 +414,37 @@ def data_issues(devices, lines, issues=()):
     return out
 
 
-def export_csv(path, devices, headers, delimiter, status, checked):
-    """Write devices (all CSV columns + ping/SSH result and time) to a new file, mode 0600."""
+def free_path(path, limit=100):
+    """path, or path with -2, -3 ... in front of the extension when it exists already,
+    so two exports in the same second do not fail on each other."""
+    base, ext = os.path.splitext(path)
+    for n in range(1, limit):
+        candidate = path if n == 1 else "%s-%d%s" % (base, n, ext)
+        if not os.path.exists(candidate):
+            return candidate
+    raise OSError(errno.EEXIST, "too many files named like %s" % os.path.basename(path))
+
+
+def export_csv(path, devices, headers, delimiter, status, checked, detail=None):
+    """Write devices (all CSV columns + ping/SSH result, time, round-trip time and the
+    reason a ssh attempt failed) to a new file, mode 0600, never over an existing one.
+    Returns the path actually written."""
+    detail = detail or {}
+
     def when(kind, host):
         stamp = checked.get((kind, host))
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else ""
+    path = free_path(path)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:     # BOM: Excel opens it right
         writer = csv.writer(f, delimiter=delimiter)
-        writer.writerow(list(headers) + ["Ping", "Ping checked", "SSH last try", "SSH tried"])
+        writer.writerow(list(headers) + ["Ping", "Ping ms", "Ping checked",
+                                         "SSH last try", "SSH reason", "SSH tried"])
         for d in devices:
             writer.writerow([d.values.get(h, "") for h in headers] + [
-                status["ping"].get(d.host, ""), when("ping", d.host),
-                status["ssh"].get(d.host, ""), when("ssh", d.host)])
+                status["ping"].get(d.host, ""), detail.get(("ping", d.host), ""), when("ping", d.host),
+                status["ssh"].get(d.host, ""), detail.get(("ssh", d.host), ""), when("ssh", d.host)])
+    return path
 
 
 def device_key(d):
@@ -450,8 +506,9 @@ def fuzzy_term(word):
 
 
 def status_term(states, value):
-    """ping:/ssh: filters.  'none' = not checked yet, otherwise the start of a state."""
-    if value == "none":
+    """ping:/ssh: filters.  'none' (and a bare 'ping:', like any other empty field:)
+    = not checked yet, otherwise the start of a state."""
+    if value in ("", "none"):
         return lambda d: d.host not in states
     return lambda d: d.host in states and states[d.host].startswith(value)
 
@@ -531,6 +588,39 @@ def default_order(view, query, favorites, recent, found=None):
     return view
 
 
+def paste_text(raw, multiline=True):
+    """Pasted text turned into something safe to put in a field.  Control characters are
+    dropped (so a pasted tab cannot mark a switch and a pasted newline cannot run ssh).
+    For the search, line breaks become spaces - all terms must match, so a pasted list
+    simply matches nothing and you see that at once.  For a password field only the
+    first line is taken."""
+    lines = [CONTROL_CHARS.sub("", line) for line in re.split(r"[\r\n]", raw or "")]
+    lines = [line for line in lines if line]
+    if not multiline:
+        return lines[0][:MAX_PASTE] if lines else ""
+    return " ".join(lines)[:MAX_PASTE]
+
+
+def marked_label(total, shown):
+    """Top bar text for marks.  ssh and batch ping act on the marked switches that are
+    in the current view, so that is the number shown - a mark hidden by the search is
+    named separately instead of being counted in silently."""
+    if total <= 0:
+        return ""
+    if shown >= total:
+        return "%d marked" % total
+    return "%d marked (+%d hidden)" % (shown, total - shown)
+
+
+def creds_expired(now, entered_at, minutes):
+    """True when the password was typed more than `minutes` ago (0 minutes = never).
+
+    Absolute, not idle: measured from when it was TYPED, so a window someone keeps
+    touching cannot hold a live credential for days.  Expiry only forgets the password
+    inside TRee-Li - sessions and tmux panes are never disturbed."""
+    return bool(minutes) and now - entered_at > minutes * 60
+
+
 class UserState(object):
     """Favourites and connection history of the current user, kept in
     ~/.local/state/tree-li - never in the shared directory."""
@@ -594,31 +684,56 @@ class UserState(object):
         return key in self.favorites
 
     def load_status(self):
-        """Saved ping / SSH results: ({"ping": {...}, "ssh": {...}}, {(kind, host): time})."""
-        status, checked = {"ping": {}, "ssh": {}}, {}
+        """Saved ping / SSH results: (states, times, details) where states is
+        {"ping": {host: word}, "ssh": {...}}, times is {(kind, host): time} and details
+        is {(kind, host): text} - the round-trip time for a ping, the reason for a
+        failed ssh.
+
+        A line is `host TAB kind TAB state TAB time` with an optional 5th detail field.
+        Both lengths are accepted on purpose: a TRee-Li without the detail field keeps
+        reading every line that has none, instead of dropping the whole file."""
+        status = dict((kind, {}) for kind in STATE_KINDS)
+        checked, detail = {}, {}
         for line in self._read("status"):
             parts = line.rstrip("\n").split("\t")
-            if len(parts) == 4 and parts[1] in status and parts[2] in CHECKED_STATES:
-                host, kind, state, stamp = parts
+            if len(parts) in (4, 5) and parts[1] in status and parts[2] in CHECKED_STATES:
+                host, kind, state, stamp = parts[:4]
                 try:
                     stamp = float(stamp)
                 except ValueError:
                     continue
                 if stamp >= checked.get((kind, host), 0):
                     status[kind][host], checked[(kind, host)] = state, stamp
-        return status, checked
+                    text = parts[4].strip() if len(parts) == 5 else ""
+                    detail[(kind, host)] = text
+                    if not text:
+                        detail.pop((kind, host), None)
+        return status, checked, detail
 
-    def save_status(self, status, checked):
+    def save_status(self, status, checked, detail=None):
         """Merge our results into the saved ones (newest wins, another TRee-Li may
         have checked other switches meanwhile) and write them back."""
-        saved, saved_checked = self.load_status()
+        saved, saved_checked, saved_detail = self.load_status()
+        detail = detail or {}
         for kind, states in status.items():
-            for host, state in states.items():
+            # list(): a batch ping still restoring cancelled hosts deletes keys from
+            # this very dict from its worker threads - iterating it live would raise
+            # "dictionary changed size during iteration" over the curses screen.
+            for host, state in list(states.items()):
                 stamp = checked.get((kind, host), 0)
                 if state in CHECKED_STATES and stamp >= saved_checked.get((kind, host), 0):
                     saved[kind][host], saved_checked[(kind, host)] = state, stamp
-        self._write("status", ["%s\t%s\t%s\t%d" % (host, kind, state, saved_checked.get((kind, host), 0))
-                               for kind in ("ping", "ssh") for host, state in sorted(saved[kind].items())])
+                    text = clean(str(detail.get((kind, host), "")))
+                    saved_detail[(kind, host)] = text
+                    if not text:
+                        saved_detail.pop((kind, host), None)
+        lines = []
+        for kind in STATE_KINDS:
+            for host, state in sorted(saved[kind].items()):
+                row = [host, kind, state, "%d" % saved_checked.get((kind, host), 0)]
+                text = saved_detail.get((kind, host), "")
+                lines.append("\t".join(row + [text] if text else row))   # 4 fields when empty
+        self._write("status", lines)
 
     def touch(self, key):
         self.load()
@@ -626,6 +741,28 @@ class UserState(object):
         newest = sorted(self.recent.items(), key=lambda item: item[1], reverse=True)[:self.MAX_RECENT]
         self.recent = dict(newest)
         self._write("recent", ["%d\t%s" % (stamp, k) for k, stamp in reversed(newest)])
+
+    # A tmux pane cannot tell TRee-Li anything over the socket (it is closed once the
+    # panes have their login), so a wrong password is reported through this file -
+    # the same way results are.  TRee-Li then wipes the password it holds, instead of
+    # spending it on switch after switch (a central TACACS+/RADIUS account would lock).
+    def note_auth_failure(self, host):
+        stamp, _ = self.load_auth_failure()
+        if time.time() >= stamp:
+            # Sub-second precision on purpose: a pane can fail within the same second as
+            # the password was entered, and a whole-second stamp would then look older
+            # than the password it belongs to - so the wipe would be skipped.
+            self._write("authfail", ["%.3f\t%s" % (time.time(), host)])
+
+    def load_auth_failure(self):
+        """(time, host) of the last login failure reported by a pane, or (0, "")."""
+        for line in self._read("authfail"):
+            stamp, _, host = line.rstrip("\n").partition("\t")
+            try:
+                return float(stamp), host
+            except ValueError:
+                pass
+        return 0.0, ""
 
 
 def natural_key(text):
@@ -649,16 +786,21 @@ def next_sort(sort_col, sort_desc, col):
 
 
 def sort_devices(devices, col, desc, status=()):
-    """col indexes the visible columns, then the status columns (status = [ping, ssh]
-    state dicts; problems sort first).  Empty values always go last."""
+    """col indexes the visible columns, then the status columns (status holds one dict
+    per STATUS_COLUMNS entry).  Problems sort first, and for the numeric ms column that
+    means slowest first.  Empty values always go last."""
     if col is None or not devices:
         return list(devices)
     if col >= len(devices[0].cells):
-        states = status[col - len(devices[0].cells)]
+        index = col - len(devices[0].cells)
+        states = status[index]
 
         def value(d):
             return states.get(d.host, "")
-        key = lambda d: STATUS_RANK.get(value(d), 9)
+        if STATUS_COLUMNS[index][3]:               # ms: ascending = slowest first
+            key = lambda d: -(value(d) or 0)
+        else:
+            key = lambda d: STATUS_RANK.get(value(d), 9)
     else:
         def value(d):
             return d.cells[col]
@@ -692,22 +834,59 @@ def ping_argv(host, count, timeout):
 
 
 def ping_once(host, timeout):
+    """One ping.  Returns (answered, round-trip time in ms or None).
+
+    LC_ALL=C because the reply line is parsed: on a German server the translated output
+    broke the old " bytes from " test and every switch showed "down" (D17)."""
     try:
-        return subprocess.call(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=timeout + 5) == 0
+        proc = subprocess.run(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=timeout + 5, env=dict(os.environ, LC_ALL="C"))
     except (OSError, subprocess.SubprocessError):
-        return False
+        return False, None
+    return proc.returncode == 0, parse_rtt(proc.stdout.decode("utf-8", "replace"))
+
+
+def parse_rtt(text):
+    """Round-trip time in ms from ping's output, or None.  One packet is one number:
+    it is not packet loss and not jitter, and the help page says so."""
+    m = RTT_RE.search(text or "")
+    try:
+        return float(m.group(1)) if m else None
+    except (ValueError, AttributeError):
+        return None
+
+
+def parse_float(text):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_rtt(ms):
+    """Short enough for a 6-wide column: 0.84 / 12.4 / 180 / 1204."""
+    if ms is None:
+        return ""
+    if ms < 10:
+        return "%.2f" % ms
+    if ms < 100:
+        return "%.1f" % ms
+    return "%.0f" % ms
 
 
 class BatchPing(object):
     """Pings many hosts, quietly: at most cfg.ping_rate pings are started per second."""
 
-    def __init__(self, hosts, cfg, status, checked):
+    def __init__(self, hosts, cfg, status, checked, rtt=None):
         self.cfg, self.states, self.checked = cfg, status["ping"], checked
+        self.rtt = status.get("rtt") if rtt is None else rtt      # host -> ms of the last reply
+        if self.rtt is None:
+            self.rtt = {}
         self.hosts = hosts
         self.done = 0
         self.counts = {}
+        self.times = []                          # the ms values THIS batch measured
         self.cancelled = self.reported = False
         self.previous = {}                       # results from before, restored on cancel
         self._next = 0
@@ -740,10 +919,16 @@ class BatchPing(object):
                 with self._lock:
                     self._restore(host)
                 return
-            result = PING_UP if ping_once(host, cfg.ping_timeout) else PING_DOWN
+            answered, ms = ping_once(host, cfg.ping_timeout)
+            result = PING_UP if answered else PING_DOWN
             with self._lock:
                 self.states[host] = result
                 self.checked[("ping", host)] = time.time()
+                if ms is None:
+                    self.rtt.pop(host, None)         # no reply: no stale time left behind
+                else:
+                    self.rtt[host] = ms
+                    self.times.append(ms)
                 self.counts[result] = self.counts.get(result, 0) + 1
                 self.done += 1
 
@@ -756,7 +941,10 @@ class BatchPing(object):
         return 100 * self.done // max(1, len(self.hosts))
 
     def summary(self):
-        return "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
+        text = "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
+        if self.times:
+            text += ", %s-%s ms" % (format_rtt(min(self.times)), format_rtt(max(self.times)))
+        return text
 
     def _restore(self, host):
         if self.states.get(host) == WAIT:
@@ -1158,6 +1346,23 @@ def write_debug_report(cfg, name, host, argv, password, result):
         return "cannot write %s: %s" % (path, e.strerror or e)
 
 
+def ssh_failure_reason(result):
+    """Why a ssh attempt failed, short enough for a column and useful in a report:
+    "Connection timed out" is a different ticket from "Permission denied", which is a
+    different ticket from "no matching key exchange method"."""
+    if result.hostkey_changed:
+        return "host key changed - not connected"
+    if result.auth_failed:
+        return "login refused (wrong password?)"
+    line = clean(result.last_line)
+    m = SSH_FAILURE.search(line)
+    if m:
+        return "%s (exit %s)" % (line[max(0, m.start() - 40):][:120].strip(), result.exit_code)
+    if line:
+        return "%s (exit %s)" % (line[:120], result.exit_code)
+    return "exit code %s" % result.exit_code
+
+
 def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
     """One ssh connection outside curses - used by the main screen and by tmux panes.
     Connects (typing the password once), offers to replace a changed host key, and waits
@@ -1226,6 +1431,7 @@ def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
 MAX_PANES = 9
 SESSION_PREFIX = "tree-li-"
 TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
+BIND_GRACE = 2.0                         # seconds a pane may be faster than tmux's pane-pid report
 
 
 def tmux_run(*args, **kw):
@@ -1368,6 +1574,17 @@ class Handover(object):
             if time.time() - entry["created"] > TICKET_LIFETIME:
                 return "ERR ticket expired"
             expected, host = entry["pid"], entry["host"]
+        # tmux reports the pane's pid only after it has started the process, so a very
+        # fast pane can ask before bind() ran.  Wait for the binding instead of refusing
+        # it - an unbound ticket is never answered, it only stops being a race.
+        deadline = time.time() + BIND_GRACE
+        while expected is None and time.time() < deadline:
+            time.sleep(0.02)
+            with self.lock:
+                entry = self.tickets.get(ticket)
+                if entry is None:
+                    return "ERR unknown ticket"
+                expected = entry["pid"]
         # Looking up a parent pid runs `ps` on macOS, so it happens outside the lock -
         # otherwise one slow lookup would hold up every other pane.
         if expected not in (pid, parent_pid(pid)):
@@ -1450,16 +1667,26 @@ def pane_main(cfg, socket_path, ticket, host, name):
             "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
     result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
     password = None
-    if result.auth_failed:
-        terminal_wait_key(note("Login failed on %s - wrong password?" % name,
-                               "Press any key to close this pane ..."))
-    state = SSH_OK if not (result.failed or result.hostkey_changed) else SSH_FAILED
-    # The status file is shared and merges by time, so the pane records its own result;
-    # TRee-Li picks it up when it comes back, however long this session ran.
+    failed = result.failed or result.hostkey_changed
+    state = SSH_FAILED if failed else SSH_OK
+    # The status file is shared and merges by time, so the pane records its own result
+    # AND why it failed; TRee-Li picks both up when it comes back, however long this ran.
     user_state = UserState(cfg.state_dir)
-    user_state.save_status({"ping": {}, "ssh": {host: state}}, {("ssh", host): time.time()})
+    user_state.save_status({"ping": {}, "ssh": {host: state}}, {("ssh", host): time.time()},
+                           {("ssh", host): ssh_failure_reason(result) if failed else ""})
     if state == SSH_OK:
         user_state.touch(name or host)
+    if result.auth_failed:
+        # Tell TRee-Li too, so it drops the password instead of spending it on the
+        # next switch as well - the socket is already closed by now.
+        user_state.note_auth_failure(host)
+        terminal_wait_key(note("Login failed on %s - wrong password?" % name,
+                               "TRee-Li will ask for the password again.",
+                               "Press any key to close this pane ..."))
+    if result.prompt_missed:
+        terminal_wait_key(note("No password prompt recognised on %s - you had to type it." % name,
+                               "Run TRee-Li with --debug and connect again to see what the switch sent.",
+                               "Press any key to close this pane ..."))
     return 0
 
 
@@ -1479,6 +1706,8 @@ def pane_command(cfg, socket_path, ticket, host, name):
         argv += ["--debug"]
     if cfg.session_log:
         argv += ["--log"]
+    if cfg.charset_setting == "ascii":
+        argv += ["--ascii"]              # --ascii was a flag, not a config value: pass it on
     argv += ["--pane", socket_path, ticket, host, name]
     return " ".join(shlex.quote(a) for a in argv)
 
@@ -1584,6 +1813,17 @@ def terminal_size():
     return None
 
 
+def bracketed_paste(on):
+    """Ask the terminal to wrap pasted text in ESC[200~ ... ESC[201~.  A terminal that
+    does not know the mode ignores it and simply never sends the markers, so behaviour
+    is unchanged there - this can never make anything worse.  Must be switched off
+    before the terminal is handed to ssh or tmux, and on again afterwards."""
+    try:
+        os.write(sys.stdout.fileno(), PASTE_ON if on else PASTE_OFF)
+    except OSError:
+        pass
+
+
 def terminal_wait_key(prompt):
     """Outside of curses: print prompt, return one key press (bytes)."""
     os.write(sys.stdout.fileno(), prompt.encode("utf-8", "replace"))
@@ -1630,6 +1870,7 @@ ESC_SEQUENCES = {
     "[17~": "F6", "[18~": "F7", "[19~": "F8", "[20~": "F9", "[21~": "F10",
     "[23~": "F11", "[24~": "F12",
     "[[A": "F1", "[[B": "F2", "[[C": "F3", "[[D": "F4", "[[E": "F5",
+    "[200~": "PASTE_START", "[201~": "PASTE_END",
 }
 
 
@@ -1644,6 +1885,59 @@ def parse_escape_sequence(seq):
         num, final = m.groups()
         return ESC_SEQUENCES.get("[%s~" % num if final == "~" else "[" + final)
     return None
+
+
+def read_escape(win, timeout_ms):
+    """Read the characters after an ESC and name the key ('' -> 'ESC', unknown -> None)."""
+    seq = ""
+    win.timeout(100)
+    try:
+        while len(seq) < 12:
+            try:
+                c = win.get_wch()
+            except curses.error:
+                break
+            if isinstance(c, int) or (not seq and c not in "[O"):
+                # not an escape sequence: a plain ESC, then another key - keep that key
+                try:
+                    if isinstance(c, int):
+                        curses.ungetch(c)            # a key code such as KEY_UP
+                    else:
+                        curses.unget_wch(c)
+                except (curses.error, OverflowError, ValueError):
+                    pass
+                break
+            seq += c
+            if len(seq) >= 2 and (c.isalpha() or c == "~") and seq != "[[":
+                break
+    finally:
+        win.timeout(timeout_ms)
+    return parse_escape_sequence(seq)
+
+
+def read_paste(win, timeout_ms):
+    """Collect a bracketed paste up to its ESC[201~ end marker and return it as text.
+
+    Everything in between is text, never keys: this is what stops a pasted newline from
+    running ssh on whatever switch happened to be selected."""
+    out = []
+    win.timeout(200)                     # the terminal sends a paste in one burst
+    try:
+        while len("".join(out)) < MAX_PASTE * 2:
+            try:
+                c = win.get_wch()
+            except curses.error:
+                break                    # terminal stopped mid-paste: take what we have
+            if isinstance(c, int):
+                continue
+            if c == "\x1b":
+                if read_escape(win, 200) == "PASTE_END":
+                    break
+                continue                 # any other sequence inside a paste is dropped
+            out.append(c)
+    finally:
+        win.timeout(timeout_ms)
+    return "".join(out)
 
 
 def read_key(win, timeout_ms):
@@ -1663,30 +1957,11 @@ def read_key(win, timeout_ms):
                 return None
         return CURSES_KEYS.get(ch)
     if ch == "\x1b":
-        seq = ""
-        win.timeout(100)
-        try:
-            while len(seq) < 12:
-                try:
-                    c = win.get_wch()
-                except curses.error:
-                    break
-                if isinstance(c, int) or (not seq and c not in "[O"):
-                    # not an escape sequence: a plain ESC, then another key - keep that key
-                    try:
-                        if isinstance(c, int):
-                            curses.ungetch(c)            # a key code such as KEY_UP
-                        else:
-                            curses.unget_wch(c)
-                    except (curses.error, OverflowError, ValueError):
-                        pass
-                    break
-                seq += c
-                if len(seq) >= 2 and (c.isalpha() or c == "~") and seq != "[[":
-                    break
-        finally:
-            win.timeout(timeout_ms)
-        return parse_escape_sequence(seq)
+        name = read_escape(win, timeout_ms)
+        if name == "PASTE_START":
+            PASTE["text"] = read_paste(win, timeout_ms)
+            return "PASTE"
+        return name
     if ch in ("\n", "\r"):
         return "ENTER"
     if ch in ("\x7f", "\x08"):
@@ -1899,26 +2174,35 @@ class App(object):
         self.sort_col, self.sort_desc = None, False
         self.ping = {}                 # host -> PING_UP / PING_DOWN / WAIT
         self.ssh = {}                  # host -> SSH_OK / SSH_FAILED: your last real ssh attempt
-        self.ssh_reason = {}           # host -> why the last ssh attempt failed (this session)
+        self.rtt = {}                  # host -> ms of the last ping reply
         self.checked = {}              # (kind, host) -> time of that ping / SSH result
+        self.detail = {}               # (kind, host) -> ms for a ping, the reason for a failed ssh
         self.headers, self.delimiter, self.issues = [], ";", []
         self.spans = {"tabs": [], "head": [], "y_tabs": -1, "y_head": -1, "y_body": -1}   # for mouse clicks
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
         self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
         self.my_sessions = []          # tmux sessions this TRee-Li started
         self.sessions = []             # ... the ones still running (checked every few seconds)
+        self.sessions_foreign = False  # ... and whether those belong to another TRee-Li window
         self._sessions_checked = 0.0
         self.batch = None
         self.creds = None              # (user, password or None) - memory only
+        self.creds_at = 0.0            # when it was typed; forgotten PASSWORD_LIFETIME later
+        self.authfail_seen = 0.0       # last login failure a tmux pane reported
         self.state = UserState(cfg.state_dir)
         self.fields = {}               # lower-case header / label -> CSV header (for field:value)
         self.last_user = cfg.user
         self.msg, self.msg_error, self.msg_until = "", False, 0
         self.load_error = None
         self.set_cursor(False)
-        saved, self.checked = self.state.load_status()          # results of the last check
+        saved, self.checked, self.detail = self.state.load_status()      # the last check's results
         self.ping, self.ssh = saved["ping"], saved["ssh"]
+        for host in self.ping:                                  # the saved round-trip times
+            ms = parse_float(self.detail.get(("ping", host)))
+            if ms is not None:
+                self.rtt[host] = ms
         self.mouse(True)
+        bracketed_paste(True)
         self.load()
         if self.state.error:
             self.message(self.state.error, error=True, seconds=15)
@@ -1944,10 +2228,12 @@ class App(object):
         return self.view[self.cursor] if 0 <= self.cursor < len(self.view) else None
 
     def ncols(self):
-        return len(self.columns) + len(STATUS_LABELS)
+        return len(self.columns) + len(STATUS_COLUMNS)
 
     def status(self):
-        return [self.ping, self.ssh]
+        """The status columns' data, in STATUS_COLUMNS order."""
+        by_kind = {"ping": self.ping, "rtt": self.rtt, "ssh": self.ssh}
+        return [by_kind[kind] for kind in STATUS_KINDS]
 
     def marked_devices(self):
         """The marked switches, in the order they appear on screen."""
@@ -1966,24 +2252,63 @@ class App(object):
         except curses.error:
             pass
 
-    def set_status(self, kind, host, state):
+    def set_status(self, kind, host, state, detail=None):
+        """One result.  detail is the round-trip time for a ping and the reason for a
+        failed ssh; it is saved with the result and shows up in details and the export."""
         {"ping": self.ping, "ssh": self.ssh}[kind][host] = state
         self.checked[(kind, host)] = time.time()
+        if detail:
+            self.detail[(kind, host)] = str(detail)
+        else:
+            self.detail.pop((kind, host), None)
+
+    def states(self):
+        return {"ping": self.ping, "ssh": self.ssh}
 
     def save_status(self):
-        self.state.save_status({"ping": self.ping, "ssh": self.ssh}, self.checked)
+        detail = dict(self.detail)
+        for host, ms in list(self.rtt.items()):        # the ms travels as the ping's detail
+            detail[("ping", host)] = format_rtt(ms)
+        self.state.save_status(self.states(), self.checked, detail)
         if self.state.error:
             self.message(self.state.error, error=True, seconds=10)
 
+    def forget_creds(self, why):
+        self.creds = None
+        self.message("Password forgotten (%s) - you will be asked again." % why, seconds=15)
+
+    def check_pane_auth_failure(self):
+        """A tmux pane could not log in: drop the password instead of spending it on
+        switch after switch (a central TACACS+/RADIUS account would lock out)."""
+        stamp, host = self.state.load_auth_failure()
+        if stamp <= self.authfail_seen:
+            return
+        self.authfail_seen = stamp
+        if self.creds and stamp >= self.creds_at:      # it was THIS password that failed
+            self.forget_creds("a tmux pane could not log in to %s" % host)
+
     def reload_status(self):
         """Pick up results another TRee-Li - or one of our tmux panes - has written."""
-        saved, checked = self.state.load_status()
+        saved, checked, detail = self.state.load_status()
+        mine_by_kind = self.states()
         for kind, states in saved.items():
-            mine = {"ping": self.ping, "ssh": self.ssh}[kind]
+            mine = mine_by_kind[kind]
             for host, state in states.items():
                 if checked.get((kind, host), 0) >= self.checked.get((kind, host), 0):
                     mine[host], self.checked[(kind, host)] = state, checked[(kind, host)]
+                    text = detail.get((kind, host), "")
+                    if text:
+                        self.detail[(kind, host)] = text
+                    else:
+                        self.detail.pop((kind, host), None)
+                    if kind == "ping":
+                        ms = parse_float(text)       # a newer result with no ms clears the old one
+                        if ms is None:
+                            self.rtt.pop(host, None)
+                        else:
+                            self.rtt[host] = ms
         self.state.load()                   # favourites and the recent list too
+        self.check_pane_auth_failure()
         self.status_changed(force=True)
 
     def load(self):
@@ -2012,7 +2337,7 @@ class App(object):
                              % (len(self.issues), "" if len(self.issues) == 1 else "s"), error=True, seconds=15)
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.devices]))
                        for i, (_, label) in enumerate(self.columns)]
-        self.widths += STATUS_WIDTHS
+        self.widths += [width for _, width, _, _ in STATUS_COLUMNS]
         if keep is not None:
             keep = next((d for d in self.devices if d.host == keep.host and d.name == keep.name), None)
         self.apply_sort(keep)
@@ -2062,6 +2387,9 @@ class App(object):
         if not self.my_sessions or time.time() - self._sessions_checked < 3:
             return
         self._sessions_checked = time.time()
+        # Do not wait for the session to end: a pane that could not log in has already
+        # said so, and the password it used must go now, not in an hour.
+        self.check_pane_auth_failure()
         alive = set(tree_li_sessions())
         ended = [s for s in self.my_sessions if s not in alive]
         self.my_sessions = [s for s in self.my_sessions if s in alive]
@@ -2148,7 +2476,8 @@ class App(object):
         if self.creds:
             right = "%s %s %s" % (self.creds[0], sym["sep"], right)
         if self.marked:
-            right = "%d marked %s %s" % (len(self.marked), sym["sep"], right)
+            right = "%s %s %s" % (marked_label(len(self.marked), len(self.marked_devices())),
+                                  sym["sep"], right)
         sessions = self.sessions
         if sessions:
             right = "%d tmux %s %s" % (len(sessions), sym["sep"], right)
@@ -2208,7 +2537,7 @@ class App(object):
         x0 = self.TABLE_X
         widths = fit_widths(self.widths, w - x0 - 3 - 2 * (len(self.widths) - 1))
         table_w = sum(widths) + 2 * (len(widths) - 1)
-        labels = [label for _, label in self.columns] + STATUS_LABELS
+        labels = [label for _, label in self.columns] + [label for label, _, _, _ in STATUS_COLUMNS]
         x = x0
         for i, label in enumerate(labels):
             label = label.upper()
@@ -2265,13 +2594,17 @@ class App(object):
                     if pos < visible:
                         put(scr, y, x + pos, value[pos], th.match_sel if sel else th.match)
                 x += widths[i] + 2
-            for k, states in enumerate(self.status()):
-                state = states.get(d.host)
-                if state:
-                    style = STATUS_STYLE.get(state, "wait") + ("_sel" if sel else "")
-                    put(scr, y, x, fit("%s %s" % (sym["dot"], state), widths[len(d.cells) + k]),
-                        getattr(th, style))
-                x += widths[len(d.cells) + k] + 2
+            for k, values in enumerate(self.status()):
+                value = values.get(d.host)
+                width = widths[len(d.cells) + k]
+                if value is not None and value != "":
+                    if STATUS_COLUMNS[k][3]:               # numeric: the plain number, no dot
+                        put(scr, y, x, fit(format_rtt(value), width),
+                            th.sel if sel else th.text)
+                    else:
+                        style = STATUS_STYLE.get(value, "wait") + ("_sel" if sel else "")
+                        put(scr, y, x, fit("%s %s" % (sym["dot"], value), width), getattr(th, style))
+                x += width + 2
 
         # scrollbar when the list is longer than the screen
         if len(self.view) > body_h:
@@ -2287,26 +2620,54 @@ class App(object):
     # -- main loop ----------------------------------------------------------
 
     def run(self):
-        while True:
-            self.check_sessions()
-            if self.batch and not self.batch.running and not self.batch.reported:
-                self.batch.reported = True
-                if not self.batch.cancelled:
-                    self.message("Batch ping done: %s" % self.batch.summary(), seconds=20)
-                self.save_status()
-                self.status_changed()
-            self.draw()
-            key = read_key(self.scr, 250)
-            if key is None:
-                continue
-            if self.handle(key) is False:
-                if self.batch:
-                    self.batch.cancel()
-                self.mouse(False)
-                return
+        try:
+            while True:
+                self.check_sessions()
+                self.check_password_lifetime()
+                if self.batch and not self.batch.running and not self.batch.reported:
+                    self.batch.reported = True
+                    if not self.batch.cancelled:
+                        self.message("Batch ping done: %s" % self.batch.summary(), seconds=20)
+                    self.save_status()
+                    self.status_changed()
+                self.draw()
+                key = read_key(self.scr, 250)
+                if key is None:
+                    continue
+                if self.handle(key) is False:
+                    break
+        except KeyboardInterrupt:
+            pass                                      # Ctrl-C: still save what we have
+        if self.batch:
+            self.batch.cancel()
+            self.save_status()                        # finished pings are not thrown away
+        self.mouse(False)
+
+    def check_password_lifetime(self):
+        """Forget the password password_lifetime minutes after it was typed.
+
+        This only deletes it from TRee-Li.  Nothing you are connected to is touched: a
+        switch session you are sitting in is not interrupted (this check only runs while
+        TRee-Li has the screen), and tmux panes keep running and stay logged in."""
+        if self.creds and creds_expired(time.time(), self.creds_at, self.cfg.password_lifetime):
+            hours = self.cfg.password_lifetime / 60.0
+            self.forget_creds("typed %s ago" % ("%.0f h" % hours if hours >= 1
+                                                else "%d min" % self.cfg.password_lifetime))
+
+    def set_creds(self, creds):
+        self.creds = creds
+        self.creds_at = time.time()
 
     def handle(self, key):
         n = len(self.view)
+        if key == "PASTE":
+            # Pasted text is text: no Enter runs a command, no Tab marks a switch.
+            text = paste_text(PASTE["text"])
+            PASTE["text"] = ""
+            if text:
+                self.query += text
+                self.refilter()
+            return None
         if key == "RESIZE":
             self.sync_size()
         elif key == "UP":
@@ -2429,8 +2790,11 @@ class App(object):
             return
         path = os.path.join(self.cfg.export_dir, "tree-li-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
         try:
-            export_csv(path, self.view, self.headers, self.delimiter,
-                       {"ping": self.ping, "ssh": self.ssh}, self.checked)
+            detail = dict(self.detail)
+            for host, ms in list(self.rtt.items()):
+                detail[("ping", host)] = format_rtt(ms)
+            path = export_csv(path, self.view, self.headers, self.delimiter,
+                              self.states(), self.checked, detail)
         except OSError as e:
             self.message("Export failed: %s" % (e.strerror or e), error=True, seconds=10)
             return
@@ -2450,22 +2814,32 @@ class App(object):
             return None
         if command == "details":
             return self.show_details(dev)
+        if command == "ssh":
+            # Several marked switches go to tmux panes; only then does the selected
+            # row matter, so a bad IP on it must not block the marked ones.
+            marked = [d for d in self.marked_devices() if valid_host(d.host)]
+            if len(marked) > 1:
+                return self.connect_many(marked)
         if not valid_host(dev.host):
             self.message("'%s' has no usable IP/host ('%s')" % (dev.name, dev.host), error=True)
             return None
         if command == "ssh":
-            marked = [d for d in self.marked_devices() if valid_host(d.host)]
-            self.connect_many(marked) if len(marked) > 1 else self.connect(dev)
+            self.connect(dev)
         elif command == "ping":
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
                                 env=dict(os.environ, LC_ALL="C"))      # predictable English output
             self.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+            ms = parse_rtt("\n".join(stream.snapshot()))
             if stream.done:
                 self.set_status("ping", dev.host, PING_UP if stream.returncode == 0 else PING_DOWN)
             elif any(" bytes from " in line for line in stream.snapshot()):
                 self.set_status("ping", dev.host, PING_UP)   # closed early, but a reply came back
             else:
                 return None
+            if ms is None:
+                self.rtt.pop(dev.host, None)
+            else:
+                self.rtt[dev.host] = ms
             self.save_status()
             self.status_changed(dev)
         return None
@@ -2487,7 +2861,7 @@ class App(object):
         if not hosts:
             self.message("No switches to ping", error=True)
             return
-        self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping}, self.checked)
+        self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping, "rtt": self.rtt}, self.checked)
         self.message("Batch ping started: %d %sswitches, about %d s"
                      % (len(hosts), "marked " if self.marked_devices() else "", len(hosts) // self.cfg.ping_rate + 1))
 
@@ -2576,11 +2950,21 @@ class App(object):
             stamp = self.checked.get((kind, dev.host))
             text = states.get(dev.host, "not checked")
             return text + ("   (%s)" % time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else "")
+        ms = self.rtt.get(dev.host)
+        reason = self.detail.get(("ssh", dev.host), "")
         values = list(dev.values.items()) + [
             ("Ping", result("ping", self.ping)),
-            ("SSH (last try)", result("ssh", self.ssh) + (
-                "   %s" % self.ssh_reason[dev.host] if self.ssh.get(dev.host) == SSH_FAILED
-                and dev.host in self.ssh_reason else "")),
+            ("Ping time", "%s ms   (one packet: not loss, not jitter)" % format_rtt(ms)
+                          if ms is not None else "not measured"),
+            ("SSH (last try)", result("ssh", self.ssh)),
+        ]
+        if reason:
+            # The reason is why this column exists, so it is wrapped onto its own lines
+            # instead of being clipped at the right edge.
+            room = max(20, self.scr.getmaxyx()[1] - 24)
+            for i, line in enumerate(textwrap.wrap(reason, room)[:4]):
+                values.append(("why it failed" if i == 0 else "", line))
+        values += [
             ("Favourite", "yes" if device_key(dev) in self.state.favorites else "no"),
             ("Last connected", time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "never"),
         ]
@@ -2708,6 +3092,13 @@ class App(object):
                     pw = ""
             elif key == "RESIZE":
                 self.sync_size()
+            elif key == "PASTE":            # first line only: a password gets no newline
+                text = paste_text(PASTE["text"], multiline=False)
+                PASTE["text"] = ""
+                if field == 0:
+                    user += text
+                else:
+                    pw += text
             elif len(key) == 1:
                 if field == 0:
                     user += key
@@ -2724,21 +3115,22 @@ class App(object):
                 if creds is None:
                     self.message("ssh cancelled")
                     return
-                self.creds = creds
+                self.set_creds(creds)
             user, password = self.creds
             result = self.run_ssh(dev, user, password)
             if result.auth_failed:
                 self.creds = None             # wipe the wrong password, ask again
                 error = "Login failed for '%s' on %s - please re-enter." % (user, dev.name)
                 continue
+            reason = ""
             if result.hostkey_changed:
-                self.ssh_reason[dev.host] = "host key changed - not connected"
+                reason = "host key changed - not connected"
                 self.message("%s: host key changed - not connected" % dev.name, error=True, seconds=15)
             elif not result.failed:
                 self.state.touch(device_key(dev))
                 self.message("Disconnected from %s" % dev.name)
             else:
-                self.ssh_reason[dev.host] = "exit code %d - %s" % (result.exit_code, result.last_line)
+                reason = ssh_failure_reason(result)
                 text = "%s: ssh exit code %d" % (dev.name, result.exit_code)
                 if result.last_line:
                     text += " - " + result.last_line
@@ -2747,8 +3139,10 @@ class App(object):
                 self.message("%s: no password prompt recognised - you had to type it yourself. "
                              "Run 'tree-li --debug' and connect again to see what the switch sent."
                              % dev.name, error=True, seconds=20)
-            # the SSH column remembers how your last real attempt went - no extra connections
-            self.set_status("ssh", dev.host, SSH_FAILED if result.failed or result.hostkey_changed else SSH_OK)
+            # the SSH column remembers how your last real attempt went - no extra connections.
+            # The reason is saved with it, so it survives a restart and reaches the export.
+            self.set_status("ssh", dev.host,
+                            SSH_FAILED if result.failed or result.hostkey_changed else SSH_OK, reason)
             self.save_status()
             self.status_changed(dev, force=True)        # is:recent, ssh: searches, status sorts
             return
@@ -2757,19 +3151,22 @@ class App(object):
         return note_text(lines, self.th.colors, self.th.sym["gt"])
 
     def live_sessions(self):
-        """Ask tmux right now - a cached list may name a session that has just ended."""
+        """Ask tmux right now - a cached list may name a session that has just ended.
+        Sets sessions_foreign when the only sessions left were started by another
+        TRee-Li window of ours, so Ctrl-K / Ctrl-T can say so before touching them."""
         if not which("tmux"):
+            self.sessions_foreign = False
             return []
         alive = set(tree_li_sessions())
         self.my_sessions = [s for s in self.my_sessions if s in alive]
         self.sessions = list(self.my_sessions)
         self._sessions_checked = time.time()
+        self.sessions_foreign = not self.my_sessions and bool(alive)
         return self.my_sessions or sorted(alive)
 
     def enter_tmux(self, session):
         """Hand the terminal to tmux and come back.  Returns an error text or ''."""
-        self.mouse(False)
-        curses.endwin()
+        self.leave_curses()
         try:
             if os.environ.get("TMUX"):      # tmux refuses to nest: switch instead of attach
                 try:
@@ -2794,6 +3191,12 @@ class App(object):
                          seconds=10)
             return
         session = sessions[-1]              # the newest one
+        if self.sessions_foreign and not self.confirm(
+                "Go into another window's session",
+                "%s was not started by this TRee-Li window. Go into it anyway?" % session,
+                detail=["  another TRee-Li of yours is probably using it"]):
+            self.message("Nothing opened")
+            return
         error = self.enter_tmux(session)
         if error:
             self.message("Could not go back to %s: %s" % (session, error), error=True, seconds=15)
@@ -2813,10 +3216,12 @@ class App(object):
         if not sessions:
             self.message("No open switch session", seconds=8)
             return
+        detail = ["  " + s for s in sessions]
+        if self.sessions_foreign:           # not ours: say so before logging anyone out
+            detail += ["", "  NOT started by this TRee-Li window - another", "  TRee-Li of yours may be using them."]
         if not self.confirm("Close switch sessions",
                             "Close %d tmux session%s and log out of every switch in them?"
-                            % (len(sessions), "" if len(sessions) == 1 else "s"),
-                            detail=["  " + s for s in sessions]):
+                            % (len(sessions), "" if len(sessions) == 1 else "s"), detail=detail):
             self.message("Nothing closed")
             return
         for session in sessions:
@@ -2828,13 +3233,11 @@ class App(object):
     def connect_many(self, devices):
         """Several switches at once: one tmux session, one pane each, one login.
         Ctrl-b d brings you back here; the sessions keep running until you log out."""
-        if not self.cfg.tmux:
-            self.message("Several switches at once needs tmux mode (tmux = yes in tree-li.conf)",
-                         error=True, seconds=10)
-            return
-        if not which("tmux"):
-            self.message("tmux is not installed - connecting to several switches needs it",
-                         error=True, seconds=10)
+        if not self.cfg.tmux or not which("tmux"):
+            self.message("%s - connecting to several switches at once needs it. "
+                         "Marks still limit batch ping; ssh connects to the selected switch."
+                         % ("tmux mode is off (tmux = yes in tree-li.conf)" if not self.cfg.tmux
+                            else "tmux is not installed"), error=True, seconds=12)
             return
         extra = len(devices) - MAX_PANES
         devices = devices[:MAX_PANES]
@@ -2843,7 +3246,7 @@ class App(object):
             if creds is None:
                 self.message("ssh cancelled")
                 return
-            self.creds = creds
+            self.set_creds(creds)
         handover = Handover(lambda: self.creds)
         try:
             session = open_panes(self.cfg, devices, handover)
@@ -2858,13 +3261,22 @@ class App(object):
         got_logins = wait_for_logins(handover)       # panes fetch immediately after they start
         handover.close()                             # the socket is not needed any more
         refused = handover.take_refusals()
+        held = self.creds is not None
         error = self.enter_tmux(session)             # also reloads what the panes wrote
         self.live_sessions()
+        # A pane may have reported a wrong password while we were in tmux, in which case
+        # forget_creds() already said so.  That is the message that matters, so it is
+        # carried into this one instead of being overwritten by it.
+        lost = held and self.creds is None
+        # The dropped password leads the line: a long message is cut off at the right
+        # edge, and this is the part the user has to act on.
+        lead = ("Password was wrong and has been dropped - you will be asked again.  %s  "
+                % self.th.sym["sep"]) if lost else ""
         if error:
-            self.message("tmux session %s started, but could not show it: %s" % (session, error),
+            self.message("%stmux session %s started, but could not show it: %s" % (lead, session, error),
                          error=True, seconds=15)
             return
-        note = "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
+        note = lead + "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
         if not got_logins:
             note += " - some panes had to ask for the password themselves"
         if extra > 0:
@@ -2872,12 +3284,17 @@ class App(object):
         if refused:
             note += " - REFUSED: %s" % "; ".join(refused[:2])
         note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in, Ctrl-K closes them" % self.th.sym["sep"]
-        self.message(note, error=bool(refused), seconds=20)
+        self.message(note, error=bool(refused or lost), seconds=20)
+
+    def leave_curses(self):
+        """Give the plain terminal to ssh or tmux: our mouse and paste modes go with it."""
+        self.mouse(False)
+        bracketed_paste(False)
+        curses.endwin()
 
     def run_ssh(self, dev, user, password):
         """One session in TRee-Li's own terminal: leave curses, connect, come back."""
-        self.mouse(False)                  # the switch session gets the plain terminal
-        curses.endwin()
+        self.leave_curses()
         try:
             return ssh_flow(self.cfg, dev.name, dev.host, user, password, self.note)
         finally:
@@ -2885,6 +3302,7 @@ class App(object):
 
     def resume_curses(self):
         self.mouse(True)
+        bracketed_paste(True)
         self.scr.keypad(True)
         curses.flushinp()
         self.sync_size()
@@ -2906,7 +3324,11 @@ def help_sections(cfg, ncols, switches):
         ("item", "Enter", "run the selected command"),
         ("item", "just type", "search - fuzzy, best matches first (see below)"),
         ("item", "Backspace  Ctrl-W  Ctrl-U", "delete a character / word / the whole search"),
-        ("item", "ESC", "clear the search, then: cancel batch ping, then: clear the sort"),
+        ("item", "paste", "pasted text goes into the search as text - a newline"),
+        ("item", "", "in it no longer runs ssh (needs a terminal that"),
+        ("item", "", "supports bracketed paste; others are unchanged)"),
+        ("item", "ESC", "step by step: clear the search, clear the marks,"),
+        ("item", "", "cancel batch ping, clear the sort"),
         ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)"),
         ("item", "Ctrl-F", "mark / unmark the switch as favourite (*)"),
         ("item", "Ctrl-E", "export the current list to CSV (%s)" % cfg.export_dir),
@@ -2928,6 +3350,12 @@ def help_sections(cfg, ncols, switches):
         ("section", "Commands"),
         ("item", "ssh", "connect - user/password are asked once and kept in memory"),
         ("item", "", "only. Log out of the switch to come back."),
+        ("item", "", "The password is forgotten %s. Sessions and tmux"
+                     % (("%.0f h after you typed it" % (cfg.password_lifetime / 60.0))
+                        if cfg.password_lifetime >= 60 else
+                        ("%d min after you typed it" % cfg.password_lifetime) if cfg.password_lifetime
+                        else "only when TRee-Li exits (password_lifetime = 0)")),
+        ("item", "", "panes you already have are never touched by that."),
         ("item", "", "With 2+ marked (Tab): one tmux session, one pane each,"),
         ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
         ("item", "", "logged in until you log out or close them."),
@@ -2939,6 +3367,9 @@ def help_sections(cfg, ncols, switches):
         ("item", "exit", "quit TRee-Li and forget the credentials"),
         ("section", "Columns"),
         ("item", "PING", "result of the last ping / batch ping"),
+        ("item", "MS", "round-trip time of that ping. One packet, so it is one"),
+        ("item", "", "number - not packet loss and not jitter. Sorting it"),
+        ("item", "", "puts the slowest switches first"),
         ("item", "SSH", "how your last real ssh attempt went - TRee-Li never"),
         ("item", "", "probes SSH on its own, so it makes no extra traffic"),
         ("section", "Several switches at once (tmux)"),
@@ -2994,6 +3425,10 @@ def check(cfg):
         ok = ok and path is not None
     print("state dir    : %s" % cfg.state_dir)
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
+    print("password     : %s" % ("forgotten %d min (%.1f h) after you type it, sessions untouched"
+                                 % (cfg.password_lifetime, cfg.password_lifetime / 60.0)
+                                 if cfg.password_lifetime
+                                 else "kept until TRee-Li exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
     return 0 if clean else 1          # 1 = warnings only, so a cron check can gate on it

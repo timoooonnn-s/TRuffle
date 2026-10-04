@@ -166,3 +166,127 @@ User feedback: "Ctrl-T is a bit buggy" and "Ctrl-b & does not close the session 
 - **A half-built session is killed** if a `split-window` fails, instead of being left behind.
 - Sessions are created with the real terminal size, not tmux's detached default of 80x24.
 - **`win_text` did not exist** in the palette and only crashed when the new confirm window opened. `TestTheme` now checks every `th.<name>` in the source, the dynamically built status styles and the MONO fallback against the palette - that class of bug must not reach a user again.
+
+## D25: Standing rules written down: dependencies and target platform (user, 2026-10-04)
+The user stated two rules that had been implicit since D2. They now live in
+[COUNCIL.md](COUNCIL.md#standing-rules) as **R1** and **R2**, so every future proposal is measured against them
+instead of re-arguing them:
+- **R1 - as few dependencies as possible.** Standard library first, then a tool already on the server, then a
+  vendored file we own, then (only with a named benefit) an external package. "Easier, more secure, or another
+  clear benefit" is the test; "nicer" is not. The cost side is concrete: on a locked-down RHEL box every
+  `pip install` is a ticket, and TRee-Li's promise is "copy one file".
+- **R2 - RHEL Linux is the target, macOS is only a test bench.** Local testing happens on macOS, so macOS
+  support is a convenience and never the yardstick. Platform-split code states both paths, Linux first; the
+  supported Pythons are the ones RHEL ships (3.8/3.9 up, RHEL 9's `python3` is 3.9); a macOS-only feature is
+  not built.
+
+## D26: Review round 5 - crash, the unreported pane login failure, honest counters (2026-10-04)
+Seven findings and six smaller observations from a full review of the `tmux-version` branch. 92 tests.
+- **Crash (*Architect*):** `UserState.save_status` walked the live ping dict while a cancelled batch ping's
+  worker threads were deleting hosts from that same dict (`BatchPing._restore`), so a single ping right after
+  an `ESC` could raise `RuntimeError: dictionary changed size during iteration` over the curses screen. Same
+  class as the D22 rate-limiter crash. Now iterates a snapshot. Reproduced deterministically and kept as a
+  threaded regression test.
+- **A tmux pane's login failure never reached TRee-Li (*Warden*).** `ideas/tmux-panes.md` step 5 promised the
+  stored password is wiped on a login failure; D23 moved results to the status file and the wipe was quietly
+  lost with the DONE protocol. So one mistyped password was spent on up to 9 panes **and then kept**, costing
+  another failed auth on the next single ssh - exactly the TACACS+/RADIUS lockout D3 exists to prevent.
+  Panes now report it through the state directory (`authfail`, 0600), TRee-Li picks it up within 3 s while the
+  sessions are still running, drops the password and says so. Sub-second timestamps: a pane can fail inside
+  the same second the password was typed, and a whole-second stamp looked *older* than the password it
+  belonged to - found by the end-to-end test, not by reading.
+- **"N marked" lied (*Operator*).** The top bar counted every mark; `ssh` and `batch ping` act only on marks
+  in the current view. Mark 3, search so one stays visible, and the bar said "3 marked" while `ssh` opened a
+  single session to the *selected* row, which need not be marked at all. The bar now shows what will be used:
+  `1 marked (+2 hidden)`.
+- **A bad IP on the selected row blocked a multi-switch ssh.** The `valid_host` gate ran before the single/
+  multi decision. The marked switches are now handled first; the selected row only has to be usable when it
+  is the one being connected to.
+- **`Ctrl-K` / `Ctrl-T` could touch another TRee-Li window's sessions (*Warden*).** The fallback to "any
+  `tree-li-*` session" stays - it is how an orphaned session is recovered - but both now say so and ask first.
+- **Idle password timeout built (*Warden*, the condition from `ideas/tmux-panes.md` risk 5).** Background tmux
+  sessions exist on this branch, so the "mandatory if" is met. `password_timeout = 15` minutes, `0` = never.
+  Idle means no keypress in TRee-Li; a switch session and a return from tmux both count as use, and tmux panes
+  running in the background deliberately do **not**.
+- **Help page and README named the wrong `ESC` chain** (the marks step was missing). D22 made the help page
+  data so this drift gets caught, but the test only checked commands - it now checks the `ESC` entry itself.
+- **Observations fixed:** a pane faster than tmux's pane-pid report is waited for instead of refused
+  (`BIND_GRACE`, still never answering an unbound ticket); `--ascii` is passed on to panes; two exports in the
+  same second no longer collide (`-2`, `-3`); `Ctrl-C` saves finished ping results instead of dropping them;
+  a bare `ping:` / `ssh:` now means "not checked", consistent with an empty `location:`; and with `tmux = no`
+  the refusal explains what marks still do (limit batch ping) instead of being a dead end.
+- **New end-to-end tests:** two marked switches really do share one login through the handover (and no pane
+  command line carries the password), and a pane that cannot log in really does make TRee-Li forget it.
+- **The dropped-password notice leads its line.** `connect_many`'s closing message used to overwrite it, and
+  once both were in one message the right-hand truncation cut off the half that mattered. Per D22's version
+  discipline, `VERSION` is now **1.2.1-tmux**.
+
+## D27: PuTTY and Tabby field-tested (user + Ruffy, 2026-10-04)
+Milestone 2's open client test is done: **Tabby** tested by the user, **PuTTY** tested and approved by Ruffy,
+the second engineer. Both fine, so the D6/D11 bets (own escape-sequence parser for PuTTY's `ESC[11~` F-keys,
+ASCII-only chrome, 8-colour fallback, the dialog drawing its own block cursor) hold up against real clients.
+Still open: the batch ping and the ssh pass over the **full ~700-switch inventory**, which needs the inventory.
+
+## D28: Password lifetime, bracketed paste, latency, failure reasons (user, 2026-10-04)
+
+### Password: 10 hours, absolute, and it never touches a session
+The 15-minute idle timeout from D26 was wrong for this team and is replaced. The user's input:
+devices are secured, no engineer uses another's machine, and the **switches themselves drop an idle
+session after 900 s** (now in [KNOWLEDGE.md](KNOWLEDGE.md) section 6). A tight timeout priced in a threat
+that does not exist here.
+- **`password_lifetime = 600` (10 hours), measured from when the password was TYPED**, not from the last
+  keypress. Idle time was the wrong clock: a window someone pokes once a morning would keep a live
+  credential alive for weeks, while an absolute lifetime always expires and costs at most one re-entry
+  per day. `0` = never.
+- **One variable:** `PASSWORD_LIFETIME_MINUTES` at the top of `tree-li`, with the reasoning next to it, is
+  the single place to change if the team argues for longer or shorter. The config option defaults to it.
+- **Expiry only deletes the password inside TRee-Li** (user's explicit requirement). A switch session you
+  are sitting in is never interrupted - the check only runs while TRee-Li has the screen - and tmux panes
+  keep running and stay logged in. Nothing in the workspace is touched.
+- `password_timeout` goes into `OBSOLETE`, so a config written in the last two days keeps working.
+- *Warden:* accepted. With a 900 s switch timeout and per-user accounts, the residual case this covers is
+  narrow (TRee-Li parked inside tmux for days), and the cost is near zero. Honest limit: Python cannot wipe
+  a string from memory, so this shrinks the usable window, not the theoretical one.
+
+### Bracketed paste (idea B, built)
+Terminals paste by *typing* at the application, so a copied switch name with its trailing newline arrived
+as `ENTER` - which ran `ssh` on whatever row the filter happened to put first. Now TRee-Li enables
+bracketed paste (`ESC[?2004h`), and everything between the terminal's `ESC[200~`/`ESC[201~` markers is
+treated as text: control characters are dropped, so a pasted tab cannot mark a switch and a pasted newline
+cannot start a connection. Line breaks become spaces in the search (all terms must match, so a pasted list
+visibly matches nothing); in the login dialog only the first line is taken, so a pasted password gets no
+newline. The mode is switched off before the terminal is handed to ssh or tmux and on again afterwards.
+*Critic:* timing-based paste detection was rejected - over a laggy link it misfires both ways. A terminal
+that does not support the mode never sends the markers, so nothing changes there. **Open:** PuTTY support
+still to be confirmed by Ruffy; until then this is a Tabby-only improvement.
+
+### Latency (idea D, built)
+`ping_once` threw its output away and kept only the exit code. It now runs with **`LC_ALL=C`** (the single
+ping already did - without it, D17's German-server bug returns) and parses `time=`. The value gets its
+**own 6-wide sortable `MS` column**, because the point is finding the outlier in 700 rows, which sorting
+inside the PING column could never do. Sorting it puts the **slowest first**, consistent with the state
+columns putting problems first; unknown values go last. Batch ping also reports the measured range.
+Stated plainly in help and README: one packet is one number, **not** packet loss and not jitter - getting
+loss would mean 4x the traffic and fight D20's quietness.
+
+### Why a ssh attempt failed (idea F, built)
+`ssh_reason` was an in-memory dict, filled only by `connect()`, shown only in `details`, lost on exit and
+never written by panes. "failed" alone is useless in a report: `Connection timed out`, `Permission denied`
+and `no matching key exchange method` are three different tickets. The reason is now saved with the result,
+so it survives a restart, panes contribute theirs, `details` shows it (wrapped onto its own line rather
+than clipped at the screen edge), and `Ctrl-E` exports an "SSH reason" column - so `ssh:failed` + `Ctrl-E`
+produces a list someone else can act on.
+- **Status file:** `host TAB kind TAB state TAB time` gains an optional **5th** detail field (the ms for a
+  ping, the reason for a ssh attempt). `load_status` accepts **4 or 5**, and a result with no detail is
+  still written with 4 - so an older TRee-Li sharing the state directory keeps reading what it can instead
+  of dropping the whole file. A second file was rejected: one file already merges by time.
+
+### Also
+- The `MS` column makes sorting `F1`-`F8`; `TestSearchSort` now derives its indices from `STATUS_KINDS`
+  instead of hardcoding them, so adding a column can never again make a test silently sort the wrong one.
+- **[TMUX-SECURITY.md](../TMUX-SECURITY.md)** written for the other engineers: the handover explained from
+  first principles (what a Unix socket is, why `/run/user/<uid>` is private, why the kernel's peer check
+  cannot be faked, why the ticket in `ps` is deliberately not the secret), the attacker table, the honest
+  limits, and the fact that background sessions - bounded by the 900 s switch timeout - were always the
+  bigger exposure than the password. It ships with the tool, unlike `council/`.
+- `VERSION` 1.2.2-tmux. 102 tests.

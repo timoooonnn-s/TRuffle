@@ -112,7 +112,8 @@ class TestCsv(TempDir):
         out = os.path.join(self.tmp, "export.csv")
         tl.export_csv(out, devices, headers, ";", {"ping": {"10.0.0.1": "up"}, "ssh": {}}, {("ping", "10.0.0.1"): 0.0})
         h2, r2 = tl.read_table(out)
-        self.assertEqual(h2, ["Name", "IP", "location", "Ping", "Ping checked", "SSH last try", "SSH tried"])
+        self.assertEqual(h2, ["Name", "IP", "location", "Ping", "Ping ms", "Ping checked",
+                              "SSH last try", "SSH reason", "SSH tried"])
         self.assertEqual(r2[0]["location"], "Room 1")
         self.assertEqual(r2[0]["Ping"], "up")
         self.assertEqual(os.stat(out).st_mode & 0o777, 0o600)
@@ -190,10 +191,15 @@ class TestSearchSort(unittest.TestCase):
 
     def test_sort_by_ping_down_first(self):
         ds = self.devices([("a", "1"), ("b", "2"), ("c", "3")])
-        states = {"1": tl.PING_UP, "2": tl.PING_DOWN}
-        self.assertEqual([d.name for d in tl.sort_devices(ds, 2, False, [states, {}])], ["b", "a", "c"])
+        ping = {"1": tl.PING_UP, "2": tl.PING_DOWN}
         ssh = {"1": tl.SSH_OK, "3": tl.SSH_FAILED}
-        self.assertEqual([d.name for d in tl.sort_devices(ds, 3, False, [states, ssh])], ["c", "a", "b"])
+        # indices come from STATUS_KINDS, not hardcoded: adding a status column must not
+        # silently make this test sort a different column than its name says
+        def col(kind):
+            return len(ds[0].cells) + tl.STATUS_KINDS.index(kind)
+        status = [ping if k == "ping" else ssh if k == "ssh" else {} for k in tl.STATUS_KINDS]
+        self.assertEqual([d.name for d in tl.sort_devices(ds, col("ping"), False, status)], ["b", "a", "c"])
+        self.assertEqual([d.name for d in tl.sort_devices(ds, col("ssh"), False, status)], ["c", "a", "b"])
 
 
 class TestHelpPage(TempDir):
@@ -210,6 +216,20 @@ class TestHelpPage(TempDir):
         keys = [e[1] for e in self.sections() if e[0] == "item"]
         for command in tl.COMMANDS:
             self.assertIn(command, keys, "help page does not document the '%s' command" % command)
+
+    def test_the_esc_chain_names_every_step_it_does(self):
+        """The ESC key walks search -> marks -> batch ping -> sort.  The help page used
+        to skip the marks step, which is exactly the kind of drift this page is data for."""
+        items = [e for e in self.sections() if e[0] == "item"]
+        index = next(i for i, e in enumerate(items) if e[1] == "ESC")
+        esc = items[index][2]
+        for entry in items[index + 1:]:                 # wrapped continuation lines
+            if entry[1]:
+                break
+            esc += " " + entry[2]
+        esc = esc.lower()
+        for step in ("search", "mark", "batch ping", "sort"):
+            self.assertIn(step, esc, "the help page's ESC entry (%r) does not mention '%s'" % (esc, step))
 
     def test_no_removed_feature_is_still_advertised(self):
         text = self.text().lower()
@@ -337,6 +357,9 @@ class TestSearchSyntax(unittest.TestCase):
         self.assertEqual(self.names("is:recent", recent={"muc-core-01": 5}), ["muc-core-01"])
         self.assertEqual(self.names("is:favs", favorites={"ber-test-01"}), [])  # no hidden aliases
         self.assertEqual(self.names("ping:wait", status={"ping": {"10.0.0.4": tl.WAIT}}), ["ber-test-01"])
+        # a bare "ping:" means the same as "ping:none", exactly like an empty "location:"
+        self.assertEqual(self.names("ping:", **ping), self.names("ping:none", **ping))
+        self.assertEqual(self.names("ssh:", **ssh), self.names("ssh:none", **ssh))
 
     def test_fuzzy_and_exact(self):
         self.assertEqual(self.names("bc01"), ["ber-core-01"])                  # b..c..01 in order
@@ -407,10 +430,77 @@ class TestUserState(TempDir):
         tl.UserState(d).save_status({"ping": {"10.0.0.1": "up", "10.0.0.2": "wait"}, "ssh": {"10.0.0.1": "failed"}},
                                     {("ping", "10.0.0.1"): 100, ("ssh", "10.0.0.1"): 100})
         tl.UserState(d).save_status({"ping": {"10.0.0.1": "down"}, "ssh": {}}, {("ping", "10.0.0.1"): 50})  # older
-        status, checked = tl.UserState(d).load_status()
+        status, checked, _ = tl.UserState(d).load_status()
         self.assertEqual(status["ping"], {"10.0.0.1": "up"})                # "wait" is never saved
         self.assertEqual(status["ssh"], {"10.0.0.1": "failed"})
         self.assertEqual(checked[("ping", "10.0.0.1")], 100)
+
+    def test_the_detail_field_round_trips_and_stays_backward_compatible(self):
+        """The 5th field carries the ping's ms and the reason a ssh attempt failed.
+        Rows without it must keep working - an older TRee-Li writes only 4 fields,
+        and a row with no detail is still written with 4 so an older one can read it."""
+        d = os.path.join(self.tmp, "state")
+        tl.UserState(d).save_status(
+            {"ping": {"10.0.0.1": "up"}, "ssh": {"10.0.0.1": "failed"}},
+            {("ping", "10.0.0.1"): 100, ("ssh", "10.0.0.1"): 100},
+            {("ping", "10.0.0.1"): "1.25", ("ssh", "10.0.0.1"): "Connection timed out (exit 255)"})
+        status, checked, detail = tl.UserState(d).load_status()
+        self.assertEqual(detail[("ping", "10.0.0.1")], "1.25")
+        self.assertEqual(detail[("ssh", "10.0.0.1")], "Connection timed out (exit 255)")
+        # a result with no detail is written as 4 fields, readable by an older TRee-Li
+        tl.UserState(d).save_status({"ping": {"10.0.0.2": "down"}, "ssh": {}},
+                                    {("ping", "10.0.0.2"): 200})
+        with open(os.path.join(d, "status"), encoding="utf-8") as f:
+            rows = dict((line.split("\t")[0], line.rstrip("\n").split("\t")) for line in f)
+        self.assertEqual(len(rows["10.0.0.2"]), 4)
+        self.assertEqual(len(rows["10.0.0.1"]), 5)
+        # and a hand-written 4-field file still loads completely
+        with open(os.path.join(d, "status"), "w", encoding="utf-8") as f:
+            f.write("10.0.0.9\tping\tup\t300\n")
+        status, checked, detail = tl.UserState(d).load_status()
+        self.assertEqual(status["ping"], {"10.0.0.9": "up"})
+        self.assertEqual(detail, {})
+
+    def test_save_status_survives_a_dict_the_batch_threads_mutate(self):
+        """BatchPing._restore deletes hosts from the very dict save_status walks, from
+        its worker threads.  Iterating it live raised "dictionary changed size during
+        iteration" and painted a traceback over the curses screen."""
+        import threading
+        st = tl.UserState(os.path.join(self.tmp, "state"))
+        ping = dict(("10.0.%d.%d" % (i // 250, i % 250), tl.PING_UP) for i in range(2000))
+        status = {"ping": ping, "ssh": {}}
+        checked = dict((("ping", h), 100) for h in ping)
+        detail = dict((("ping", h), "1.0") for h in ping)
+        stop = []
+        old = sys.getswitchinterval()
+
+        def churn():                                   # what a cancelled batch ping does
+            while not stop:
+                for host in list(ping):
+                    ping.pop(host, None) if host in ping else ping.setdefault(host, tl.PING_UP)
+        sys.setswitchinterval(1e-6)                    # make the thread switch, reliably
+        worker = threading.Thread(target=churn)
+        worker.daemon = True
+        worker.start()
+        try:
+            for _ in range(40):
+                st.save_status(status, checked, detail)         # must not raise
+        finally:
+            stop.append(True)
+            worker.join(timeout=5)
+            sys.setswitchinterval(old)
+
+    def test_a_pane_login_failure_is_reported_and_read_back(self):
+        """The handover socket is closed before a pane ever logs in, so a wrong password
+        comes back through this file - TRee-Li then drops the password it holds."""
+        d = os.path.join(self.tmp, "state")
+        st = tl.UserState(d)
+        self.assertEqual(tl.UserState(d).load_auth_failure(), (0.0, ""))
+        st.note_auth_failure("10.0.0.7")
+        stamp, host = tl.UserState(d).load_auth_failure()
+        self.assertEqual(host, "10.0.0.7")
+        self.assertGreater(stamp, 0)
+        self.assertEqual(os.stat(os.path.join(d, "authfail")).st_mode & 0o777, 0o600)
 
     def test_unwritable_directory_reports_error(self):
         blocker = os.path.join(self.tmp, "file")
@@ -419,6 +509,84 @@ class TestUserState(TempDir):
         st.toggle_favorite("sw1")
         self.assertIsNotNone(st.error)
         self.assertEqual(st.favorites, {"sw1"})               # still works in memory
+
+
+class TestIdleAndMarks(unittest.TestCase):
+    """The top bar must promise what ssh / batch ping actually do, and the password
+    must not outlive an idle window while tmux panes hold switch logins open."""
+
+    def test_marked_label_counts_what_will_be_used(self):
+        self.assertEqual(tl.marked_label(0, 0), "")
+        self.assertEqual(tl.marked_label(3, 3), "3 marked")
+        self.assertEqual(tl.marked_label(3, 1), "1 marked (+2 hidden)")
+        self.assertEqual(tl.marked_label(3, 0), "0 marked (+3 hidden)")
+
+    def test_the_password_expires_a_fixed_time_after_it_was_typed(self):
+        """Absolute, not idle: touching the window must not keep a live credential
+        alive for days.  10 h = never during a working day, always gone by morning."""
+        now = 1_000_000.0
+        life = tl.PASSWORD_LIFETIME_MINUTES
+        self.assertEqual(life, 600)                                   # 10 hours
+        self.assertFalse(tl.creds_expired(now, now - 9 * 3600, life))       # same working day
+        self.assertTrue(tl.creds_expired(now, now - 11 * 3600, life))       # next morning
+        self.assertFalse(tl.creds_expired(now, now, life))
+        self.assertFalse(tl.creds_expired(now, now - 100 * 3600, 0))        # 0 = never
+
+    def test_password_lifetime_is_configurable_and_the_old_name_is_ignored(self):
+        self.assertEqual(tl.load_config(args()).password_lifetime, tl.PASSWORD_LIFETIME_MINUTES)
+        self.assertIn("password_timeout", tl.OBSOLETE)                # an old conf keeps working
+        with self.assertRaises(tl.ConfigError):
+            tl.parse_int("1441", "password_lifetime", 0, 1440)
+
+
+class TestPaste(unittest.TestCase):
+    """A pasted newline used to arrive as Enter, which ran ssh on whatever switch
+    happened to be selected.  Pasted text must be text."""
+
+    def test_control_characters_never_become_keys(self):
+        self.assertEqual(tl.paste_text("ber-core-01\n"), "ber-core-01")
+        self.assertEqual(tl.paste_text("a\tb"), "ab")                  # a tab would mark a switch
+        self.assertEqual(tl.paste_text("10.0.0.1\r\n10.0.0.2\n"), "10.0.0.1 10.0.0.2")
+        self.assertEqual(tl.paste_text(""), "")
+        self.assertEqual(tl.paste_text(None), "")
+
+    def test_a_password_field_takes_only_the_first_line(self):
+        self.assertEqual(tl.paste_text("secret\n", multiline=False), "secret")
+        self.assertEqual(tl.paste_text("secret\nmore", multiline=False), "secret")
+
+    def test_long_pastes_are_capped(self):
+        self.assertEqual(len(tl.paste_text("x" * 5000)), tl.MAX_PASTE)
+
+    def test_the_markers_are_parsed_as_keys(self):
+        self.assertEqual(tl.parse_escape_sequence("[200~"), "PASTE_START")
+        self.assertEqual(tl.parse_escape_sequence("[201~"), "PASTE_END")
+
+
+class TestLatency(unittest.TestCase):
+    def test_rtt_is_parsed_from_ping_output(self):
+        line = "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"
+        self.assertAlmostEqual(tl.parse_rtt(line), 1.23)
+        self.assertAlmostEqual(tl.parse_rtt("... time<1 ms"), 1.0)      # some pings report "<"
+        self.assertIsNone(tl.parse_rtt("Request timeout for icmp_seq 0"))
+        self.assertIsNone(tl.parse_rtt(""))
+
+    def test_rtt_fits_a_narrow_column(self):
+        width = dict((label, w) for label, w, _, _ in tl.STATUS_COLUMNS)["ms"]
+        for ms in (0.84, 1.23, 12.4, 99.9, 180.0, 1204.7):
+            self.assertLessEqual(len(tl.format_rtt(ms)), width, ms)
+        self.assertEqual(tl.format_rtt(None), "")
+
+    def test_the_ms_column_sorts_slowest_first(self):
+        headers = ["Name", "IP"]
+        rows = [dict(zip(headers, r)) for r in (("a", "10.0.0.1"), ("b", "10.0.0.2"),
+                                                ("c", "10.0.0.3"), ("d", "10.0.0.4"))]
+        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
+        devices = tl.build_devices(headers, rows, cfg)[0]
+        rtt = {"10.0.0.1": 5.0, "10.0.0.2": 200.0, "10.0.0.3": 50.0}      # d never answered
+        status = [{}, rtt, {}]
+        col = len(cfg.columns) + tl.STATUS_KINDS.index("rtt")
+        order = [d.name for d in tl.sort_devices(devices, col, False, status)]
+        self.assertEqual(order, ["b", "c", "a", "d"])        # slowest first, unknown last
 
 
 class TestSecurityHelpers(unittest.TestCase):
@@ -448,6 +616,34 @@ class TestSecurityHelpers(unittest.TestCase):
         self.assertIn("NumberOfPasswordPrompts=1", argv)
         self.assertEqual(argv[-4:], ["-l", "timmy", "--", "10.0.0.1"])
         self.assertNotIn("NumberOfPasswordPrompts=1", tl.build_ssh_argv(cfg, "t", "h", inject_password=False))
+
+
+class TestExport(TempDir):
+    def devices(self):
+        headers = ["Name", "IP"]
+        rows = [{"Name": "sw1", "IP": "10.0.0.1"}]
+        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
+        return tl.build_devices(headers, rows, cfg)[0], headers
+
+    def test_two_exports_in_the_same_second_do_not_collide(self):
+        devices, headers = self.devices()
+        path = os.path.join(self.tmp, "export.csv")
+        status, checked = {"ping": {"10.0.0.1": tl.PING_UP}, "ssh": {}}, {("ping", "10.0.0.1"): 100}
+        first = tl.export_csv(path, devices, headers, ";", status, checked)
+        second = tl.export_csv(path, devices, headers, ";", status, checked)
+        self.assertEqual(first, path)
+        self.assertEqual(second, os.path.join(self.tmp, "export-2.csv"))
+        self.assertEqual(os.stat(second).st_mode & 0o777, 0o600)
+        with open(second, encoding="utf-8-sig") as f:
+            self.assertIn("Ping", f.readline())
+
+    def test_free_path_gives_up_instead_of_looping(self):
+        path = os.path.join(self.tmp, "x.csv")
+        open(path, "w").close()
+        open(os.path.join(self.tmp, "x-2.csv"), "w").close()
+        self.assertEqual(tl.free_path(path), os.path.join(self.tmp, "x-3.csv"))
+        with self.assertRaises(OSError):
+            tl.free_path(path, limit=2)
 
 
 class TestCharset(TempDir):
