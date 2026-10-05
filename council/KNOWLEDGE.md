@@ -119,6 +119,16 @@ BootP_NextServer,BootP_BootFile,MAC_ADDRESS,RFC_MAC_ADDRESS,ADDRESS
 - Still to come from Infoblox **extensible attributes (EAs)**: location and comments. They will
   appear as extra columns; only `columns` has to change when they do.
 - Only `Name` and `IP` are actually wanted in the table (user, 2026-10-05).
+- **Real size: 843 switches** in the first full export (2026-10-05).
+- The last segment of the hostname is the **role** (`l1`, `w3`, `w4`, `r1`, ...), and it is what the
+  user filters on. `*-l1` (a pattern, D34) is the way to do that exactly; fuzzy `l1` also catches
+  `l11`, and `*-l1*` does too because the trailing `*` swallows the domain.
+- **`Name-Server` is NOT the hostname.** It is Infoblox's DNS-name-server field and is empty in this
+  export. The hostname is only ever in `PRIMARY_DN_CODE`. Renaming `Name-Server` to `Name` in the CSV
+  is the one mistake that looks right and silently empties the whole NAME column - it happened.
+- **Do not rename headers in the export.** It is regenerated from Infoblox every time, so a rename is
+  manual work that has to be repeated and can be got wrong. Map the columns once in `truffle.conf`:
+  `columns = PRIMARY_DN_CODE:Name, ADDRESS:IP`. `truffle --check` then shows the mapping.
 
 ### What ping output actually proves (2026-10-05)
 - **`time=` is the only proof of an echo reply.** A router answering *Destination Net Unreachable*

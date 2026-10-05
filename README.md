@@ -72,7 +72,12 @@ echo "alias truffle='$HOME/truffle/truffle'" >> ~/.bashrc
 2. Pick a switch with **↑ ↓**. **ssh** is already selected, so press **Enter**.
 3. Enter your username and password **once**. TRuffle logs you in, now and for every following switch.
 4. **Log out** of the switch, and you're back in the list.
-5. **← →** selects the other commands (ping, batch ping, details, help, exit).
+5. **← →** selects the other commands (ping, details, help, exit).
+6. Several switches at once: **`Tab`** marks them (`+`), and marks are kept while you search for more.
+   With two or more marked, **ssh** opens one [tmux pane per switch](#several-switches-at-once-tmux).
+
+Filtering by a naming scheme — all the `-l1` switches, or the `w3` and `w4` ones — is what
+[patterns and `|`](#search) are for: `*-l1`, `w3|w4`.
 
 All keys: [Keys](#keys) or the **help** command inside TRuffle. If something looks wrong, see [Troubleshooting](#troubleshooting).
 
@@ -88,7 +93,6 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 - [Settings](#settings)
 - [Favourites and recent switches](#favourites-and-recent-switches)
 - [Saved check results](#saved-check-results)
-- [Export](#export)
 - [Data check](#data-check)
 - [Switch list (`data.csv`)](#switch-list-datacsv)
 - [Configuration](#configuration)
@@ -104,36 +108,38 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 ## Screen
 
 ```
-  TRuffle  Switch Manager                                     timmy · 2/29 switches
+  TRuffle  Switch Manager                        2 marked · timmy · 2/29 switches
 ───────────────────────────────────────────────────────────────────────────────────
 
-   ssh   ping   batch ping   details   help   exit
+   ssh   ping   details   help   exit
 
   ›  ber core
 
-    NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  MS      SSH
-    ─────────────────────────────────────────────────────────────────────────────────────────
- ▌* ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down          ● failed
-    ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    1.24    ● ok
+     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  SSH
+     ─────────────────────────────────────────────────────────────────────────────────
+ ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down  ● failed
+   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    ● ok
 
 ───────────────────────────────────────────────────────────────────────────────────
-  Enter run  ←→ command  ^F favourite  F1-F8 sort  ^G settings  ^R reload  ^C quit
+  Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  ^C quit
 ```
 
 From top to bottom:
-- **Top bar:** your login user once you've connected, and how many switches are shown.
+- **Top bar:** your login user once you've connected, how many switches are shown, and — when there
+  are any — how many switches you've [marked](#several-switches-at-once-tmux) and how many
+  [tmux sessions](#several-switches-at-once-tmux) are still running.
 - **Command tabs.**
 - **Search line.**
 - **Table:**
   - `▌` marks the selected row.
   - `*` marks a [favourite](#favourites-and-recent-switches).
+  - `+` marks a switch you picked with `Tab` for [several at once](#several-switches-at-once-tmux).
+    Marks are kept when you search for something else, so you can collect them from several searches.
   - `▲`/`▼` shows the sorted column.
-  - **PING** shows the last ping result. **MS** is how long that ping took — one packet, so it's one
-    number, not packet loss and not jitter. Sorting MS puts the slowest switches first, which is how you
-    find the one behind a congested link.
+  - **PING** shows the last ping result.
   - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
     TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details** and the
-    [export](#export) also tell you *why* — `Connection timed out` is a different job from `Permission denied`.
+    also tells you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
 - **Footer:** key hints, or a message for a few seconds.
 
@@ -147,14 +153,13 @@ From top to bottom:
 | just type | [search](#search) |
 | `Backspace` / `Ctrl-W` / `Ctrl-U` | delete a character / a word / the whole search |
 | paste | pasted text goes into the search as **text** — a newline in it no longer runs `ssh` |
-| `ESC` | step by step: 1. clears the search, 2. clears the marks, 3. cancels a running batch ping, 4. clears the sort |
-| `F1` … `F8` | sort by that column: ▲ ascending → ▼ descending → original order |
+| `ESC` | step by step: 1. clears the search, 2. cancels a running ping, 3. clears the marks, 4. clears the sort |
+| `F1` … `F7` | sort by that column: ▲ ascending → ▼ descending → original order |
 | `Ctrl-F` | mark / unmark the selected switch as a [favourite](#favourites-and-recent-switches) |
-| `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`) |
+| `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
 | `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
 | `Ctrl-G` | [settings](#settings) for this session: session log, debug log, tmux, symbols, forget password |
-| `Ctrl-E` | [export](#export) the current list to a CSV file |
 | `Ctrl-R` | reload the switch list |
 | `Ctrl-L` | redraw the screen |
 | `Ctrl-C` | quit |
@@ -169,35 +174,51 @@ normally — no Shift needed.
 | Command | What it does |
 |---|---|
 | **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
-| **ping** | `ping -c 4` with live output; also updates the Ping and MS columns. `ESC` stops it: replies that already arrived still count as **up**, and stopping before any reply leaves the old result alone. |
-| **batch ping** | Pings every switch in the **current, filtered** list and fills the PING column. It's deliberately **quiet**: at most 20 pings per second (`ping_rate`), so 700 switches take about 35 s and one site a few seconds. You can keep working meanwhile; `ESC` (with an empty search) cancels. |
+| **ping** | Checks whether the switches you're working with still answer. **One switch** (nothing marked): `ping -c 4` with live output. **Two or more marked**: all of them at once, no live output, straight into the PING column — you can keep working while it runs, and `ESC` (with an empty search) cancels it. `ESC` during a live ping keeps the replies that already arrived; stopping before any reply leaves the old result alone. |
 | **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
 | **help** | Keys, search syntax, and the file paths in use. |
 | **exit** | Quits and forgets the password. |
 
 ## Search
 
-All terms must match, case doesn't matter. Plain words are **fuzzy**, like fzf: the letters only have to appear
-in this order within one visible column. The best matches come first, and the matched letters are underlined.
+Case doesn't matter, and **every term separated by a space must match** — that's what narrows a long list
+down (`ab-* s34 -ping:down`). For "either/or", put the alternatives in **one** term with `|` (`w3|w4`).
+
+Plain words are **fuzzy**, like fzf: the letters only have to appear in this order within one visible
+column. The best matches come first, and the matched letters are underlined. When fuzzy is too loose —
+telling `-l1` from `-l11`, say — use a **pattern** with `*` and `?`.
 
 | You type | Shows |
 |---|---|
 | `bc01`, `ber core` | fuzzy: `bc01` finds `ber-core-01`; exact hits rank above scattered ones |
 | `'10.1.2` | exactly this text (a leading `'` switches fuzzy off for this word) |
+| `*-l1`, `??-??-s??-w3` | **pattern:** `*` = anything, `?` = one character, matched against a **whole** column. This is how you filter by role: `*-l1` finds `ab-12-s34-l1` and **not** `...-l11`, which fuzzy can't tell apart. A name like `sw1.example.net` also matches on just `sw1`, so you don't have to write `*-l1.*` |
+| `w3\|w4` | **either one.** Space stays AND, so OR goes inside one term: `ab-* w3\|w4` = site `ab` **and** (`w3` **or** `w4`). Works with fields too: `ping:up\|wait` |
 | `type:core` | the CSV column `type` contains "core". Works for **every** column, even ones not in the table, and for table labels (`alias:munich`) |
 | `location:` | the column is empty |
-| `-test`, `-type:edge` | excludes matches (always exact) |
+| `-test`, `-type:edge`, `-*-w4` | excludes matches. An excluded word is always exact (a fuzzy exclude would hide far too much), but an excluded pattern stays a pattern. `-w3\|w4` excludes both |
 | `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet; a bare `ping:` means the same) |
 | `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that switch, or `none` (never tried) |
 | `is:fav` | your favourites |
 | `is:recent` | switches you connected to, newest first |
+| `is:marked` | everything you've picked with `Tab` so far, from any search |
 
-Example: `type:core -ber ping:up ssh:failed` shows core switches outside Berlin that answer ping but where your last ssh attempt failed.
-Press `Ctrl-E` on that and you have the list [exported](#export) — with the reason each one failed.
+Examples:
+
+| Query | Means |
+|---|---|
+| `type:core -ber ping:up ssh:failed` | core switches outside Berlin that answer ping but where your last ssh attempt failed — **details** tells you why each one failed |
+| `ab-* w3\|w4` | with a naming scheme like `xx-xx-sxx-ROLE`: the `w3` and `w4` switches of site `ab` |
+| `*-l1 -ping:down` | every `l1` switch that isn't known to be down |
+| `is:marked` | what you've collected with `Tab`, ready to `ssh` to all at once |
 
 ## Several switches at once (tmux)
 
 > **Experimental**, on the `tmux-version` branch. Needs `tmux` on the server. Turn it off with `tmux = no`.
+
+**Marks survive a new search.** Search, mark a couple, search for something else, mark a couple
+more — then run **ssh** and you connect to all of them. `is:marked` shows the collection so far,
+and the top bar counts it. `ESC` (with an empty search) clears it.
 
 Mark switches with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
 own tmux session with **one pane per switch**, up to **9**. You type your password **once** and every pane
@@ -206,6 +227,7 @@ logs in by itself.
 | You want | Press |
 |---|---|
 | mark / unmark a switch | `Tab` (`Shift-Tab` marks the one above) |
+| see what you've marked | search `is:marked` |
 | clear all marks | `ESC` (with an empty search) |
 | **back to TRuffle**, panes keep running | `Ctrl-b d` |
 | **back into the panes** | `Ctrl-T` in TRuffle |
@@ -279,21 +301,9 @@ file; nothing else is worth flipping mid-day.
 
 ## Saved check results
 
-The PING results (with their ms), and your last ssh attempts with the reason they failed, each with its time, are saved per user in
+The PING results, and your last ssh attempts with the reason they failed, each with its time, are saved per user in
 `~/.local/state/truffle/status`. After a restart they're shown again until the next check, and **details** shows when
 each one was taken. Several TRuffle windows merge their results, and the newest one wins.
-
-## Export
-
-`Ctrl-E` writes the **current list** (filter and order as on screen) to `truffle-export-<date>-<time>.csv`
-in your home directory (`export_dir` in the [configuration](#configuration)). It contains:
-- all CSV columns
-- **Ping** with its round-trip time in ms, and your last **SSH** attempt with the reason it failed, each with its time
-
-A name that already exists is never overwritten — the next export becomes `...-2.csv`.
-
-Example: search `ping:down`, press `Ctrl-E`, and you have the list of switches that didn't answer.
-The file uses the switch list's delimiter, opens directly in Excel, and is readable only by you.
 
 ## Data check
 

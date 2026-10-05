@@ -168,6 +168,26 @@ class TestCsv(TempDir):
                                              cfg=tl.load_config(args(config=conf)))
         self.assertEqual(tl.data_issues(devs, rep2["lines"], rep2["issues"], pick2["name"]), [])
 
+    def test_the_warning_names_the_column_that_probably_holds_the_hostname(self):
+        """The real failure: Infoblox's 'Name-Server' had been renamed to 'Name', so the
+        name column resolved and was empty for all 843 rows.  Saying "it is empty" was not
+        enough - the warning has to point at PRIMARY_DN_CODE."""
+        p = self.write("hint.csv",
+                       "SUBNET,MASK,VLAN_ID,PRIMARY_DN_CODE,CREATION_DATE,Name,IP\n"
+                       '192.0.2.96,255.255.255.224,43,ab-12-s34-r1.example.net,'
+                       '"1970-01-01 00:00:00.000",,192.0.2.98\n')
+        report = {}
+        devices, _, _, picked = tl.build_devices(*tl.read_table(p, report),
+                                                 cfg=tl.load_config(args()))
+        self.assertEqual(picked["name"], "Name")              # resolves, but is empty
+        self.assertEqual(picked["host"], "IP")
+        issues = tl.data_issues(devices, report["lines"], report["issues"], picked["name"])
+        hint = " ".join(issues)
+        self.assertIn("columns = PRIMARY_DN_CODE:Name", hint)
+        # the mask, the vlan and the date must not be offered as hostname candidates
+        for noise in ("255.255.255.224", "MASK", "VLAN_ID", "CREATION_DATE"):
+            self.assertNotIn(noise, hint, hint)
+
     def test_the_label_wins_over_a_same_named_header(self):
         """A CSV that has its own 'Name'/'IP' columns AND a label must follow the label -
         otherwise you could never point TRuffle at a different column."""
@@ -197,19 +217,6 @@ class TestCsv(TempDir):
                          "name 'sw1' appears 2 times: lines 2, 4", "'10.0.0.300' is not a valid IPv4",
                          "leading zeros", "line 7: 'sw6' has no IP"):
             self.assertIn(expected, issues)
-
-    def test_export(self):
-        p = self.write("i.csv", "Name;IP;location\nsw1;10.0.0.1;Room 1\n")
-        headers, rows = tl.read_table(p)
-        devices = tl.build_devices(headers, rows, tl.load_config(args()))[0]
-        out = os.path.join(self.tmp, "export.csv")
-        tl.export_csv(out, devices, headers, ";", {"ping": {"10.0.0.1": "up"}, "ssh": {}}, {("ping", "10.0.0.1"): 0.0})
-        h2, r2 = tl.read_table(out)
-        self.assertEqual(h2, ["Name", "IP", "location", "Ping", "Ping ms", "Ping checked",
-                              "SSH last try", "SSH reason", "SSH tried"])
-        self.assertEqual(r2[0]["location"], "Room 1")
-        self.assertEqual(r2[0]["Ping"], "up")
-        self.assertEqual(os.stat(out).st_mode & 0o777, 0o600)
 
     def test_no_ip_column(self):
         p = self.write("g.csv", "Name;where\nsw1;x\n")
@@ -321,13 +328,16 @@ class TestHelpPage(TempDir):
                 break
             esc += " " + entry[2]
         esc = esc.lower()
-        for step in ("search", "mark", "batch ping", "sort"):
+        for step in ("search", "mark", "ping", "sort"):
             self.assertIn(step, esc, "the help page's ESC entry (%r) does not mention '%s'" % (esc, step))
 
     def test_no_removed_feature_is_still_advertised(self):
         text = self.text().lower()
         for gone in ("ssh check", "traceroute", "tracepath", "no-answer", "ping + ssh",
-                     "next / previous sort column"):          # Tab sorts no longer, it marks
+                     "next / previous sort column",      # Tab sorts no longer, it marks
+                     "batch ping",                       # merged into ping (D35)
+                     "ctrl-e", "export",                 # CSV export removed (D35)
+                     "round-trip", "slowest"):           # MS column removed (D36)
             self.assertNotIn(gone, text, "help page still mentions the removed '%s'" % gone)
 
     def test_shows_the_paths_in_use(self):
@@ -481,6 +491,79 @@ class TestSearchSyntax(unittest.TestCase):
         self.assertEqual(order[:2], ["ber-test-01", "ber-edge-01"])            # newest first
 
 
+class TestPatternAndOrSearch(unittest.TestCase):
+    """Site naming is xx-xx-sxx-ROLE.domain, so the role is the thing you filter on."""
+
+    ROLES = ("ab-12-s34-l1", "ab-12-s34-l11", "ab-12-s34-w3", "ab-12-s34-w4",
+             "cd-34-s56-l1", "cd-34-s56-w3", "cd-34-s56-w4", "legacy-core-01")
+
+    def setUp(self):
+        headers = ["Name", "IP"]
+        rows = [{"Name": n + ".example.net", "IP": "192.0.2.%d" % (i + 1)}
+                for i, n in enumerate(self.ROLES)]
+        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
+        self.devices, columns, _, _ = tl.build_devices(headers, rows, cfg)
+        self.fields = dict((h.lower(), h) for h in headers)
+
+    def names(self, query, **kw):
+        return [d.name.split(".")[0] for d in tl.filter_devices(self.devices, query, self.fields, **kw)]
+
+    def test_a_pattern_tells_l1_from_l11(self):
+        """The point of patterns: an exact role match, which fuzzy and substring cannot do.
+        These names are FQDNs, so the pattern is tried against the host part too - that is
+        what makes the short form work."""
+        self.assertEqual(self.names("*-l1"), ["ab-12-s34-l1", "cd-34-s56-l1"])
+        self.assertEqual(self.names("*-l1.*"), self.names("*-l1"))   # the explicit form
+        self.assertEqual(self.names("??-??-s??-l1"), self.names("*-l1"))
+        self.assertIn("ab-12-s34-l11", self.names("l1"))             # fuzzy is too loose
+        # a trailing * after the role swallows the rest, l11 included - say so, do not pretend
+        self.assertIn("ab-12-s34-l11", self.names("*-l1*"))
+
+    def test_patterns_over_other_columns(self):
+        self.assertEqual(self.names("ab-*"), ["ab-12-s34-l1", "ab-12-s34-l11",
+                                              "ab-12-s34-w3", "ab-12-s34-w4"])
+        self.assertEqual(self.names("*nothinglikethis*"), [])
+        self.assertEqual(self.names("192.0.2.?"), [d.name.split(".")[0] for d in self.devices])
+        self.assertEqual(self.names("*-2"), [])
+        # the host-part try must not let a pattern match an address through its first octet
+        self.assertEqual(self.names("19?"), [])
+        self.assertTrue(tl.glob_match("ab-12-s34-l1.example.net", "*-l1"))
+        self.assertFalse(tl.glob_match("ab-12-s34-l11.example.net", "*-l1"))
+        self.assertFalse(tl.glob_match("192.0.2.98", "19?"))         # not split on dots
+        self.assertTrue(tl.glob_match("192.0.2.98", "192.0.2.*"))
+
+    def test_or_inside_one_term(self):
+        self.assertEqual(self.names("w3|w4"), ["ab-12-s34-w3", "ab-12-s34-w4",
+                                               "cd-34-s56-w3", "cd-34-s56-w4"])
+        self.assertEqual(self.names("*-w3|*-w4"), self.names("w3|w4"))
+        # AND still narrows: site ab AND (w3 or w4)
+        self.assertEqual(self.names("ab-* w3|w4"), ["ab-12-s34-w3", "ab-12-s34-w4"])
+        # space is still AND, so this asks for both at once and finds nothing
+        self.assertEqual(self.names("w3 w4"), [])
+
+    def test_a_negated_group_excludes_every_alternative(self):
+        self.assertEqual(self.names("-*-w3|*-w4"),
+                         ["ab-12-s34-l1", "ab-12-s34-l11", "cd-34-s56-l1", "legacy-core-01"])
+
+    def test_alternatives_inherit_the_field_prefix(self):
+        status = {"status": {"ping": {"192.0.2.1": tl.PING_UP, "192.0.2.2": tl.WAIT,
+                                      "192.0.2.3": tl.PING_DOWN}}}
+        self.assertEqual(self.names("ping:up|wait", **status),
+                         ["ab-12-s34-l1", "ab-12-s34-l11"])
+        self.assertEqual(self.names("name:*-w4|*-l1"),           # list order, not query order
+                         ["ab-12-s34-l1", "ab-12-s34-w4", "cd-34-s56-l1", "cd-34-s56-w4"])
+
+    def test_a_half_typed_term_filters_nothing(self):
+        for partial in ("|", "'", "-", "-'", "w3|", "|w3"):
+            self.assertTrue(self.names(partial), "%r should not empty the list" % partial)
+
+    def test_is_marked_shows_what_you_collected(self):
+        picked = {"ab-12-s34-w3.example.net": True, "cd-34-s56-l1.example.net": True}
+        self.assertEqual(self.names("is:marked", marked=picked),
+                         ["ab-12-s34-w3", "cd-34-s56-l1"])
+        self.assertEqual(self.names("is:marked", marked={}), [])
+
+
 class TestFuzzyMatch(unittest.TestCase):
     def test_match_and_positions(self):
         self.assertEqual(tl.fuzzy_match("bc01", "ber-core-01")[1], (0, 4, 9, 10))
@@ -530,17 +613,6 @@ class TestUserState(TempDir):
         self.assertEqual(status["ping"], {"10.0.0.1": "up"})                # "wait" is never saved
         self.assertEqual(status["ssh"], {"10.0.0.1": "failed"})
         self.assertEqual(checked[("ping", "10.0.0.1")], 100)
-
-    def test_a_host_that_stops_answering_loses_its_old_round_trip_time(self):
-        """App.save_detail rebuilds the ping details from self.rtt.  Copying self.detail
-        instead kept yesterday's ms next to today's "down", and reloaded it at startup."""
-        detail = {("ping", "10.0.0.9"): "1.20", ("ssh", "10.0.0.9"): "Connection timed out"}
-        rtt = {}                                   # the batch ping got no reply -> popped
-        rebuilt = dict((k, v) for k, v in detail.items() if k[0] != "ping")
-        for host, ms in rtt.items():
-            rebuilt[("ping", host)] = tl.format_rtt(ms)
-        self.assertNotIn(("ping", "10.0.0.9"), rebuilt)          # the stale ms is gone
-        self.assertIn(("ssh", "10.0.0.9"), rebuilt)              # the ssh reason is kept
 
     def test_set_or_clear_drops_empty_values(self):
         m = {("ssh", "h"): "old"}
@@ -628,12 +700,6 @@ class TestUserState(TempDir):
 class TestIdleAndMarks(unittest.TestCase):
     """The top bar must promise what ssh / batch ping actually do, and the password
     must not outlive an idle window while tmux panes hold switch logins open."""
-
-    def test_marked_label_counts_what_will_be_used(self):
-        self.assertEqual(tl.marked_label(0, 0), "")
-        self.assertEqual(tl.marked_label(3, 3), "3 marked")
-        self.assertEqual(tl.marked_label(3, 1), "1 marked (+2 hidden)")
-        self.assertEqual(tl.marked_label(3, 0), "0 marked (+3 hidden)")
 
     def test_the_password_expires_a_fixed_time_after_it_was_typed(self):
         """Absolute, not idle: touching the window must not keep a live credential
@@ -728,80 +794,43 @@ class TestPingVerdict(unittest.TestCase):
     exits 0, so neither the text nor the exit code proves a reply.  Only "time=" does."""
 
     def test_a_cancelled_ping_that_already_had_replies_is_up(self):
-        self.assertEqual(tl.ping_verdict(0.07, done=True, killed=True), tl.PING_UP)
-        self.assertEqual(tl.ping_verdict(0.07, done=False, killed=True), tl.PING_UP)
-
-    def test_zero_ms_still_counts_as_a_reply(self):
-        self.assertEqual(tl.ping_verdict(0.0, done=True, killed=True), tl.PING_UP)
+        self.assertEqual(tl.ping_verdict(True, done=True, killed=True), tl.PING_UP)
+        self.assertEqual(tl.ping_verdict(True, done=False, killed=True), tl.PING_UP)
 
     def test_a_cancelled_ping_with_no_reply_yet_records_nothing(self):
         """It proves nothing, so whatever was known before must survive."""
-        self.assertIsNone(tl.ping_verdict(None, done=False, killed=True))
-        self.assertIsNone(tl.ping_verdict(None, done=True, killed=True))
+        self.assertIsNone(tl.ping_verdict(False, done=False, killed=True))
+        self.assertIsNone(tl.ping_verdict(False, done=True, killed=True))
 
     def test_only_a_finished_ping_may_say_down(self):
-        self.assertEqual(tl.ping_verdict(None, done=True, killed=False), tl.PING_DOWN)
-        self.assertIsNone(tl.ping_verdict(None, done=False, killed=False))
+        self.assertEqual(tl.ping_verdict(False, done=True, killed=False), tl.PING_DOWN)
+        self.assertIsNone(tl.ping_verdict(False, done=False, killed=False))
 
     def test_ping_that_could_not_start_says_nothing_about_the_switch(self):
-        self.assertIsNone(tl.ping_verdict(None, done=True, killed=False, started=False))
+        self.assertIsNone(tl.ping_verdict(False, done=True, killed=False, started=False))
 
     def test_an_icmp_error_is_not_a_reply(self):
         """This is the text a router sends back; it must not read as a round-trip time."""
         unreachable = ("PING 192.0.2.77 (192.0.2.77): 56 data bytes\n"
                        "76 bytes from 198.51.100.1: Destination Net Unreachable\n"
                        "Request timeout for icmp_seq 0\n")
-        self.assertIsNone(tl.parse_rtt(unreachable))
-        self.assertEqual(tl.ping_verdict(tl.parse_rtt(unreachable), done=True, killed=False),
+        self.assertFalse(tl.ping_replied(unreachable))
+        self.assertEqual(tl.ping_verdict(tl.ping_replied(unreachable), done=True, killed=False),
                          tl.PING_DOWN)
+
+    def test_only_a_time_field_counts_as_a_reply(self):
+        self.assertTrue(tl.ping_replied("64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"))
+        self.assertTrue(tl.ping_replied("... time<1 ms"))        # some pings report "<"
+        self.assertTrue(tl.ping_replied("... time=0.0 ms"))      # a 0 ms reply is still a reply
+        self.assertFalse(tl.ping_replied("Request timeout for icmp_seq 0"))
+        self.assertFalse(tl.ping_replied(""))
+        self.assertFalse(tl.ping_replied(None))
 
     def test_a_stream_that_cannot_start_is_marked_not_started(self):
         s = tl.ProcStream(["/nonexistent/ping"])
         self.assertTrue(s.done)
         self.assertFalse(s.started)
         self.assertFalse(s.killed)
-
-
-class TestLatency(unittest.TestCase):
-    def test_rtt_is_parsed_from_ping_output(self):
-        line = "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"
-        self.assertAlmostEqual(tl.parse_rtt(line), 1.23)
-        self.assertAlmostEqual(tl.parse_rtt("... time<1 ms"), 1.0)      # some pings report "<"
-        self.assertIsNone(tl.parse_rtt("Request timeout for icmp_seq 0"))
-        self.assertIsNone(tl.parse_rtt(""))
-
-    def test_rtt_fits_a_narrow_column(self):
-        width = dict((label, w) for label, w, _, _ in tl.STATUS_COLUMNS)["ms"]
-        for ms in (0.84, 1.23, 12.4, 99.9, 180.0, 1204.7):
-            self.assertLessEqual(len(tl.format_rtt(ms)), width, ms)
-        self.assertEqual(tl.format_rtt(None), "")
-
-    def test_the_ms_column_sorts_slowest_first(self):
-        headers = ["Name", "IP"]
-        rows = [dict(zip(headers, r)) for r in (("a", "10.0.0.1"), ("b", "10.0.0.2"),
-                                                ("c", "10.0.0.3"), ("d", "10.0.0.4"))]
-        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
-        devices = tl.build_devices(headers, rows, cfg)[0]
-        rtt = {"10.0.0.1": 5.0, "10.0.0.2": 200.0, "10.0.0.3": 50.0}      # d never answered
-        status = [{}, rtt, {}]
-        col = len(cfg.columns) + tl.STATUS_KINDS.index("rtt")
-        order = [d.name for d in tl.sort_devices(devices, col, False, status)]
-        self.assertEqual(order, ["b", "c", "a", "d"])        # slowest first, unknown last
-
-    def test_zero_ms_is_a_measurement_not_a_missing_value(self):
-        """0.0 is falsy, so a truthiness test put a real reading in the never-measured
-        group at the bottom while draw() still printed it.  The row order matters here:
-        'never' comes first in the CSV, so a 0.0 wrongly grouped with it ends up AFTER
-        it - which is how this test tells the two behaviours apart."""
-        headers = ["Name", "IP"]
-        rows = [dict(zip(headers, r)) for r in (("never", "10.0.0.3"), ("zero", "10.0.0.1"),
-                                                ("slow", "10.0.0.2"))]
-        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
-        devices = tl.build_devices(headers, rows, cfg)[0]
-        status = [{}, {"10.0.0.1": 0.0, "10.0.0.2": 5.0}, {}]
-        col = len(cfg.columns) + tl.STATUS_KINDS.index("rtt")
-        order = [d.name for d in tl.sort_devices(devices, col, False, status)]
-        self.assertEqual(order, ["slow", "zero", "never"])    # measured first, 0.0 included
 
 
 class TestSecurityHelpers(unittest.TestCase):
@@ -831,34 +860,6 @@ class TestSecurityHelpers(unittest.TestCase):
         self.assertIn("NumberOfPasswordPrompts=1", argv)
         self.assertEqual(argv[-4:], ["-l", "timmy", "--", "10.0.0.1"])
         self.assertNotIn("NumberOfPasswordPrompts=1", tl.build_ssh_argv(cfg, "t", "h", inject_password=False))
-
-
-class TestExport(TempDir):
-    def devices(self):
-        headers = ["Name", "IP"]
-        rows = [{"Name": "sw1", "IP": "10.0.0.1"}]
-        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
-        return tl.build_devices(headers, rows, cfg)[0], headers
-
-    def test_two_exports_in_the_same_second_do_not_collide(self):
-        devices, headers = self.devices()
-        path = os.path.join(self.tmp, "export.csv")
-        status, checked = {"ping": {"10.0.0.1": tl.PING_UP}, "ssh": {}}, {("ping", "10.0.0.1"): 100}
-        first = tl.export_csv(path, devices, headers, ";", status, checked)
-        second = tl.export_csv(path, devices, headers, ";", status, checked)
-        self.assertEqual(first, path)
-        self.assertEqual(second, os.path.join(self.tmp, "export-2.csv"))
-        self.assertEqual(os.stat(second).st_mode & 0o777, 0o600)
-        with open(second, encoding="utf-8-sig") as f:
-            self.assertIn("Ping", f.readline())
-
-    def test_free_path_gives_up_instead_of_looping(self):
-        path = os.path.join(self.tmp, "x.csv")
-        open(path, "w").close()
-        open(os.path.join(self.tmp, "x-2.csv"), "w").close()
-        self.assertEqual(tl.free_path(path), os.path.join(self.tmp, "x-3.csv"))
-        with self.assertRaises(OSError):
-            tl.free_path(path, limit=2)
 
 
 class TestCharset(TempDir):

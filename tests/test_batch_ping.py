@@ -1,4 +1,4 @@
-"""Batch ping: rate limit, results, cancel."""
+"""Pinging the marked switches: results, concurrency, cancel."""
 import time
 import types
 import unittest
@@ -10,10 +10,13 @@ class BatchPingTest(unittest.TestCase):
     def setUp(self):
         self._ping_once = tl.ping_once
         self.started = []
+        self.delay = 0.0
 
         def fake_ping(host, timeout):           # no real ICMP needed in tests
             self.started.append(time.time())
-            return 1.5 if host.endswith(".1") else None    # ms, or None for no reply
+            if self.delay:
+                time.sleep(self.delay)
+            return host.endswith(".1")          # True = a reply came back
         tl.ping_once = fake_ping
 
     def tearDown(self):
@@ -25,32 +28,32 @@ class BatchPingTest(unittest.TestCase):
                 return
             time.sleep(0.05)
 
-    def test_results_and_rate_limit(self):
-        cfg = types.SimpleNamespace(ping_rate=10, ping_timeout=1)
+    def test_results_and_concurrency(self):
+        cfg = types.SimpleNamespace(ping_timeout=1)
         hosts = ["10.0.0.%d" % i for i in range(1, 11)]
-        ping, rtt, checked = {}, {}, {}
-        batch = tl.BatchPing(hosts, cfg, {"ping": ping, "rtt": rtt}, checked)
+        ping, checked = {}, {}
+        batch = tl.BatchPing(hosts, cfg, {"ping": ping}, checked)
         self.wait(batch)
         self.assertEqual(ping["10.0.0.1"], tl.PING_UP)
         self.assertEqual(ping["10.0.0.2"], tl.PING_DOWN)
         self.assertEqual(batch.percent, 100)
-        self.assertEqual(batch.summary(), "1 up, 9 down, 1.50-1.50 ms")
-        self.assertEqual(rtt, {"10.0.0.1": 1.5})             # only hosts that answered
-        self.assertNotIn("10.0.0.2", rtt)
+        self.assertEqual(batch.summary(), "1 up, 9 down")
         self.assertIn(("ping", "10.0.0.5"), checked)
-        span = max(self.started) - min(self.started)
-        self.assertGreaterEqual(span, 0.8)                  # 10 pings at 10/s: spread over ~0.9 s
+        # all at once now: the rate limiter went with the fleet-wide sweep (D35)
+        self.assertLess(max(self.started) - min(self.started), 1.0)
 
     def test_cancel_restores_earlier_results(self):
-        cfg = types.SimpleNamespace(ping_rate=2, ping_timeout=1)
+        """A ping already in flight must not overwrite what was known before."""
+        cfg = types.SimpleNamespace(ping_timeout=1)
+        self.delay = 0.6                                     # still pinging when we cancel
         hosts = ["10.0.0.%d" % i for i in range(2, 8)]
         ping = dict((h, tl.PING_UP) for h in hosts)
-        batch = tl.BatchPing(hosts, cfg, {"ping": ping, "rtt": {}}, {})
+        batch = tl.BatchPing(hosts, cfg, {"ping": ping}, {})
         time.sleep(0.1)
         batch.cancel()
         self.wait(batch)
         self.assertNotIn(tl.WAIT, ping.values())             # nothing left hanging in "wait"
-        self.assertEqual(ping["10.0.0.7"], tl.PING_UP)       # not reached: earlier result kept
+        self.assertEqual(ping["10.0.0.7"], tl.PING_UP)       # earlier result kept
 
 
 if __name__ == "__main__":
