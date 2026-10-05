@@ -13,7 +13,7 @@ class BatchPingTest(unittest.TestCase):
 
         def fake_ping(host, timeout):           # no real ICMP needed in tests
             self.started.append(time.time())
-            return host.endswith(".1"), 1.5 if host.endswith(".1") else None
+            return 1.5 if host.endswith(".1") else None    # ms, or None for no reply
         tl.ping_once = fake_ping
 
     def tearDown(self):

@@ -132,6 +132,42 @@ class TestCsv(TempDir):
         # the columns nobody asked for are still searchable and shown by "details"
         self.assertEqual(devices[1].values["VLAN_ID"], "2301")
 
+    def test_a_columns_line_that_does_not_fit_falls_back_to_name_and_address(self):
+        """Field bug: with the default columns line only 'subnet' matched the Infoblox
+        export, so the table showed one column of NETWORK addresses and nothing else."""
+        p = self.write("fit.csv", self.INFOBLOX)
+        devices, columns, warns, picked = tl.build_devices(*tl.read_table(p),
+                                                           cfg=tl.load_config(args()))
+        self.assertEqual([c[1] for c in columns], ["Name", "IP"])
+        self.assertEqual(columns[1][0], "ADDRESS")            # the switch address, not SUBNET
+        self.assertEqual(devices[0].cells[1], "192.0.2.98")
+        self.assertTrue(any("falls back to the switch name and its address" in w for w in warns), warns)
+
+    def test_rows_with_an_empty_name_column_are_reported(self):
+        """Field bug: the Name column was recognised but stayed empty.  The switch itself
+        falls back to its IP, so nothing looked wrong until the table was on screen."""
+        p = self.write("blank.csv", "SUBNET,PRIMARY_DN_CODE,ADDRESS\n"
+                                    "198.51.100.0,,198.51.100.20\n"
+                                    "198.51.100.0,,198.51.100.21\n"
+                                    "192.0.2.96,ab-12-s34-r1.example.net,192.0.2.98\n")
+        conf = self.write("blank.conf", "[truffle]\ndata = %s\n"
+                          "columns = PRIMARY_DN_CODE:Name, ADDRESS:IP\n" % p)
+        report = {}
+        devices, _, _, picked = tl.build_devices(*tl.read_table(p, report),
+                                                 cfg=tl.load_config(args(config=conf)))
+        issues = tl.data_issues(devices, report["lines"], report["issues"], picked["name"])
+        self.assertTrue(any("nothing in the name column 'PRIMARY_DN_CODE'" in i for i in issues), issues)
+        self.assertTrue(any("lines 2, 3" in i for i in issues), issues)
+        self.assertEqual(devices[0].name, "198.51.100.20")      # falls back to the address
+        self.assertEqual(devices[0].cells[0], "")               # but the NAME cell is empty
+        # a fully named list must not be warned about
+        clean = self.write("ok.csv", "SUBNET,PRIMARY_DN_CODE,ADDRESS\n"
+                                     "192.0.2.96,ab-12-s34-r1.example.net,192.0.2.98\n")
+        rep2 = {}
+        devs, _, _, pick2 = tl.build_devices(*tl.read_table(clean, rep2),
+                                             cfg=tl.load_config(args(config=conf)))
+        self.assertEqual(tl.data_issues(devs, rep2["lines"], rep2["issues"], pick2["name"]), [])
+
     def test_the_label_wins_over_a_same_named_header(self):
         """A CSV that has its own 'Name'/'IP' columns AND a label must follow the label -
         otherwise you could never point TRuffle at a different column."""
@@ -683,6 +719,47 @@ class TestPaste(unittest.TestCase):
             if key is not None:
                 out.append(key)
         return out
+
+
+class TestPingVerdict(unittest.TestCase):
+    """Field bug: pressing ESC while a ping was running recorded the switch as DOWN even
+    though its replies were on the screen - a killed ping exits non-zero.  And a router
+    answering "Destination Net Unreachable" prints a "76 bytes from ..." line and on macOS
+    exits 0, so neither the text nor the exit code proves a reply.  Only "time=" does."""
+
+    def test_a_cancelled_ping_that_already_had_replies_is_up(self):
+        self.assertEqual(tl.ping_verdict(0.07, done=True, killed=True), tl.PING_UP)
+        self.assertEqual(tl.ping_verdict(0.07, done=False, killed=True), tl.PING_UP)
+
+    def test_zero_ms_still_counts_as_a_reply(self):
+        self.assertEqual(tl.ping_verdict(0.0, done=True, killed=True), tl.PING_UP)
+
+    def test_a_cancelled_ping_with_no_reply_yet_records_nothing(self):
+        """It proves nothing, so whatever was known before must survive."""
+        self.assertIsNone(tl.ping_verdict(None, done=False, killed=True))
+        self.assertIsNone(tl.ping_verdict(None, done=True, killed=True))
+
+    def test_only_a_finished_ping_may_say_down(self):
+        self.assertEqual(tl.ping_verdict(None, done=True, killed=False), tl.PING_DOWN)
+        self.assertIsNone(tl.ping_verdict(None, done=False, killed=False))
+
+    def test_ping_that_could_not_start_says_nothing_about_the_switch(self):
+        self.assertIsNone(tl.ping_verdict(None, done=True, killed=False, started=False))
+
+    def test_an_icmp_error_is_not_a_reply(self):
+        """This is the text a router sends back; it must not read as a round-trip time."""
+        unreachable = ("PING 192.0.2.77 (192.0.2.77): 56 data bytes\n"
+                       "76 bytes from 198.51.100.1: Destination Net Unreachable\n"
+                       "Request timeout for icmp_seq 0\n")
+        self.assertIsNone(tl.parse_rtt(unreachable))
+        self.assertEqual(tl.ping_verdict(tl.parse_rtt(unreachable), done=True, killed=False),
+                         tl.PING_DOWN)
+
+    def test_a_stream_that_cannot_start_is_marked_not_started(self):
+        s = tl.ProcStream(["/nonexistent/ping"])
+        self.assertTrue(s.done)
+        self.assertFalse(s.started)
+        self.assertFalse(s.killed)
 
 
 class TestLatency(unittest.TestCase):

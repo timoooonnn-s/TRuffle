@@ -448,3 +448,54 @@ documentation addresses (`192.0.2.x`, `198.51.100.x`), so the tests still prove 
 (the Ethereum/Solidity development framework, installed via npm). It is very unlikely to be on a
 RHEL switch-management server, but `command -v truffle` on the target box is a five-second check that
 D1 explicitly did for `tree`, and is worth repeating here.
+
+## D32: Two field bugs: cancelled ping, and a list whose columns don't fit (user, 2026-10-05)
+
+### A cancelled ping reported the switch as DOWN
+Reported from the field: pressing `ESC` while a ping ran recorded **down** although replies were
+on the screen. Reproduced in one run (two replies received, verdict `down`).
+Cause: `ESC` makes `show_text` call `ProcStream.stop()`, which SIGTERMs ping, so `returncode` is
+`-15` and `stream.done` becomes true. The `stream.done` branch then decided by exit code and the
+"a reply already came back" rule from **D15** - which sat in the `elif` below it - was never reached.
+
+While reproducing it, a **second, older bug** in the same test surfaced: a router answering
+*Destination Net Unreachable* makes ping print `76 bytes from <router>: ...`, so the `" bytes from "`
+test used since D17 read an ICMP **error** as a successful reply. On macOS that ping even exits **0**,
+so neither the text nor the exit code is proof. An unreachable host was reported **up**.
+
+**Decision: the parsed round-trip time is the only proof of a reply.** Only a real echo reply carries
+`time=`, which `parse_rtt` already reads (and `LC_ALL=C` already guarantees). New pure function
+`ping_verdict(ms, done, killed, started)`:
+- a time -> **up**, whatever the exit code says (so a cancelled-but-answered ping is up, and `0.0 ms`
+  counts - it is a measurement, not a missing value);
+- no time, and the ping **ran to the end by itself** -> **down**;
+- anything else - cancelled before a reply, or ping could not start at all -> **no verdict**, and the
+  previous result is left untouched. "ping is not installed" is not a statement about a switch.
+- `ProcStream` gained `killed` (we signalled it) and `started` (it never ran), because the exit code
+  alone cannot distinguish those.
+- `ping_once` now returns **the ms or None** instead of `(bool, ms)` - the two were redundant, and the
+  bool was the thing that was wrong. Batch ping follows the same rule, which also fixes the
+  unreachable-host-reported-up case there.
+- *Tester:* all four single-ping outcomes plus the ICMP-error text are tested, and the tests were
+  checked to fail against the old logic.
+
+### A list whose columns don't fit showed only subnets
+Also reported: with the real Infoblox export the table showed **only** network addresses, and in
+another attempt the NAME column was recognised but **empty**. Two different causes, both now handled
+rather than guessed at:
+- **Only one configured column existed.** The default `columns` line matched just `subnet` in that
+  export, so the table was one column of *network* addresses. Fewer than two resolved columns now
+  falls back to the switch **name and its address** with a warning, because a table that cannot show
+  what you connect to is not worth drawing. *Critic:* this does override an explicit one-column
+  `columns` line; accepted, because the warning says so and a deliberate single-column table is not a
+  real use case.
+- **Rows with an empty name column.** `d.name` falls back to the IP, but the NAME *cell* comes from
+  `columns`, so the row looked half-broken with nothing explaining it. `data_issues` now reports
+  "N row(s) have nothing in the name column 'X' (lines ...)".
+- **`--check` now prints `headers found` and the first switch's resolved name and ssh target.** The
+  whole confusion existed because that mapping was invisible; one command now answers it.
+- Deliberately **not** done: adding `primary_dn_code` to the header auto-detection. It would make this
+  one vendor's export work with no config, but the cause of the user's report is not yet confirmed and
+  a vendor field name in a generic tool is a poor trade on a guess. Offered if they want it.
+
+`VERSION` 1.3.2-tmux. 120 tests.

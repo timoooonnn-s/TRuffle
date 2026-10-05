@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.3.1-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.3.2-tmux"     # experimental tmux branch; bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
@@ -375,8 +375,16 @@ def build_devices(headers, rows, cfg):
         name_h = headers[0]
         warns.append("no 'Name' column: using '%s' as the switch name"
                      " - set it with  columns = <header>:Name" % name_h)
-    if not columns:
-        columns = [(name_h, name_h), (host_h, host_h)]
+    # Fewer than two columns resolved means the configured `columns` line is for a
+    # different list, and the table would show one near-useless column - which is exactly
+    # what happened with an Infoblox export, where only "subnet" matched and the table
+    # showed nothing but network addresses.  Show the name and the address instead.
+    if len(columns) < 2:
+        if columns:
+            warns.append("only %d of the configured columns exist in this list, so the table "
+                         "falls back to the switch name and its address - set 'columns' to "
+                         "match your list" % len(columns))
+        columns = [(name_h, "Name"), (host_h, "IP")]
     picked = {"name": name_h, "host": host_h}
 
     devices = []
@@ -395,11 +403,15 @@ def build_devices(headers, rows, cfg):
 IPV4_LIKE = re.compile(r"^[0-9.]+$")
 
 
-def data_issues(devices, lines, issues=()):
+def data_issues(devices, lines, issues=(), name_header=None):
     """Plausibility checks for the switch list -> warnings with CSV line numbers."""
     out = list(issues)
-    names, hosts = {}, {}
+    names, hosts, nameless = {}, {}, []
     for d, line in zip(devices, lines):
+        # An empty name column shows an empty NAME cell while the switch itself falls back
+        # to its IP, so the row looks half-broken without anything saying why.
+        if name_header and not d.values.get(name_header, ""):
+            nameless.append(line)
         if not d.host:
             out.append("line %d: '%s' has no IP" % (line, d.name))
         elif not valid_host(d.host):
@@ -414,6 +426,12 @@ def data_issues(devices, lines, issues=()):
         names.setdefault(d.name.lower(), []).append(line)
         if d.host:
             hosts.setdefault(d.host, []).append("%s (line %d)" % (d.name, line))
+    if nameless:
+        out.append("%d row(s) have nothing in the name column '%s' (line%s %s%s) - their NAME "
+                   "column stays empty and they fall back to the IP. Point 'Name' at the column "
+                   "that holds the hostname: columns = <header>:Name"
+                   % (len(nameless), name_header, "" if len(nameless) == 1 else "s",
+                      ", ".join(str(n) for n in nameless[:8]), ", ..." if len(nameless) > 8 else ""))
     for name, where in names.items():
         if len(where) > 1:
             out.append("name '%s' appears %d times: lines %s" % (name, len(where), ", ".join(map(str, where))))
@@ -857,17 +875,40 @@ def ping_argv(host, count, timeout):
 
 
 def ping_once(host, timeout):
-    """One ping.  Returns (answered, round-trip time in ms or None).
+    """One ping.  Returns the round-trip time in ms, or None when nothing replied.
 
-    LC_ALL=C because the reply line is parsed: on a German server the translated output
-    broke the old " bytes from " test and every switch showed "down" (D17)."""
+    The time IS the answer: a router's "Destination Net Unreachable" also makes ping
+    print a "bytes from" line and on macOS exit 0, so only "time=" proves an echo reply.
+    LC_ALL=C because that line is parsed - on a German server the translated output broke
+    the old " bytes from " test and every switch showed "down" (D17)."""
     try:
         proc = subprocess.run(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               timeout=timeout + 5, env=dict(os.environ, LC_ALL="C"))
     except (OSError, subprocess.SubprocessError):
-        return False, None
-    return proc.returncode == 0, parse_rtt(proc.stdout.decode("utf-8", "replace"))
+        return None
+    return parse_rtt(proc.stdout.decode("utf-8", "replace"))
+
+
+def ping_verdict(ms, done, killed, started=True):
+    """What a ping proved: PING_UP, PING_DOWN, or None for "no verdict, keep what we had".
+
+    A parsed round-trip time is the ONLY proof of "up" - and it is proof whatever the exit
+    code says.  Two things broke here, both of them reported from the field:
+      - ESC makes TRuffle kill the ping, and a killed ping exits non-zero.  Reading that
+        as "down" marked a switch unreachable with its own replies still on the screen.
+      - a router answering "Destination Net Unreachable" prints a "76 bytes from ..." line
+        and on macOS even exits 0, so neither that text nor the exit code means a reply
+        arrived.  Only a real echo reply carries "time=", which is what parse_rtt reads.
+    "down" therefore needs a ping that ran to the end on its own and heard nothing.
+    Anything else - cancelled early, or ping could not start - proves nothing."""
+    if ms is not None:
+        return PING_UP
+    if not started:
+        return None          # ping itself could not run: that says nothing about the switch
+    if done and not killed:
+        return PING_DOWN
+    return None
 
 
 def parse_rtt(text):
@@ -940,8 +981,8 @@ class BatchPing(object):
                 with self._lock:
                     self._restore(host)
                 return
-            answered, ms = ping_once(host, cfg.ping_timeout)
-            result = PING_UP if answered else PING_DOWN
+            ms = ping_once(host, cfg.ping_timeout)
+            result = PING_DOWN if ms is None else PING_UP
             with self._lock:
                 self.states[host] = result
                 self.checked[("ping", host)] = time.time()
@@ -990,6 +1031,8 @@ class ProcStream(object):
         self.partial = ""
         self.done = False
         self.returncode = None
+        self.killed = False          # WE stopped it (ESC), so its exit code means nothing
+        self.started = True          # False when the command could not be run at all
         self.proc = None
         self._lock = threading.Lock()
         master = slave = None
@@ -1002,7 +1045,7 @@ class ProcStream(object):
                 if fd is not None:
                     os.close(fd)
             self.lines.append("cannot run %s: %s" % (argv[0], e.strerror or e))
-            self.returncode, self.done = 127, True
+            self.returncode, self.done, self.started = 127, True, False
             return
         os.close(slave)
         self._master = master
@@ -1044,6 +1087,7 @@ class ProcStream(object):
 
     def stop(self):
         if self.proc is not None and self.proc.poll() is None:
+            self.killed = True
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(self.proc.pid, sig)
@@ -2317,7 +2361,7 @@ class App(object):
         try:
             report = {}
             headers, rows = read_table(self.cfg.data, report)
-            devices, columns, warns, _ = build_devices(headers, rows, self.cfg)
+            devices, columns, warns, picked = build_devices(headers, rows, self.cfg)
         except DataError as e:
             self.load_error = str(e)
             self.devices = self.loaded = []
@@ -2330,7 +2374,7 @@ class App(object):
             self.fields = dict((h.lower(), h) for h in headers)
             self.fields.update((label.lower(), h) for h, label in columns)
             self.headers, self.delimiter = headers, report["delimiter"]
-            self.issues = data_issues(devices, report["lines"], report["issues"])
+            self.issues = data_issues(devices, report["lines"], report["issues"], picked["name"])
             if warns:
                 self.message("; ".join(warns), error=True, seconds=15)
             elif self.issues:
@@ -2792,13 +2836,12 @@ class App(object):
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
                                 env=dict(os.environ, LC_ALL="C"))      # predictable English output
             self.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
-            ms = parse_rtt("\n".join(stream.snapshot()))
-            if stream.done:
-                self.set_status("ping", dev.host, PING_UP if stream.returncode == 0 else PING_DOWN)
-            elif any(" bytes from " in line for line in stream.snapshot()):
-                self.set_status("ping", dev.host, PING_UP)   # closed early, but a reply came back
-            else:
-                return None
+            lines = stream.snapshot()
+            ms = parse_rtt("\n".join(lines))
+            state = ping_verdict(ms, stream.done, stream.killed, stream.started)
+            if state is None:
+                return None                      # cancelled before any reply: no verdict
+            self.set_status("ping", dev.host, state)
             if ms is None:
                 self.rtt.pop(dev.host, None)
             else:
@@ -3431,7 +3474,12 @@ def check(cfg):
         # Which column is which is the thing you cannot see from the table, so say it.
         print("switch name  : %s" % picked["name"])
         print("ssh target   : %s" % picked["host"])
-        issues = warns + data_issues(devices, report["lines"], report["issues"])
+        print("headers found: %s" % ", ".join(headers))
+        if devices:
+            first = devices[0]
+            print("first switch : name %r  ssh to %r"
+                  % (first.values.get(picked["name"], ""), first.host))
+        issues = warns + data_issues(devices, report["lines"], report["issues"], picked["name"])
         clean = not issues
         print("data check   : %s" % ("ok" if clean else "%d warning(s)" % len(issues)))
         for w in issues[:50]:

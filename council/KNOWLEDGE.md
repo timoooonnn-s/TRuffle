@@ -120,6 +120,17 @@ BootP_NextServer,BootP_BootFile,MAC_ADDRESS,RFC_MAC_ADDRESS,ADDRESS
   appear as extra columns; only `columns` has to change when they do.
 - Only `Name` and `IP` are actually wanted in the table (user, 2026-10-05).
 
+### What ping output actually proves (2026-10-05)
+- **`time=` is the only proof of an echo reply.** A router answering *Destination Net Unreachable*
+  prints `76 bytes from <router>: Destination Net Unreachable`, so a `" bytes from "` test reads an
+  ICMP **error** as a reply.
+- **Exit codes differ by platform.** macOS `ping` exits **0** for a net-unreachable run that got no
+  echo reply at all; Linux iputils exits 1 and writes `From <router> icmp_seq=1 Destination Net
+  Unreachable` (note: `From`, not `bytes from`). So the exit code cannot be trusted alone either.
+- **A ping we kill ourselves exits non-zero** (SIGTERM -> `-15`), which says nothing about the switch.
+- Therefore: a parsed round-trip time means up; no time *and* the ping finished on its own means down;
+  everything else means "no verdict". See `ping_verdict()` and D32.
+
 ### Terminal keys that never arrive (2026-10-04)
 `curses.wrapper` puts the terminal in **cbreak**, which clears `ICANON` but **not `IEXTEN`**. So:
 - `^U` (kill), `^W` (werase), `^R` (rprnt) are `ICANON`-only specials and **do** reach the

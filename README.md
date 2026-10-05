@@ -169,7 +169,7 @@ normally — no Shift needed.
 | Command | What it does |
 |---|---|
 | **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
-| **ping** | `ping -c 4` with live output; also updates the Ping and MS columns. |
+| **ping** | `ping -c 4` with live output; also updates the Ping and MS columns. `ESC` stops it: replies that already arrived still count as **up**, and stopping before any reply leaves the old result alone. |
 | **batch ping** | Pings every switch in the **current, filtered** list and fills the PING column. It's deliberately **quiet**: at most 20 pings per second (`ping_rate`), so 700 switches take about 35 s and one site a few seconds. You can keep working meanwhile; `ESC` (with an empty search) cancels. |
 | **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
 | **help** | Keys, search syntax, and the file paths in use. |
@@ -356,17 +356,26 @@ Every other column is still there — searchable as `vlan_id:2301` and listed by
 can add more to the table later (`columns = PRIMARY_DN_CODE:Name, ADDRESS:IP, location, comment`)
 as soon as the export carries them.
 
-**Check it before you trust it.** `truffle --check` prints which column it uses for each job:
+**Check it before you trust it.** `truffle --check` prints which column it uses for each job, every
+header it found, and the first switch's resolved values — which is all you need to see what went wrong:
 
 ```
 columns      : PRIMARY_DN_CODE (Name), ADDRESS (IP)
 switch name  : PRIMARY_DN_CODE
 ssh target   : ADDRESS
+headers found: SUBNET, MASK, VLAN_ID, PRIMARY_DN_CODE, ..., ADDRESS
+first switch : name 'cd-34-s56-r1.example.net'  ssh to '198.51.100.20'
 data check   : ok
 ```
 
 Without the labels it warns instead of guessing silently — using the first column as the name would
 give every switch in a subnet the same identity, and favourites and history go by that name.
+It also tells you when:
+
+- **fewer than two of your `columns` exist in the list** — the table then falls back to showing the
+  switch name and its address, instead of one near-useless column;
+- **rows have nothing in the name column** — their NAME cell stays empty and they fall back to their
+  IP, which otherwise just looks broken.
 
 ## Configuration
 
