@@ -1,19 +1,19 @@
-# TRee-Li Style Guide
+# TRuffle Style Guide
 
 One blue family in several shades, calm and modern, plus a few small, bright highlights.
-The code side lives in `PALETTE` in `tree-li`. This page is the reference for both.
+The code side lives in `PALETTE` in `truffle`. This page is the reference for both.
 
 ## Palette
 
 | Name | Design hex | Terminal (xterm-256) | Used for |
 |---|---|---|---|
 | **Navy** | `#000078` | 18 `#000087` | input-field text |
-| **TRee Blue** (primary) | `#003cb4` | 25 `#005faf` | active tab, selection bar, divider lines |
+| **Truffle Blue** (primary) | `#003cb4` | 25 `#005faf` | active tab, selection bar, divider lines |
 | **Signal Blue** | `#1964dc` | 26 `#005fd7` | cursor block |
 | **Steel** | `#6487be` | 67 `#5f87af` | dialog window surface, secondary text, hints |
 | **Sky** | `#9bbdf5` | 111 `#87afff` | brand name, column headers, keys, idle input fields |
 | **Mist** | `#e6e9ff` | 189 `#d7d7ff` | active input field, frames, messages, sort arrow |
-| White | `#ffffff` | 231 | text on TRee Blue / Steel |
+| White | `#ffffff` | 231 | text on Truffle Blue / Steel |
 | Fade | `#949494` | 246 | everything behind an open dialog |
 
 **Highlights.** These are small and bright on purpose, and the only colours outside the blue family:
@@ -27,7 +27,7 @@ The code side lives in `PALETTE` in `tree-li`. This page is the reference for bo
 
 ## Rules
 
-- **Light on dark, strong as background.** Sky and Mist carry text; TRee Blue and Steel are surfaces.
+- **Light on dark, strong as background.** Sky and Mist carry text; Truffle Blue and Steel are surfaces.
   Body text uses the terminal's own foreground, so light terminal themes still work.
 - **Highlights stay small:** one character or one word (a star, a dot, a status). Never colour whole rows with them.
 - **Search matches:** the matched letters are Sky, bold and underlined (Mist on the selection bar).
@@ -54,15 +54,15 @@ The code side lives in `PALETTE` in `tree-li`. This page is the reference for bo
 
 ```css
 :root {
-  --treeli-navy:        #000078;
-  --treeli-blue:        #003cb4;   /* primary */
-  --treeli-signal:      #1964dc;
-  --treeli-steel:       #6487be;
-  --treeli-sky:         #9bbdf5;
-  --treeli-mist:        #e6e9ff;
-  --treeli-highlight:   #ffaf00;   /* small accents only */
-  --treeli-up:          #5fd787;
-  --treeli-down:        #ff5f5f;
-  --treeli-wait:        #d7af5f;
+  --truffle-navy:        #000078;
+  --truffle-blue:        #003cb4;   /* primary */
+  --truffle-signal:      #1964dc;
+  --truffle-steel:       #6487be;
+  --truffle-sky:         #9bbdf5;
+  --truffle-mist:        #e6e9ff;
+  --truffle-highlight:   #ffaf00;   /* small accents only */
+  --truffle-up:          #5fd787;
+  --truffle-down:        #ff5f5f;
+  --truffle-wait:        #d7af5f;
 }
 ```

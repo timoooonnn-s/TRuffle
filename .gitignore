@@ -1,11 +1,11 @@
 # Site specific - keep switch lists and local settings out of git
 data.csv
-tree-li.conf
+truffle.conf
 *.log
 __pycache__/
 *.pyc
 .DS_Store
 dist/
 # bundle files dropped into a checkout, and the bundle's file list
-tree-li-bundle-*.py
-.tree-li-files
+truffle-bundle-*.py
+.truffle-files

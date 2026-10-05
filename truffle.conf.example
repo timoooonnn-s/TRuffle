@@ -1,0 +1,74 @@
+# TRuffle configuration
+#
+# TRuffle reads, in this order (later files override earlier ones):
+#   1. truffle.conf next to the truffle script   (shared team defaults)
+#   2. ~/.config/truffle/truffle.conf             (your personal settings)
+#   3. the file given with --config FILE
+# Every option is optional; the values below are the built-in defaults.
+# Copy this file to truffle.conf and uncomment what you want to change.
+
+[truffle]
+
+# Switch list. Relative paths are relative to THIS config file
+# (never to the directory you start truffle from).
+# Can also be set with --data.
+#data = data.csv
+
+# Columns shown in the table, in this order. "csvheader:Label" renames a column.
+# Header names are matched case-insensitively. Search looks at these columns.
+# Columns not listed here are still shown by "details".
+#
+# The LABEL also decides the job: the column labelled "Name" is the switch name, the
+# one labelled "IP" is the ssh target. So a list whose columns are named differently
+# needs no renaming - e.g. an Infoblox export (hostname in PRIMARY_DN_CODE, host
+# address in ADDRESS, and a SUBNET column that must NOT be used as either):
+#   columns = PRIMARY_DN_CODE:Name, ADDRESS:IP
+# "truffle --check" prints which column it picked for each job.
+#columns = Name, IP, subnet, aliases:Alias, comment
+
+# Pre-filled ssh username (default: your Linux user name; can be changed at login).
+#user =
+
+# ssh program and extra options. Your options take precedence over TRuffle's.
+# Example for very old switch firmware:
+#   ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa
+#ssh_command = ssh
+#ssh_options =
+
+# Seconds to wait for a switch to answer the ssh connection.
+#connect_timeout = 10
+
+# Record ssh sessions (what you see on screen, never the password).
+# Logs are per user and only readable by you. Also: truffle --log, or Ctrl-G in TRuffle
+# to switch it on just for this session.
+#session_log = no
+#log_dir = ~/.local/state/truffle/logs
+
+# Where your favourites and connection history are kept (per user).
+# Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle
+#state_dir =
+
+# Batch ping: at most ping_rate pings are started per second (quiet on purpose:
+# 700 switches take about 35 s), and seconds to wait for each reply.
+#ping_rate = 20
+#ping_timeout = 1
+
+# Forget the stored password this many minutes after you TYPED it (not after your last
+# keypress, so an open window cannot keep it alive for days).
+# 600 = 10 hours: never expires while you work, always has expired by the next morning.
+# 0 = keep it until TRuffle exits.
+# This only deletes the password inside TRuffle. A switch session you are in keeps
+# running, and tmux panes keep running and stay logged in.
+#password_lifetime = 600
+
+# Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
+# and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
+#tmux = yes
+
+# Where Ctrl-E writes the exported list.
+#export_dir = ~
+
+
+# Screen symbols: auto (Unicode on UTF-8 terminals), unicode, or ascii
+# (use ascii if lines/dots look garbled, e.g. old PuTTY fonts). Also: truffle --ascii
+#charset = auto

@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TRee-Li: Switch Manager
+TRuffle: Switch Manager
 
 A terminal (curses) switch manager for use over plain SSH sessions.
 Inspired by V-Li: Switch Manager (github.com/seismicindustries/switch-manager).
 
-Python 3.8+, standard library only.  Run `tree-li --help`.
+Python 3.8+, standard library only.  Run `truffle --help`.
 """
 
 import argparse
@@ -19,18 +19,22 @@ import fcntl
 import functools
 import getpass
 import io
+import json
 import locale
 import os
 import pty
 import re
 import resource
+import secrets
 import select
 import shlex
 import shutil
 import signal
+import socket
 import struct
 import subprocess
 import sys
+import tempfile
 import termios
 import textwrap
 import threading
@@ -38,22 +42,59 @@ import time
 import tty
 import warnings
 
-VERSION = "1.1.0"          # bump before building a bundle (tools/make-bundle.py)
-TITLE = "TRee-Li: Switch Manager"
+VERSION = "1.3.1-tmux"     # experimental tmux branch; bump before building a bundle
+TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
-CONFIG_NAME = "tree-li.conf"
-CONFIG_SECTION = "tree-li"
+CONFIG_NAME = "truffle.conf"
+CONFIG_SECTION = "truffle"
 COMMANDS = ["ssh", "ping", "batch ping", "details", "help", "exit"]
 
 # Status words are stored, shown and searched as they are (ping:down, ssh:failed).
 PING_UP, PING_DOWN, WAIT = "up", "down", "wait"
 SSH_OK, SSH_FAILED = "ok", "failed"     # outcome of your last real ssh attempt (no probing)
-STATUS_LABELS = ["Ping", "SSH"]                         # the two status columns after the CSV columns
-STATUS_WIDTHS = [6, 8]                                  # "* down", "* failed"
+# The columns after the CSV columns: (label, width, kind, numeric).
+#   ping -> up / down / wait      rtt -> round-trip time in ms      ssh -> ok / failed
+# A numeric column shows the plain number and sorts worst (slowest) first, like the
+# state columns sort problems first.
+STATUS_COLUMNS = [("Ping", 6, "ping", False), ("ms", 6, "rtt", True), ("SSH", 8, "ssh", False)]
+STATUS_KINDS = [kind for _, _, kind, _ in STATUS_COLUMNS]
+STATE_KINDS = [kind for _, _, kind, numeric in STATUS_COLUMNS if not numeric]   # saved as words
 CHECKED_STATES = (PING_UP, PING_DOWN, SSH_OK, SSH_FAILED)          # results worth keeping
 STATUS_RANK = {PING_DOWN: 0, SSH_FAILED: 0, PING_UP: 2, SSH_OK: 2, WAIT: 3}
 STATUS_STYLE = {PING_UP: "up", SSH_OK: "up", PING_DOWN: "down", SSH_FAILED: "down", WAIT: "wait"}
+
+# ---------------------------------------------------------------------------
+# How long TRuffle keeps the password you typed.
+#
+# THIS IS THE ONE NUMBER TO CHANGE if the team wants it longer or shorter.  It is the
+# default for `password_lifetime` in truffle.conf, so a single site can still override
+# it without touching the code.
+#
+#   600 = 10 hours  (one long working day: never expires while you work, always has
+#                    expired by the next morning)
+#    60 = 1 hour    0 = never forget it, keep it until TRuffle exits
+#
+# It is measured from the moment you TYPED the password, not from your last keypress -
+# so touching the window cannot keep it alive for days.
+#
+# What expiry does and does NOT do:
+#   does      - forget the password inside TRuffle, so the next ssh asks again
+#   does NOT  - touch anything you are connected to.  A switch session you are sitting
+#               in keeps running, and tmux panes keep running and stay logged in.  The
+#               password is only deleted from TRuffle, never from your workspace.
+# ---------------------------------------------------------------------------
+PASSWORD_LIFETIME_MINUTES = 600
+
+# Bracketed paste: the terminal wraps pasted text in ESC[200~ ... ESC[201~, so a pasted
+# newline is text and not Enter (which would have run ssh on whatever row was selected).
+PASTE_ON, PASTE_OFF = b"\033[?2004h", b"\033[?2004l"
+PASTE = {"text": ""}                  # the last pasted block, read by read_key's callers
+MAX_PASTE = 512
+HUGE_PASTE = 1 << 20                  # hard stop: a terminal that never sends the end marker
+
+# "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"  (ping runs with LC_ALL=C)
+RTT_RE = re.compile(r"\btime[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
 
 # fork() while batch-ping threads run raises a DeprecationWarning on Python 3.12+.
 # The child execs immediately, so it is safe; the warning would only garble the screen.
@@ -72,19 +113,15 @@ DEFAULTS = {
     "ssh_options": "",
     "connect_timeout": "10",
     "session_log": "no",
-    "log_dir": "~/.local/state/tree-li/logs",
+    "log_dir": "~/.local/state/truffle/logs",
     "state_dir": "",
     "ping_rate": "20",
     "ping_timeout": "1",
+    "password_lifetime": str(PASSWORD_LIFETIME_MINUTES),
     "charset": "auto",
-    "mouse": "yes",
+    "tmux": "yes",
     "export_dir": "~",
 }
-
-# Options of older versions: accepted and ignored, so an old tree-li.conf keeps working.
-OBSOLETE = ("trace_command", "delimiter", "host_column", "name_column", "ping_workers", "ssh_port",
-            "ssh_check_timeout")
-
 
 class ConfigError(Exception):
     pass
@@ -95,7 +132,7 @@ class DataError(Exception):
 
 
 class Config(object):
-    """Resolved settings; every option is documented in tree-li.conf.example."""
+    """Resolved settings; every option is documented in truffle.conf.example."""
 
 
 def parse_bool(value, option):
@@ -143,11 +180,11 @@ def default_user():
 
 def user_config_path():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "tree-li", CONFIG_NAME)
+    return os.path.join(base, "truffle", CONFIG_NAME)
 
 
 def load_config(args):
-    """Defaults <- tree-li.conf next to the script <- ~/.config/tree-li/tree-li.conf
+    """Defaults <- truffle.conf next to the script <- ~/.config/truffle/truffle.conf
     <- --config FILE <- command line."""
     raw = dict(DEFAULTS)
     data_base = SCRIPT_DIR
@@ -158,7 +195,7 @@ def load_config(args):
         candidates.append(args.config)
 
     cfg = Config()
-    cfg.files, cfg.obsolete = [], []
+    cfg.files = []
     for path in candidates:
         if not os.path.isfile(path):
             continue
@@ -171,9 +208,6 @@ def load_config(args):
         if not parser.has_section(CONFIG_SECTION):
             raise ConfigError("%s: missing the [%s] section" % (path, CONFIG_SECTION))
         for key, value in parser.items(CONFIG_SECTION):
-            if key in OBSOLETE:
-                cfg.obsolete.append((key, path))
-                continue
             if key not in DEFAULTS:
                 raise ConfigError("%s: unknown option '%s'" % (path, key))
             raw[key] = value.strip()
@@ -200,15 +234,17 @@ def load_config(args):
     cfg.session_log = args.log or parse_bool(raw["session_log"], "session_log")
     cfg.log_dir = os.path.abspath(os.path.expanduser(raw["log_dir"]))
     state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "tree-li")))
+    cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "truffle")))
     cfg.ping_rate = parse_int(raw["ping_rate"], "ping_rate", 1, 100)
     cfg.ping_timeout = parse_int(raw["ping_timeout"], "ping_timeout", 1, 30)
+    cfg.password_lifetime = parse_int(raw["password_lifetime"], "password_lifetime", 0, 1440)
     charset = "ascii" if args.ascii else (raw["charset"] or "auto").lower()
     if charset not in ("auto", "unicode", "ascii"):
         raise ConfigError("charset: use auto, unicode or ascii")
     cfg.charset_setting = charset
-    cfg.mouse = parse_bool(raw["mouse"], "mouse")
+    cfg.tmux = parse_bool(raw["tmux"], "tmux")
     cfg.debug = args.debug
+    cfg.config_file = args.config
     cfg.export_dir = os.path.abspath(os.path.expanduser(raw["export_dir"] or "~"))
     return cfg
 
@@ -306,24 +342,42 @@ def find_header(headers, wanted):
 
 
 def build_devices(headers, rows, cfg):
-    """Return (devices, columns, warnings); columns are (header, label) pairs."""
-    warns = []
-    host_h = None
-    for alt in ("ip", "host", "hostname", "address", "ip address"):
-        host_h = host_h or find_header(headers, alt)
-    if host_h is None:
-        raise DataError("no 'IP' column in the switch list (found: %s)" % ", ".join(headers))
-    name_h = find_header(headers, "name") or headers[0]
+    """Return (devices, columns, warnings, picked); columns are (header, label) pairs and
+    picked is {"name": header, "host": header}.
 
-    columns = []
+    Which column is the switch's NAME and which is the ssh TARGET comes from the LABELS
+    in `columns` first: the column you label "Name" is the name, the one you label "IP"
+    is the address.  That makes an export with its own header names work with one config
+    line and no code change - e.g. an Infoblox export where the hostname sits in
+    PRIMARY_DN_CODE and the host address in ADDRESS, next to a SUBNET column that must
+    NOT be used as either.  Without such a label the usual header names are looked for."""
+    warns = []
+    columns, by_label = [], {}
     for key, label in cfg.columns:
         h = find_header(headers, key)
         if h is None:
             warns.append("column '%s' not found in the switch list" % key)
         else:
             columns.append((h, label))
+            by_label.setdefault(label.strip().lower(), h)
+
+    host_h = by_label.get("ip")
+    for alt in ("ip", "host", "hostname", "address", "ip address"):
+        host_h = host_h or find_header(headers, alt)
+    if host_h is None:
+        raise DataError("no 'IP' column in the switch list (found: %s)"
+                        "  - label one with  columns = <header>:IP" % ", ".join(headers))
+    name_h = by_label.get("name") or find_header(headers, "name")
+    if name_h is None:
+        # Falling back to the first column used to happen silently, and on an export
+        # whose first column is the SUBNET that made every switch in a subnet share one
+        # identity - so favourites, history and the duplicate check all went wrong.
+        name_h = headers[0]
+        warns.append("no 'Name' column: using '%s' as the switch name"
+                     " - set it with  columns = <header>:Name" % name_h)
     if not columns:
         columns = [(name_h, name_h), (host_h, host_h)]
+    picked = {"name": name_h, "host": host_h}
 
     devices = []
     for row in rows:
@@ -335,7 +389,7 @@ def build_devices(headers, rows, cfg):
         d.lcells = [c.lower() for c in d.cells]
         d.search = "\x00".join(d.lcells)          # \x00: a word never matches across two columns
         devices.append(d)
-    return devices, columns, warns
+    return devices, columns, warns, picked
 
 
 IPV4_LIKE = re.compile(r"^[0-9.]+$")
@@ -369,19 +423,37 @@ def data_issues(devices, lines, issues=()):
     return out
 
 
-def export_csv(path, devices, headers, delimiter, status, checked):
-    """Write devices (all CSV columns + ping/SSH result and time) to a new file, mode 0600."""
+def free_path(path, limit=100):
+    """path, or path with -2, -3 ... in front of the extension when it exists already,
+    so two exports in the same second do not fail on each other."""
+    base, ext = os.path.splitext(path)
+    for n in range(1, limit):
+        candidate = path if n == 1 else "%s-%d%s" % (base, n, ext)
+        if not os.path.exists(candidate):
+            return candidate
+    raise OSError(errno.EEXIST, "too many files named like %s" % os.path.basename(path))
+
+
+def export_csv(path, devices, headers, delimiter, status, checked, detail=None):
+    """Write devices (all CSV columns + ping/SSH result, time, round-trip time and the
+    reason a ssh attempt failed) to a new file, mode 0600, never over an existing one.
+    Returns the path actually written."""
+    detail = detail or {}
+
     def when(kind, host):
         stamp = checked.get((kind, host))
         return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else ""
+    path = free_path(path)
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:     # BOM: Excel opens it right
         writer = csv.writer(f, delimiter=delimiter)
-        writer.writerow(list(headers) + ["Ping", "Ping checked", "SSH last try", "SSH tried"])
+        writer.writerow(list(headers) + ["Ping", "Ping ms", "Ping checked",
+                                         "SSH last try", "SSH reason", "SSH tried"])
         for d in devices:
             writer.writerow([d.values.get(h, "") for h in headers] + [
-                status["ping"].get(d.host, ""), when("ping", d.host),
-                status["ssh"].get(d.host, ""), when("ssh", d.host)])
+                status["ping"].get(d.host, ""), detail.get(("ping", d.host), ""), when("ping", d.host),
+                status["ssh"].get(d.host, ""), detail.get(("ssh", d.host), ""), when("ssh", d.host)])
+    return path
 
 
 def device_key(d):
@@ -443,8 +515,9 @@ def fuzzy_term(word):
 
 
 def status_term(states, value):
-    """ping:/ssh: filters.  'none' = not checked yet, otherwise the start of a state."""
-    if value == "none":
+    """ping:/ssh: filters.  'none' (and a bare 'ping:', like any other empty field:)
+    = not checked yet, otherwise the start of a state."""
+    if value in ("", "none"):
         return lambda d: d.host not in states
     return lambda d: d.host in states and states[d.host].startswith(value)
 
@@ -524,9 +597,60 @@ def default_order(view, query, favorites, recent, found=None):
     return view
 
 
+def paste_text(raw, multiline=True):
+    """Pasted text turned into something safe to put in a field.  Control characters are
+    dropped (so a pasted tab cannot mark a switch and a pasted newline cannot run ssh).
+    For the search, line breaks become spaces - all terms must match, so a pasted list
+    simply matches nothing and you see that at once.  For a password field only the
+    first line is taken."""
+    lines = [CONTROL_CHARS.sub("", line) for line in re.split(r"[\r\n]", raw or "")]
+    lines = [line for line in lines if line]
+    if not multiline:
+        return lines[0][:MAX_PASTE] if lines else ""
+    return " ".join(lines)[:MAX_PASTE]
+
+
+def marked_label(total, shown):
+    """Top bar text for marks.  ssh and batch ping act on the marked switches that are
+    in the current view, so that is the number shown - a mark hidden by the search is
+    named separately instead of being counted in silently."""
+    if total <= 0:
+        return ""
+    if shown >= total:
+        return "%d marked" % total
+    return "%d marked (+%d hidden)" % (shown, total - shown)
+
+
+def set_or_clear(mapping, key, text):
+    """Store text under key, or drop the key when there is nothing to store - so an
+    empty detail never lingers as an empty string."""
+    if text:
+        mapping[key] = text
+    else:
+        mapping.pop(key, None)
+
+
+def minutes_text(minutes):
+    """'10 h', '1 h 30 min', '45 min' - never a rounded-off lie like '2 h' for 90."""
+    if minutes >= 60 and minutes % 60 == 0:
+        return "%d h" % (minutes // 60)
+    if minutes > 60:
+        return "%d h %d min" % (minutes // 60, minutes % 60)
+    return "%d min" % minutes
+
+
+def creds_expired(now, entered_at, minutes):
+    """True when the password was typed more than `minutes` ago (0 minutes = never).
+
+    Absolute, not idle: measured from when it was TYPED, so a window someone keeps
+    touching cannot hold a live credential for days.  Expiry only forgets the password
+    inside TRuffle - sessions and tmux panes are never disturbed."""
+    return bool(minutes) and now - entered_at > minutes * 60
+
+
 class UserState(object):
     """Favourites and connection history of the current user, kept in
-    ~/.local/state/tree-li - never in the shared directory."""
+    ~/.local/state/truffle - never in the shared directory."""
 
     MAX_RECENT = 200
 
@@ -578,7 +702,7 @@ class UserState(object):
                 pass
 
     def toggle_favorite(self, key):
-        self.load()                        # another TRee-Li of the same user may have changed it
+        self.load()                        # another TRuffle of the same user may have changed it
         if key in self.favorites:
             self.favorites.discard(key)
         else:
@@ -587,31 +711,50 @@ class UserState(object):
         return key in self.favorites
 
     def load_status(self):
-        """Saved ping / SSH results: ({"ping": {...}, "ssh": {...}}, {(kind, host): time})."""
-        status, checked = {"ping": {}, "ssh": {}}, {}
+        """Saved ping / SSH results: (states, times, details) where states is
+        {"ping": {host: word}, "ssh": {...}}, times is {(kind, host): time} and details
+        is {(kind, host): text} - the round-trip time for a ping, the reason for a
+        failed ssh.
+
+        A line is `host TAB kind TAB state TAB time` with an optional 5th detail field.
+        Both lengths are accepted on purpose: a TRuffle without the detail field keeps
+        reading every line that has none, instead of dropping the whole file."""
+        status = dict((kind, {}) for kind in STATE_KINDS)
+        checked, detail = {}, {}
         for line in self._read("status"):
             parts = line.rstrip("\n").split("\t")
-            if len(parts) == 4 and parts[1] in status and parts[2] in CHECKED_STATES:
-                host, kind, state, stamp = parts
+            if len(parts) in (4, 5) and parts[1] in status and parts[2] in CHECKED_STATES:
+                host, kind, state, stamp = parts[:4]
                 try:
                     stamp = float(stamp)
                 except ValueError:
                     continue
                 if stamp >= checked.get((kind, host), 0):
                     status[kind][host], checked[(kind, host)] = state, stamp
-        return status, checked
+                    set_or_clear(detail, (kind, host), parts[4].strip() if len(parts) == 5 else "")
+        return status, checked, detail
 
-    def save_status(self, status, checked):
-        """Merge our results into the saved ones (newest wins, another TRee-Li may
+    def save_status(self, status, checked, detail=None):
+        """Merge our results into the saved ones (newest wins, another TRuffle may
         have checked other switches meanwhile) and write them back."""
-        saved, saved_checked = self.load_status()
+        saved, saved_checked, saved_detail = self.load_status()
+        detail = detail or {}
         for kind, states in status.items():
-            for host, state in states.items():
+            # list(): a batch ping still restoring cancelled hosts deletes keys from
+            # this very dict from its worker threads - iterating it live would raise
+            # "dictionary changed size during iteration" over the curses screen.
+            for host, state in list(states.items()):
                 stamp = checked.get((kind, host), 0)
                 if state in CHECKED_STATES and stamp >= saved_checked.get((kind, host), 0):
                     saved[kind][host], saved_checked[(kind, host)] = state, stamp
-        self._write("status", ["%s\t%s\t%s\t%d" % (host, kind, state, saved_checked.get((kind, host), 0))
-                               for kind in ("ping", "ssh") for host, state in sorted(saved[kind].items())])
+                    set_or_clear(saved_detail, (kind, host), clean(str(detail.get((kind, host), ""))))
+        lines = []
+        for kind in STATE_KINDS:
+            for host, state in sorted(saved[kind].items()):
+                row = [host, kind, state, "%d" % saved_checked.get((kind, host), 0)]
+                text = saved_detail.get((kind, host), "")
+                lines.append("\t".join(row + [text] if text else row))   # 4 fields when empty
+        self._write("status", lines)
 
     def touch(self, key):
         self.load()
@@ -619,6 +762,28 @@ class UserState(object):
         newest = sorted(self.recent.items(), key=lambda item: item[1], reverse=True)[:self.MAX_RECENT]
         self.recent = dict(newest)
         self._write("recent", ["%d\t%s" % (stamp, k) for k, stamp in reversed(newest)])
+
+    # A tmux pane cannot tell TRuffle anything over the socket (it is closed once the
+    # panes have their login), so a wrong password is reported through this file -
+    # the same way results are.  TRuffle then wipes the password it holds, instead of
+    # spending it on switch after switch (a central TACACS+/RADIUS account would lock).
+    def note_auth_failure(self, host):
+        stamp, _ = self.load_auth_failure()
+        if time.time() >= stamp:
+            # Sub-second precision on purpose: a pane can fail within the same second as
+            # the password was entered, and a whole-second stamp would then look older
+            # than the password it belongs to - so the wipe would be skipped.
+            self._write("authfail", ["%.3f\t%s" % (time.time(), host)])
+
+    def load_auth_failure(self):
+        """(time, host) of the last login failure reported by a pane, or (0, "")."""
+        for line in self._read("authfail"):
+            stamp, _, host = line.rstrip("\n").partition("\t")
+            try:
+                return float(stamp), host
+            except ValueError:
+                pass
+        return 0.0, ""
 
 
 def natural_key(text):
@@ -642,22 +807,29 @@ def next_sort(sort_col, sort_desc, col):
 
 
 def sort_devices(devices, col, desc, status=()):
-    """col indexes the visible columns, then the status columns (status = [ping, ssh]
-    state dicts; problems sort first).  Empty values always go last."""
+    """col indexes the visible columns, then the status columns (status holds one dict
+    per STATUS_COLUMNS entry).  Problems sort first, and for the numeric ms column that
+    means slowest first.  Empty values always go last."""
     if col is None or not devices:
         return list(devices)
     if col >= len(devices[0].cells):
-        states = status[col - len(devices[0].cells)]
+        index = col - len(devices[0].cells)
+        states = status[index]
 
         def value(d):
             return states.get(d.host, "")
-        key = lambda d: STATUS_RANK.get(value(d), 9)
+        if STATUS_COLUMNS[index][3]:               # ms: ascending = slowest first
+            key = lambda d: -(value(d) or 0)
+        else:
+            key = lambda d: STATUS_RANK.get(value(d), 9)
     else:
         def value(d):
             return d.cells[col]
         key = lambda d: natural_key(value(d))
-    filled = [d for d in devices if value(d)]
-    empty = [d for d in devices if not value(d)]
+    # "" means "no value".  Not falsiness: a round-trip time of 0.0 is a real
+    # measurement and must sort with the others, not with the never-measured hosts.
+    filled = [d for d in devices if value(d) != ""]
+    empty = [d for d in devices if value(d) == ""]
     return sorted(filled, key=key, reverse=desc) + empty
 
 
@@ -685,12 +857,45 @@ def ping_argv(host, count, timeout):
 
 
 def ping_once(host, timeout):
+    """One ping.  Returns (answered, round-trip time in ms or None).
+
+    LC_ALL=C because the reply line is parsed: on a German server the translated output
+    broke the old " bytes from " test and every switch showed "down" (D17)."""
     try:
-        return subprocess.call(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                               timeout=timeout + 5) == 0
+        proc = subprocess.run(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
+                              stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                              timeout=timeout + 5, env=dict(os.environ, LC_ALL="C"))
     except (OSError, subprocess.SubprocessError):
-        return False
+        return False, None
+    return proc.returncode == 0, parse_rtt(proc.stdout.decode("utf-8", "replace"))
+
+
+def parse_rtt(text):
+    """Round-trip time in ms from ping's output, or None.  One packet is one number:
+    it is not packet loss and not jitter, and the help page says so."""
+    m = RTT_RE.search(text or "")
+    try:
+        return float(m.group(1)) if m else None
+    except (ValueError, AttributeError):
+        return None
+
+
+def parse_float(text):
+    try:
+        return float(text)
+    except (TypeError, ValueError):
+        return None
+
+
+def format_rtt(ms):
+    """Short enough for a 6-wide column: 0.84 / 12.4 / 180 / 1204."""
+    if ms is None:
+        return ""
+    if ms < 10:
+        return "%.2f" % ms
+    if ms < 100:
+        return "%.1f" % ms
+    return "%.0f" % ms
 
 
 class BatchPing(object):
@@ -698,9 +903,11 @@ class BatchPing(object):
 
     def __init__(self, hosts, cfg, status, checked):
         self.cfg, self.states, self.checked = cfg, status["ping"], checked
+        self.rtt = status["rtt"]                 # host -> ms of the last reply, updated live
         self.hosts = hosts
         self.done = 0
         self.counts = {}
+        self.times = []                          # the ms values THIS batch measured
         self.cancelled = self.reported = False
         self.previous = {}                       # results from before, restored on cancel
         self._next = 0
@@ -733,10 +940,16 @@ class BatchPing(object):
                 with self._lock:
                     self._restore(host)
                 return
-            result = PING_UP if ping_once(host, cfg.ping_timeout) else PING_DOWN
+            answered, ms = ping_once(host, cfg.ping_timeout)
+            result = PING_UP if answered else PING_DOWN
             with self._lock:
                 self.states[host] = result
                 self.checked[("ping", host)] = time.time()
+                if ms is None:
+                    self.rtt.pop(host, None)         # no reply: no stale time left behind
+                else:
+                    self.rtt[host] = ms
+                    self.times.append(ms)
                 self.counts[result] = self.counts.get(result, 0) + 1
                 self.done += 1
 
@@ -749,7 +962,10 @@ class BatchPing(object):
         return 100 * self.done // max(1, len(self.hosts))
 
     def summary(self):
-        return "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
+        text = "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
+        if self.times:
+            text += ", %s-%s ms" % (format_rtt(min(self.times)), format_rtt(max(self.times)))
+        return text
 
     def _restore(self, host):
         if self.states.get(host) == WAIT:
@@ -982,7 +1198,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
             os.execvp(argv[0], argv)
         except BaseException as e:
             try:
-                os.write(2, ("TRee-Li: cannot run %s: %s\r\n" % (argv[0], e)).encode())
+                os.write(2, ("TRuffle: cannot run %s: %s\r\n" % (argv[0], e)).encode())
             except Exception:
                 pass
         os._exit(127)
@@ -1047,8 +1263,8 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                 if not data:           # our own terminal is gone
                     break
                 if armed:
-                    result.events.append("you typed -> TRee-Li stops watching for prompts" if result.password_sent
-                                         else "you typed before any password prompt -> TRee-Li will not type it")
+                    result.events.append("you typed -> TRuffle stops watching for prompts" if result.password_sent
+                                         else "you typed before any password prompt -> TRuffle will not type it")
                 armed = False          # the user took over: never type the password again
                 result.user_typed = True
                 try:
@@ -1107,12 +1323,485 @@ def remove_host_key(host, known_hosts):
     return True, output
 
 
+def note_text(lines, colors=True, gt=">"):
+    """'TRuffle > first line', further lines indented - printed outside curses."""
+    prefix = "\033[1;34mTRuffle\033[0m" if colors else "TRuffle"
+    return "\r\n%s %s %s" % (prefix, gt, ("\r\n" + " " * 10).join(lines))
+
+
+def open_session_log(cfg, name, host, user):
+    """--log: a new 0600 log file for one session.  Returns (file or None, error or None)."""
+    try:
+        os.makedirs(cfg.log_dir, mode=0o700, exist_ok=True)
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name or host)[:60]
+        path = os.path.join(cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), safe))
+        f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
+        f.write(("# TRuffle session log: %s (%s) as %s, %s\n"
+                 % (name, host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
+        return f, None
+    except OSError as e:
+        return None, "cannot write session log: %s" % e
+
+
+def write_debug_report(cfg, name, host, argv, password, result):
+    """--debug: append what happened around this login to debug.log (0600): the ssh
+    command, prompts, decisions and the output BEFORE the login - never the password,
+    never the session itself.  Returns an error text or None."""
+    lines = [
+        "=== %s  %s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S"), name, host),
+        "command      : %s" % " ".join(shlex.quote(a) for a in argv),
+        "password     : %s" % ("stored, TRuffle types it" if password else "none stored, you type it"),
+    ] + ["event        : %s" % e for e in result.events] + [
+        "exit code    : %s   failed: %s   auth failed: %s   host key changed: %s" % (
+            result.exit_code, result.failed, result.auth_failed, result.hostkey_changed),
+        "last line    : %s" % result.last_line,
+        "before login :",
+    ] + ["  | " + line for line in result.pre_login.strip("\n").split("\n")[-40:]] + [""]
+    path = os.path.join(cfg.state_dir, "debug.log")
+    try:
+        os.makedirs(cfg.state_dir, mode=0o700, exist_ok=True)
+        with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a", encoding="utf-8") as f:
+            f.write("\n".join(lines) + "\n")
+        return None
+    except OSError as e:
+        return "cannot write %s: %s" % (path, e.strerror or e)
+
+
+def ssh_failure_reason(result):
+    """Why a ssh attempt failed, short enough for a column and useful in a report:
+    "Connection timed out" is a different ticket from "Permission denied", which is a
+    different ticket from "no matching key exchange method"."""
+    if result.hostkey_changed:
+        return "host key changed - not connected"
+    if result.auth_failed:
+        return "login refused (wrong password?)"
+    line = clean(result.last_line)
+    m = SSH_FAILURE.search(line)
+    if m:
+        return "%s (exit %s)" % (line[max(0, m.start() - 40):][:120].strip(), result.exit_code)
+    if line:
+        return "%s (exit %s)" % (line[:120], result.exit_code)
+    return "exit code %s" % result.exit_code
+
+
+def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle"):
+    """One ssh connection outside curses - used by the main screen and by tmux panes.
+    Connects (typing the password once), offers to replace a changed host key, and waits
+    for a key after a failure so the reason stays readable.  Returns a SessionResult."""
+    out = sys.stdout.fileno()
+
+    def say(*lines):
+        os.write(out, note(*lines).encode("utf-8", "replace"))
+    key_removed = False
+    while True:
+        argv = build_ssh_argv(cfg, user, host, inject_password=bool(password))
+        say("Connecting to %s (%s) as %s" % (name, host, user),
+            "log out to %s, ~. force-disconnects" % back)
+        os.write(out, b"\r\n\r\n")
+        log = None
+        if cfg.session_log:
+            log, error = open_session_log(cfg, name, host, user)
+            if error:
+                say(error)
+        try:
+            result = run_session(argv, password, log)
+        finally:
+            if log is not None:
+                log.close()
+        if cfg.debug:
+            error = write_debug_report(cfg, name, host, argv, password, result)
+            if error:
+                say(error)
+        if result.hostkey_changed and not result.auth_failed:
+            known_hosts = result.known_hosts or os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")
+            if key_removed:
+                terminal_wait_key(note("The host key is still reported as changed.",
+                                       "Please check %s by hand." % known_hosts,
+                                       "Press any key to %s ..." % back))
+                return result
+            answer = terminal_wait_key(note(
+                "The host key of %s (%s) has CHANGED." % (name, host),
+                "Expected if the switch was replaced - otherwise do NOT continue.",
+                "Remove the old key from %s and connect again? [y/N] " % known_hosts))
+            if answer not in (b"y", b"Y"):
+                return result
+            ok, text = remove_host_key(host, known_hosts)
+            os.write(out, (text.replace("\n", "\r\n") + "\r\n").encode("utf-8", "replace"))
+            if not ok:
+                terminal_wait_key(note("Could not remove the old key.", "Press any key to %s ..." % back))
+                return result
+            key_removed = True
+            continue
+        if result.failed and not result.auth_failed:
+            terminal_wait_key(note("Connection to %s ended (exit code %d)." % (name, result.exit_code),
+                                   "Press any key to %s ..." % back))
+        return result
+
+
+# --------------------------------------------------------------------------
+# Several switches at once: one tmux session, one pane per switch.
+#
+# The panes are started by tmux, not by TRuffle, so their command line is visible
+# to every user on the machine (ps) and must not carry the password.  Each pane
+# gets a one-time ticket instead and fetches the login through a Unix socket that
+# lives in a private 0700 directory.  Before answering, TRuffle asks the kernel
+# who is on the other end and only replies to our own user and to the exact
+# process tmux started for that ticket.  Linux and macOS.
+# --------------------------------------------------------------------------
+
+MAX_PANES = 9
+SESSION_PREFIX = "truffle-"
+TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
+
+
+def tmux_run(*args, **kw):
+    """Run a tmux command.  Returns its stripped output; raises RuntimeError on failure."""
+    proc = subprocess.run(["tmux"] + list(args), stdin=subprocess.DEVNULL,
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kw.get("timeout", 10))
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.decode("utf-8", "replace").strip() or "tmux failed")
+    return proc.stdout.decode("utf-8", "replace").strip()
+
+
+def tmux_try(*args):
+    """Best effort: cosmetic tmux settings must not break the feature on an old tmux."""
+    try:
+        tmux_run(*args)
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        pass
+
+
+def truffle_sessions():
+    """Our tmux sessions that are still alive, oldest first."""
+    try:
+        lines = tmux_run("list-sessions", "-F", "#{session_created} #{session_name}").splitlines()
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return []
+    names = [line.split(" ", 1)[1] for line in sorted(lines) if " " in line]
+    return [n for n in names if n.startswith(SESSION_PREFIX)]
+
+
+def peer_identity(conn):
+    """(uid, pid) of the process on the other end of a Unix socket, straight from the
+    kernel - a connecting process cannot fake either.  Returns (None, None) if the
+    platform does not support it, and the caller then refuses."""
+    try:
+        if sys.platform.startswith("linux"):
+            pid, uid, _ = struct.unpack("3i", conn.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED,
+                                                              struct.calcsize("3i")))
+            return uid, pid
+        if sys.platform == "darwin":
+            sol_local, peercred, peerpid = 0, 0x001, 0x002
+            xucred = conn.getsockopt(sol_local, peercred, 100)        # version, uid, ...
+            uid = struct.unpack("2I", xucred[:8])[1]
+            pid = struct.unpack("i", conn.getsockopt(sol_local, peerpid, 4))[0]
+            return uid, pid
+    except (OSError, struct.error):
+        pass
+    return None, None
+
+
+def parent_pid(pid):
+    """The parent of pid, or None.  Used because some shells do not exec the pane
+    command, which would make the connecting process a child of tmux's pane process."""
+    try:
+        if sys.platform.startswith("linux"):
+            with open("/proc/%d/stat" % pid, encoding="utf-8", errors="replace") as f:
+                return int(f.read().rsplit(")", 1)[1].split()[1])
+        out = subprocess.run(["ps", "-o", "ppid=", "-p", str(pid)], stdout=subprocess.PIPE,
+                             stderr=subprocess.DEVNULL, timeout=5).stdout
+        return int(out.strip() or 0) or None
+    except (OSError, ValueError, IndexError, subprocess.SubprocessError):
+        return None
+
+
+class Handover(object):
+    """Hands the login to tmux panes, once per pane.
+
+    A ticket is only answered when the connecting process runs as our user AND is the
+    process tmux started for that ticket, the ticket is unused, and it is younger than
+    TICKET_LIFETIME.  The socket itself sits in a directory only we can open."""
+
+    def __init__(self, credentials):
+        self.credentials = credentials        # callable -> (user, password or None)
+        self.dir = tempfile.mkdtemp(prefix="truffle-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+        self.path = os.path.join(self.dir, "handover.sock")
+        self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        old = os.umask(0o177)
+        try:
+            self.server.bind(self.path)       # 0600, inside a 0700 directory
+        finally:
+            os.umask(old)
+        self.server.listen(MAX_PANES + 2)
+        self.tickets = {}                     # ticket -> {host, pid, created, fetched}
+        self.refused = []                     # connections we turned away, shown to the user
+        self.lock = threading.Lock()
+        self.closed = False
+        t = threading.Thread(target=self._serve)
+        t.daemon = True
+        t.start()
+
+    def issue(self, host):
+        """A ticket for one pane.  bind() must follow once tmux reports the pane's pid."""
+        ticket = secrets.token_hex(16)
+        with self.lock:
+            self.tickets[ticket] = {"host": host, "pid": None, "created": time.time(), "fetched": False}
+        return ticket
+
+    def bind(self, ticket, pid):
+        with self.lock:
+            if ticket in self.tickets:
+                self.tickets[ticket]["pid"] = pid
+
+    def _serve(self):
+        while True:
+            try:
+                conn, _ = self.server.accept()
+            except OSError:
+                return                        # closed
+            # one thread per connection: a client that connects and then says nothing
+            # must not keep the other panes waiting for their login
+            worker = threading.Thread(target=self._client, args=(conn,))
+            worker.daemon = True
+            worker.start()
+
+    def _client(self, conn):
+        with conn:
+            try:
+                conn.settimeout(3)
+                conn.sendall(self._handle(conn).encode("utf-8") + b"\n")
+            except (OSError, ValueError, struct.error):
+                pass
+
+    def _handle(self, conn):
+        uid, pid = peer_identity(conn)
+        if uid is None or uid != os.getuid():
+            with self.lock:
+                self.refused.append("connection from uid %s" % uid)
+            return "ERR refused"
+        request = conn.recv(4096).decode("utf-8", "replace").strip()
+        kind, _, ticket = request.partition(" ")
+        ticket = ticket.strip()
+        if kind != "GET":
+            return "ERR refused"
+        with self.lock:
+            entry = self.tickets.get(ticket)
+            if entry is None:
+                return "ERR unknown ticket"
+            if entry["fetched"]:
+                self.refused.append("ticket for %s used twice" % entry["host"])
+                return "ERR already used"
+            if time.time() - entry["created"] > TICKET_LIFETIME:
+                return "ERR ticket expired"
+            expected, host = entry["pid"], entry["host"]
+        # An unbound ticket (tmux has not reported the pane's pid yet) is simply refused.
+        # The pane then asks for the password itself - a rare, harmless fallback, and far
+        # better than waiting here and widening the window in which anything may ask.
+        # Looking up a parent pid runs `ps` on macOS, so it happens outside the lock -
+        # otherwise one slow lookup would hold up every other pane.
+        if pid != expected and parent_pid(pid) != expected:    # ps only when it is needed
+            with self.lock:
+                self.refused.append("pid %s is not the pane for %s" % (pid, host))
+            return "ERR wrong process"
+        with self.lock:
+            entry = self.tickets.get(ticket)
+            if entry is None or entry["fetched"]:     # checked again: single use must be exact
+                return "ERR already used"
+            entry["fetched"] = True
+            user, password = self.credentials()
+        return "OK " + json.dumps({"user": user, "password": password or ""})
+
+    @property
+    def pending(self):
+        with self.lock:
+            return any(not e["fetched"] for e in self.tickets.values())
+
+    def take_refusals(self):
+        with self.lock:
+            refused, self.refused = self.refused, []
+        return refused
+
+    def close(self):
+        """Stop listening and remove the socket; panes that still hold a ticket can no
+        longer fetch a login (they ask the user instead) and cannot report back."""
+        if self.closed:
+            return
+        self.closed = True
+        try:
+            self.server.close()
+        except OSError:
+            pass
+        for path in (self.path, self.dir):
+            try:
+                os.remove(path) if path == self.path else os.rmdir(path)
+            except OSError:
+                pass
+
+
+def handover_request(path, line):
+    conn = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    conn.settimeout(5)
+    try:
+        conn.connect(path)
+        conn.sendall(line.encode("utf-8") + b"\n")
+        answer = b""
+        while not answer.endswith(b"\n") and len(answer) < 65536:
+            chunk = conn.recv(4096)
+            if not chunk:
+                break
+            answer += chunk
+        return answer.decode("utf-8", "replace").strip()
+    finally:
+        conn.close()
+
+
+def pane_main(cfg, socket_path, ticket, host, name):
+    """`truffle --pane ...` runs inside one tmux pane: fetch the login once, connect,
+    report back, then the pane closes."""
+    colors = os.environ.get("TERM", "dumb") not in ("", "dumb")
+    gt = CHARSETS[detect_charset(cfg.charset_setting)]["gt"]
+
+    def note(*lines):
+        return note_text(lines, colors, gt)
+    if not valid_host(host):
+        terminal_wait_key(note("'%s' is not a usable host." % host, "Press any key to close this pane ..."))
+        return 1
+    user, password = cfg.user, None
+    try:
+        answer = handover_request(socket_path, "GET %s" % ticket)
+        if not answer.startswith("OK "):
+            raise ValueError(answer)
+        login = json.loads(answer[3:])
+        user, password = login["user"], login["password"] or None
+    except (OSError, ValueError, KeyError) as e:
+        os.write(sys.stdout.fileno(), note(
+            "Could not get the login from TRuffle (%s)." % e,
+            "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
+    result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
+    password = None
+    failed = result.failed or result.hostkey_changed
+    state = SSH_FAILED if failed else SSH_OK
+    # The status file is shared and merges by time, so the pane records its own result
+    # AND why it failed; TRuffle picks both up when it comes back, however long this ran.
+    user_state = UserState(cfg.state_dir)
+    user_state.save_status({"ping": {}, "ssh": {host: state}}, {("ssh", host): time.time()},
+                           {("ssh", host): ssh_failure_reason(result) if failed else ""})
+    if state == SSH_OK:
+        user_state.touch(name or host)
+    if result.auth_failed:
+        # Tell TRuffle too, so it drops the password instead of spending it on the
+        # next switch as well - the socket is already closed by now.
+        user_state.note_auth_failure(host)
+        terminal_wait_key(note("Login failed on %s - wrong password?" % name,
+                               "TRuffle will ask for the password again.",
+                               "Press any key to close this pane ..."))
+    if result.prompt_missed:
+        terminal_wait_key(note("No password prompt recognised on %s - you had to type it." % name,
+                               "Run TRuffle with --debug and connect again to see what the switch sent.",
+                               "Press any key to close this pane ..."))
+    return 0
+
+
+# tmux starts panes from the tmux SERVER's environment, which can differ from ours
+# (a server started earlier, or with another HOME).  These decide where TRuffle reads
+# its config and writes favourites, results and logs, so they are passed on explicitly.
+PANE_ENV = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
+            "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
+
+
+def pane_command(cfg, socket_path, ticket, host, name):
+    argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
+    argv += [sys.executable, os.path.realpath(os.path.abspath(__file__))]
+    if cfg.config_file:
+        argv += ["--config", cfg.config_file]
+    if cfg.debug:
+        argv += ["--debug"]
+    if cfg.session_log:
+        argv += ["--log"]
+    if cfg.charset_setting == "ascii":
+        argv += ["--ascii"]              # --ascii was a flag, not a config value: pass it on
+    argv += ["--pane", socket_path, ticket, host, name]
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def open_panes(cfg, devices, handover):
+    """Create a tmux session with one pane per switch and return its name."""
+    session = free_session_name()
+    first, rest = devices[0], devices[1:]
+
+    def start(dev, *extra):
+        ticket = handover.issue(dev.host)
+        command = pane_command(cfg, handover.path, ticket, dev.host, dev.name)
+        out = tmux_run(*(list(extra) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
+        pid, _, pane_id = out.strip().partition(" ")
+        handover.bind(ticket, int(pid or 0))
+        tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (dev.name, dev.host))
+
+    size = terminal_size() or (24, 80)          # a detached session would default to 80x24
+    try:
+        start(first, "new-session", "-d", "-s", session, "-x", str(size[1]), "-y", str(size[0]))
+        for dev in rest:
+            start(dev, "split-window", "-t", session)
+            tmux_try("select-layout", "-t", session, "tiled")
+    except BaseException:
+        tmux_try("kill-session", "-t", "=" + session)       # never leave half a session behind
+        raise
+    tmux_try("select-layout", "-t", session, "tiled")
+    tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
+    tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
+    tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
+    tmux_try("set-option", "-t", session, "status-left", "[TRuffle]  ")
+    tmux_try("set-option", "-t", session, "status-right",
+             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one switch ")
+    tmux_try("set-option", "-t", session, "status-right-length", "80")
+    return session
+
+
+def wait_for_logins(handover, deadline=TICKET_LIFETIME):
+    """Give the panes their short window to fetch the login.  Returns True if all of
+    them did; after this the socket is no longer needed for logins."""
+    end = time.time() + deadline
+    while handover.pending and time.time() < end:
+        time.sleep(0.05)
+    return not handover.pending
+
+
+def session_exists(session):
+    try:
+        tmux_run("has-session", "-t", "=" + session)
+        return True
+    except (RuntimeError, OSError, subprocess.SubprocessError):
+        return False
+
+
+def free_session_name():
+    """truffle-HHMMSS, with a suffix if that name is taken - two multi-ssh actions in
+    the same second would otherwise collide."""
+    base = SESSION_PREFIX + time.strftime("%H%M%S")
+    name, n = base, 1
+    while session_exists(name) and n < 100:
+        name, n = "%s-%d" % (base, n), n + 1
+    return name
+
+
+def attach_session(session):
+    """Hand the terminal to tmux until the user detaches (Ctrl-b d) or the session ends.
+    Returns (ok, message) - a failed attach must not look like nothing happened."""
+    if not session_exists(session):
+        return False, "the tmux session %s is gone" % session
+    try:
+        code = subprocess.call(["tmux", "attach-session", "-t", "=" + session])
+        return code == 0, "" if code == 0 else "tmux attach ended with code %d" % code
+    except (OSError, subprocess.SubprocessError) as e:
+        return False, "cannot run tmux: %s" % e
+
+
 def harden_process():
     """The password lives in this process's memory, so keep that memory to ourselves:
     - no core dumps: a crash must not write the password into a file on disk
     - Linux: not "dumpable" - other processes of the same user can no longer attach
-      to TRee-Li or read /proc/<pid>/mem (root still can, as with every program).
-      ssh and ping started by TRee-Li are not affected (exec resets this)."""
+      to TRuffle or read /proc/<pid>/mem (root still can, as with every program).
+      ssh and ping started by TRuffle are not affected (exec resets this)."""
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ValueError, OSError):
@@ -1134,6 +1823,17 @@ def terminal_size():
     except OSError:
         pass
     return None
+
+
+def bracketed_paste(on):
+    """Ask the terminal to wrap pasted text in ESC[200~ ... ESC[201~.  A terminal that
+    does not know the mode ignores it and simply never sends the markers, so behaviour
+    is unchanged there - this can never make anything worse.  Must be switched off
+    before the terminal is handed to ssh or tmux, and on again afterwards."""
+    try:
+        os.write(sys.stdout.fileno(), PASTE_ON if on else PASTE_OFF)
+    except OSError:
+        pass
 
 
 def terminal_wait_key(prompt):
@@ -1161,12 +1861,8 @@ CURSES_KEYS = {
     curses.KEY_PPAGE: "PGUP", curses.KEY_NPAGE: "PGDN", curses.KEY_HOME: "HOME", curses.KEY_END: "END",
     curses.KEY_FIND: "HOME", curses.KEY_SELECT: "END", curses.KEY_ENTER: "ENTER",
     curses.KEY_BACKSPACE: "BACKSPACE", curses.KEY_DC: "DELETE", curses.KEY_BTAB: "BTAB",
-    curses.KEY_RESIZE: "RESIZE", curses.KEY_MOUSE: "MOUSE",
+    curses.KEY_RESIZE: "RESIZE",
 }
-MOUSE = {"event": None}           # the last mouse event (x, y, buttons), read by read_key
-WHEEL_UP = getattr(curses, "BUTTON4_PRESSED", 0)
-WHEEL_DOWN = getattr(curses, "BUTTON5_PRESSED", 0)   # only with ncurses mouse version 2 (RHEL 8+)
-CLICK, DOUBLE_CLICK = curses.BUTTON1_CLICKED, curses.BUTTON1_DOUBLE_CLICKED
 for _n in range(1, 13):
     CURSES_KEYS[curses.KEY_F0 + _n] = "F%d" % _n
 
@@ -1181,6 +1877,7 @@ ESC_SEQUENCES = {
     "[17~": "F6", "[18~": "F7", "[19~": "F8", "[20~": "F9", "[21~": "F10",
     "[23~": "F11", "[24~": "F12",
     "[[A": "F1", "[[B": "F2", "[[C": "F3", "[[D": "F4", "[[E": "F5",
+    "[200~": "PASTE_START", "[201~": "PASTE_END",
 }
 
 
@@ -1197,6 +1894,64 @@ def parse_escape_sequence(seq):
     return None
 
 
+def read_escape(win, timeout_ms):
+    """Read the characters after an ESC and name the key ('' -> 'ESC', unknown -> None)."""
+    seq = ""
+    win.timeout(100)
+    try:
+        while len(seq) < 12:
+            try:
+                c = win.get_wch()
+            except curses.error:
+                break
+            if isinstance(c, int) or (not seq and c not in "[O"):
+                # not an escape sequence: a plain ESC, then another key - keep that key
+                try:
+                    if isinstance(c, int):
+                        curses.ungetch(c)            # a key code such as KEY_UP
+                    else:
+                        curses.unget_wch(c)
+                except (curses.error, OverflowError, ValueError):
+                    pass
+                break
+            seq += c
+            if len(seq) >= 2 and (c.isalpha() or c == "~") and seq != "[[":
+                break
+    finally:
+        win.timeout(timeout_ms)
+    return parse_escape_sequence(seq)
+
+
+def read_paste(win, timeout_ms):
+    """Collect a bracketed paste up to its ESC[201~ end marker and return it as text.
+
+    Everything in between is text, never keys: this is what stops a pasted newline from
+    running ssh on whatever switch happened to be selected.  The whole paste is always
+    DRAINED, even when it is longer than we keep - stopping early would leave the rest
+    of it in the input queue, where the newlines become Enter again."""
+    out, kept, seen = [], 0, 0
+    win.timeout(200)                     # the terminal sends a paste in one burst
+    try:
+        while seen < HUGE_PASTE:         # a terminal that never ends the paste cannot hang us
+            try:
+                c = win.get_wch()
+            except curses.error:
+                break                    # terminal stopped mid-paste: take what we have
+            seen += 1
+            if isinstance(c, int):
+                continue
+            if c == "\x1b":
+                if read_escape(win, 200) == "PASTE_END":
+                    break
+                continue                 # any other sequence inside a paste is dropped
+            if kept < MAX_PASTE * 2:     # keep draining past the cap, just stop collecting
+                out.append(c)
+                kept += 1
+    finally:
+        win.timeout(timeout_ms)
+    return "".join(out)
+
+
 def read_key(win, timeout_ms):
     """Return a key name ('UP', 'F1', 'ENTER', 'CTRL_R', ...), a printable
     one-character string, or None (timeout / unknown key)."""
@@ -1206,38 +1961,13 @@ def read_key(win, timeout_ms):
     except curses.error:
         return None
     if isinstance(ch, int):
-        if ch == curses.KEY_MOUSE:
-            try:
-                _, x, y, _, buttons = curses.getmouse()
-                MOUSE["event"] = (x, y, buttons)
-            except curses.error:
-                return None
         return CURSES_KEYS.get(ch)
     if ch == "\x1b":
-        seq = ""
-        win.timeout(100)
-        try:
-            while len(seq) < 12:
-                try:
-                    c = win.get_wch()
-                except curses.error:
-                    break
-                if isinstance(c, int) or (not seq and c not in "[O"):
-                    # not an escape sequence: a plain ESC, then another key - keep that key
-                    try:
-                        if isinstance(c, int):
-                            curses.ungetch(c)            # a key code such as KEY_UP
-                        else:
-                            curses.unget_wch(c)
-                    except (curses.error, OverflowError, ValueError):
-                        pass
-                    break
-                seq += c
-                if len(seq) >= 2 and (c.isalpha() or c == "~") and seq != "[[":
-                    break
-        finally:
-            win.timeout(timeout_ms)
-        return parse_escape_sequence(seq)
+        name = read_escape(win, timeout_ms)
+        if name == "PASTE_START":
+            PASTE["text"] = read_paste(win, timeout_ms)
+            return "PASTE"
+        return name
     if ch in ("\n", "\r"):
         return "ENTER"
     if ch in ("\x7f", "\x08"):
@@ -1325,8 +2055,8 @@ def detect_charset(setting):
 # -1 = the terminal's own colour, so light and dark terminal themes both work.
 # Flags: b = bold, d = dim, u = underline, r = reverse.
 #
-# Colours follow STYLE.md (TRee-Li palette), as xterm-256 numbers:
-#   Navy 18   TRee Blue 25   Signal Blue 26   Steel 67   Sky 111   Mist 189   Highlight 214
+# Colours follow STYLE.md (TRuffle palette), as xterm-256 numbers:
+#   Navy 18   Truffle Blue 25   Signal Blue 26   Steel 67   Sky 111   Mist 189   Highlight 214
 # Light shades carry text on dark terminals, strong shades are used as backgrounds.
 PALETTE = {
     "brand":       ((111, -1, "b"), ("cyan", -1, "b")),
@@ -1350,6 +2080,8 @@ PALETTE = {
     "down_sel":    ((217, 25, "b"), ("red", "blue", "b")),
     "wait_sel":    ((223, 25, ""),  ("yellow", "blue", "")),
     "fav":         ((214, -1, "b"), ("yellow", -1, "b")),
+    "mark":        ((120, -1, "b"), ("green", -1, "b")),
+    "mark_sel":    ((120, 25, "b"), ("green", "blue", "b")),
     "fav_sel":     ((214, 25, "b"), ("yellow", "blue", "b")),
     "match":       ((111, -1, "bu"), ("cyan", -1, "bu")),
     "match_sel":   ((189, 25, "bu"), ("white", "blue", "bu")),
@@ -1376,7 +2108,7 @@ PALETTE = {
     "banner5":     ((189, -1, "b"), ("cyan", -1, "b")),
 }
 # Without colours: attributes only.
-MONO = {"match": "bu", "match_sel": "rbu", "fav": "b", "fav_sel": "r", "brand": "b", "info": "d", "tab_active": "r", "prompt": "b", "cursor": "r",
+MONO = {"mark": "b", "mark_sel": "r", "match": "bu", "match_sel": "rbu", "fav": "b", "fav_sel": "r", "brand": "b", "info": "d", "tab_active": "r", "prompt": "b", "cursor": "r",
         "placeholder": "d", "head": "b", "sort": "b", "sel": "r", "marker": "b", "up": "b", "down": "b",
         "up_sel": "r", "down_sel": "r", "wait_sel": "r", "key": "b", "hint": "d", "err": "b", "field": "r",
         "backdrop": "d", "win_title": "b", "win_label": "b", "win_key": "b", "win_err": "b", "field_idle": "u",
@@ -1424,11 +2156,11 @@ class Theme(object):
 
 
 BANNER = [
-    r" _____  ____                      _      _ ",
-    r"|_   _||  _ \   ___   ___        | |    (_)",
-    r"  | |  | |_) | / _ \ / _ \ _____ | |    | |",
-    r"  | |  |  _ < |  __/|  __/|_____|| |___ | |",
-    r"  |_|  |_| \_\ \___| \___|       |_____||_|",
+    r" _____  ____           __   __  _        ",
+    r"|_   _||  _ \  _   _  / _| / _|| |  ___  ",
+    r"  | |  | |_) || | | || |_ | |_ | | / _ \ ",
+    r"  | |  |  _ < | |_| ||  _||  _|| ||  __/ ",
+    r"  |_|  |_| \_\ \__,_||_|  |_|  |_| \___| ",
 ]
 
 
@@ -1448,22 +2180,33 @@ class App(object):
         self.sort_col, self.sort_desc = None, False
         self.ping = {}                 # host -> PING_UP / PING_DOWN / WAIT
         self.ssh = {}                  # host -> SSH_OK / SSH_FAILED: your last real ssh attempt
-        self.ssh_reason = {}           # host -> why the last ssh attempt failed (this session)
+        self.rtt = {}                  # host -> ms of the last ping reply
         self.checked = {}              # (kind, host) -> time of that ping / SSH result
+        self.detail = {}               # (kind, host) -> ms for a ping, the reason for a failed ssh
         self.headers, self.delimiter, self.issues = [], ";", []
-        self.spans = {"tabs": [], "head": [], "y_tabs": -1, "y_head": -1, "y_body": -1}   # for mouse clicks
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
+        self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
+        self.my_sessions = []          # tmux sessions this TRuffle started
+        self.sessions = []             # ... the ones still running (checked every few seconds)
+        self.sessions_foreign = False  # ... and whether those belong to another TRuffle window
+        self._sessions_checked = 0.0
         self.batch = None
         self.creds = None              # (user, password or None) - memory only
+        self.creds_at = 0.0            # when it was typed; forgotten PASSWORD_LIFETIME later
+        self.authfail_seen = 0.0       # last login failure a tmux pane reported
         self.state = UserState(cfg.state_dir)
         self.fields = {}               # lower-case header / label -> CSV header (for field:value)
         self.last_user = cfg.user
         self.msg, self.msg_error, self.msg_until = "", False, 0
         self.load_error = None
         self.set_cursor(False)
-        saved, self.checked = self.state.load_status()          # results of the last check
+        saved, self.checked, self.detail = self.state.load_status()      # the last check's results
         self.ping, self.ssh = saved["ping"], saved["ssh"]
-        self.mouse(True)
+        for host in self.ping:                                  # the saved round-trip times
+            ms = parse_float(self.detail.get(("ping", host)))
+            if ms is not None:
+                self.rtt[host] = ms
+        bracketed_paste(True)
         self.load()
         if self.state.error:
             self.message(self.state.error, error=True, seconds=15)
@@ -1489,35 +2232,92 @@ class App(object):
         return self.view[self.cursor] if 0 <= self.cursor < len(self.view) else None
 
     def ncols(self):
-        return len(self.columns) + len(STATUS_LABELS)
+        return len(self.columns) + len(STATUS_COLUMNS)
 
-    def status(self):
-        return [self.ping, self.ssh]
+    def results(self):
+        """The one place that maps a status kind to the dict holding it."""
+        return {"ping": self.ping, "rtt": self.rtt, "ssh": self.ssh}
 
-    def mouse(self, on):
-        if not self.cfg.mouse:
-            return
-        try:
-            curses.mousemask((CLICK | DOUBLE_CLICK | WHEEL_UP | WHEEL_DOWN) if on else 0)
-            curses.mouseinterval(300)          # ms between two clicks of a double-click
-        except curses.error:
-            pass
+    def column_results(self):
+        """One dict per status column, in STATUS_COLUMNS order (for drawing / sorting)."""
+        data = self.results()
+        return [data[kind] for kind in STATUS_KINDS]
 
-    def set_status(self, kind, host, state):
-        {"ping": self.ping, "ssh": self.ssh}[kind][host] = state
+    def word_results(self):
+        """Only the kinds stored as words - what the status file saves and loads."""
+        data = self.results()
+        return dict((kind, data[kind]) for kind in STATE_KINDS)
+
+    def save_detail(self):
+        """The details to save: ping details are rebuilt from self.rtt, so a host that
+        no longer has a round-trip time (it stopped answering) cannot keep the old one."""
+        detail = dict((key, text) for key, text in self.detail.items() if key[0] != "ping")
+        for host, ms in list(self.rtt.items()):
+            detail[("ping", host)] = format_rtt(ms)
+        return detail
+
+    def marked_devices(self):
+        """The marked switches, in the order they appear on screen."""
+        return [d for d in self.view if device_key(d) in self.marked]
+
+    def toggle_mark(self, dev):
+        key = device_key(dev)
+        self.marked.discard(key) if key in self.marked else self.marked.add(key)
+
+    def set_status(self, kind, host, state, detail=None):
+        """One result.  detail is the round-trip time for a ping and the reason for a
+        failed ssh; it is saved with the result and shows up in details and the export."""
+        self.results()[kind][host] = state
         self.checked[(kind, host)] = time.time()
+        set_or_clear(self.detail, (kind, host), str(detail) if detail else "")
 
     def save_status(self):
-        self.state.save_status({"ping": self.ping, "ssh": self.ssh}, self.checked)
+        self.state.save_status(self.word_results(), self.checked, self.save_detail())
         if self.state.error:
             self.message(self.state.error, error=True, seconds=10)
+
+    def forget_creds(self, why):
+        self.creds = None
+        self.message("Password forgotten (%s) - you will be asked again." % why, seconds=15)
+
+    def check_pane_auth_failure(self):
+        """A tmux pane could not log in: drop the password instead of spending it on
+        switch after switch (a central TACACS+/RADIUS account would lock out)."""
+        stamp, host = self.state.load_auth_failure()
+        if stamp <= self.authfail_seen:
+            return
+        self.authfail_seen = stamp
+        if self.creds and stamp >= self.creds_at:      # it was THIS password that failed
+            self.forget_creds("a tmux pane could not log in to %s" % host)
+
+    def reload_status(self):
+        """Pick up results another TRuffle - or one of our tmux panes - has written."""
+        saved, checked, detail = self.state.load_status()
+        mine_by_kind = self.word_results()
+        for kind, states in saved.items():
+            mine = mine_by_kind[kind]
+            for host, state in states.items():
+                if checked.get((kind, host), 0) >= self.checked.get((kind, host), 0):
+                    mine[host], self.checked[(kind, host)] = state, checked[(kind, host)]
+                    text = detail.get((kind, host), "")
+                    set_or_clear(self.detail, (kind, host), text)
+                    if kind == "ping":
+                        # not set_or_clear: 0.0 ms is a real reading, only None clears
+                        ms = parse_float(text)       # a newer result with no ms clears the old one
+                        if ms is None:
+                            self.rtt.pop(host, None)
+                        else:
+                            self.rtt[host] = ms
+        self.state.load()                   # favourites and the recent list too
+        self.check_pane_auth_failure()
+        self.status_changed(force=True)
 
     def load(self):
         keep = self.selected()
         try:
             report = {}
             headers, rows = read_table(self.cfg.data, report)
-            devices, columns, warns = build_devices(headers, rows, self.cfg)
+            devices, columns, warns, _ = build_devices(headers, rows, self.cfg)
         except DataError as e:
             self.load_error = str(e)
             self.devices = self.loaded = []
@@ -1534,17 +2334,17 @@ class App(object):
             if warns:
                 self.message("; ".join(warns), error=True, seconds=15)
             elif self.issues:
-                self.message("%d warning%s in the switch list - run: tree-li --check"
+                self.message("%d warning%s in the switch list - run: truffle --check"
                              % (len(self.issues), "" if len(self.issues) == 1 else "s"), error=True, seconds=15)
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.devices]))
                        for i, (_, label) in enumerate(self.columns)]
-        self.widths += STATUS_WIDTHS
+        self.widths += [width for _, width, _, _ in STATUS_COLUMNS]
         if keep is not None:
             keep = next((d for d in self.devices if d.host == keep.host and d.name == keep.name), None)
         self.apply_sort(keep)
 
     def apply_sort(self, keep=None):
-        self.devices = sort_devices(self.loaded, self.sort_col, self.sort_desc, self.status())
+        self.devices = sort_devices(self.loaded, self.sort_col, self.sort_desc, self.column_results())
         self.refilter(keep)
 
     def refilter(self, keep=None):
@@ -1582,6 +2382,23 @@ class App(object):
         elif force or "ping:" in self.query.lower() or "ssh:" in self.query.lower():
             self.refilter(keep)
 
+    def check_sessions(self):
+        """Which of our tmux sessions are still alive - they hold open switch logins.
+        When one ends, its panes have written their results, so pick them up."""
+        if not self.my_sessions or time.time() - self._sessions_checked < 3:
+            return
+        self._sessions_checked = time.time()
+        # Do not wait for the session to end: a pane that could not log in has already
+        # said so, and the password it used must go now, not in an hour.
+        self.check_pane_auth_failure()
+        alive = set(truffle_sessions())
+        ended = [s for s in self.my_sessions if s not in alive]
+        self.my_sessions = [s for s in self.my_sessions if s in alive]
+        self.sessions = list(self.my_sessions)
+        if ended:
+            self.reload_status()
+            self.message("tmux session %s ended" % ", ".join(ended))
+
     def sync_size(self):
         size = terminal_size()
         if size and size != self.scr.getmaxyx():
@@ -1593,7 +2410,7 @@ class App(object):
 
     # -- drawing ------------------------------------------------------------
     #
-    #  TRee-Li  Switch Manager                          timmy · 2/29 switches   top bar
+    #  TRuffle  Switch Manager                          timmy · 2/29 switches   top bar
     # ───────────────────────────────────────────────────────────────────────  rule
     #   ssh   ping   batch ping   details   help   exit                         tabs
     #   ›  ber core                                                              search
@@ -1603,7 +2420,7 @@ class App(object):
     # ───────────────────────────────────────────────────────────────────────  rule
     #  Enter run  ←→ command  ^F favourite  F1-F6 sort  ^R reload  ^C quit       footer
 
-    TABLE_X = 4          # column 1: selection marker, column 2: favourite star
+    TABLE_X = 5          # column 1: selection marker, 2: favourite star, 3: multi-ssh mark
 
     def layout(self):
         h, w = self.scr.getmaxyx()
@@ -1618,7 +2435,7 @@ class App(object):
         """Top bar + rule, footer rule + key hints / message.  Shared by all screens."""
         scr, th, sym = self.scr, self.th, self.th.sym
         h, w = scr.getmaxyx()
-        put(scr, 0, 2, "TRee-Li", th.brand)
+        put(scr, 0, 2, "TRuffle", th.brand)
         put(scr, 0, 11, subtitle[:max(0, w - 14 - len(right))], th.brand_sub)
         if right:
             put(scr, 0, max(0, w - len(right) - 2), right, th.info if right_attr is None else right_attr)
@@ -1649,7 +2466,7 @@ class App(object):
         scr.erase()
         h, w, y_tabs, y_search, y_head = self.layout()
         if h < 10 or w < 40:
-            put(scr, 0, 1, "TRee-Li", th.brand)
+            put(scr, 0, 1, "TRuffle", th.brand)
             put(scr, 1, 1, "Terminal too small", th.err)
             put(scr, 2, 1, "min. 40 x 10", th.hint)
             if refresh:
@@ -1659,34 +2476,39 @@ class App(object):
         right = "%d/%d switches" % (len(self.view), len(self.devices))
         if self.creds:
             right = "%s %s %s" % (self.creds[0], sym["sep"], right)
+        if self.marked:
+            right = "%s %s %s" % (marked_label(len(self.marked), len(self.marked_devices())),
+                                  sym["sep"], right)
+        sessions = self.sessions
+        if sessions:
+            right = "%d tmux %s %s" % (len(sessions), sym["sep"], right)
         batch = ""
         if self.batch and self.batch.running and not self.batch.cancelled:
             batch = "batch ping %d%%" % self.batch.percent
             if not self.query:
                 batch += " %s ESC cancels" % sym["sep"]
-        hints = [("Enter", "run"), (sym["lr"], "command"), ("^F", "favourite"),
-                 ("F1-F%d" % self.ncols(), "sort"), ("^E", "export"), ("^R", "reload"), ("^C", "quit")]
+        hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^F", "favourite"),
+                 ("F1-F%d" % self.ncols(), "sort"), ("^G", "settings"), ("^E", "export"),
+                 ("^R", "reload"), ("^C", "quit")]
+        if self.sessions:
+            hints.insert(3, ("^T", "back to tmux"))
+            hints.insert(4, ("^K", "close tmux"))
         if batch:
             self.draw_frame("Switch Manager", right, hints=hints, footer_right=batch, footer_attr=th.wait)
         else:
             self.draw_frame("Switch Manager", right, hints=hints, footer_right=CREDIT, footer_attr=th.placeholder)
 
         # command tabs
-        spans = self.spans
-        spans.update(tabs=[], head=[], y_tabs=y_tabs, y_head=y_head, y_body=y_head + 2)
         if 2 + sum(len(c) + 3 for c in COMMANDS) <= w:
             x = 2
             for i, name in enumerate(COMMANDS):
                 put(scr, y_tabs, x, " %s " % name, th.tab_active if i == self.cmd else th.tab)
-                spans["tabs"].append((x, x + len(name) + 2, i))
                 x += len(name) + 3
         else:                                       # narrow terminal: only the selected command
-            n, name = len(COMMANDS), COMMANDS[self.cmd]
+            name = COMMANDS[self.cmd]
             put(scr, y_tabs, 2, sym["lt"], th.tab)
             put(scr, y_tabs, 4, " %s " % name, th.tab_active)
             put(scr, y_tabs, 7 + len(name), sym["gt"], th.tab)
-            spans["tabs"] = [(1, 4, (self.cmd - 1) % n), (4, 6 + len(name), self.cmd),
-                             (6 + len(name), 9 + len(name), (self.cmd + 1) % n)]
 
         # search: "-" and "field:" parts of terms are highlighted
         put(scr, y_search, 2, sym["prompt"], th.prompt)
@@ -1712,13 +2534,17 @@ class App(object):
         x0 = self.TABLE_X
         widths = fit_widths(self.widths, w - x0 - 3 - 2 * (len(self.widths) - 1))
         table_w = sum(widths) + 2 * (len(widths) - 1)
-        labels = [label for _, label in self.columns] + STATUS_LABELS
+        labels = [label for _, label in self.columns] + [label for label, _, _, _ in STATUS_COLUMNS]
+        numeric = [False] * len(self.columns) + [flag for _, _, _, flag in STATUS_COLUMNS]
         x = x0
         for i, label in enumerate(labels):
             label = label.upper()
-            put(scr, y_head, x, fit(label, widths[i], sym["more"]), th.head)
-            spans["head"].append((x, x + widths[i] + 1, i))
-            if i == self.sort_col and len(label) + 2 <= widths[i]:
+            # a numeric column is right-aligned, so its header sits over the digits
+            put(scr, y_head, x, label.rjust(widths[i])[:widths[i]] if numeric[i]
+                else fit(label, widths[i], sym["more"]), th.head)
+            if i == self.sort_col and numeric[i]:
+                put(scr, y_head, x, sym["down"] if self.sort_desc else sym["up"], th.sort)
+            elif i == self.sort_col and len(label) + 2 <= widths[i]:
                 put(scr, y_head, x + len(label) + 1, sym["down"] if self.sort_desc else sym["up"], th.sort)
             x += widths[i] + 2
         put(scr, y_head + 1, x0, sym["hline"] * table_w, th.rule)
@@ -1755,6 +2581,8 @@ class App(object):
                 put(scr, y, 2, " " * (w - 4), th.sel)
             if device_key(d) in self.state.favorites:
                 put(scr, y, 2, "*", th.fav_sel if sel else th.fav)
+            if device_key(d) in self.marked:
+                put(scr, y, 3, "+", th.mark_sel if sel else th.mark)
             x = x0
             marks = self.found.get(d, (0, {}))[1]
             for i, value in enumerate(d.cells):
@@ -1767,13 +2595,17 @@ class App(object):
                     if pos < visible:
                         put(scr, y, x + pos, value[pos], th.match_sel if sel else th.match)
                 x += widths[i] + 2
-            for k, states in enumerate(self.status()):
-                state = states.get(d.host)
-                if state:
-                    style = STATUS_STYLE.get(state, "wait") + ("_sel" if sel else "")
-                    put(scr, y, x, fit("%s %s" % (sym["dot"], state), widths[len(d.cells) + k]),
-                        getattr(th, style))
-                x += widths[len(d.cells) + k] + 2
+            for k, values in enumerate(self.column_results()):
+                value = values.get(d.host)
+                width = widths[len(d.cells) + k]
+                if value is not None and value != "":
+                    if STATUS_COLUMNS[k][3]:               # numeric: right-aligned, no dot,
+                        text = format_rtt(value)[:width]   # so magnitudes line up by eye
+                        put(scr, y, x, text.rjust(width), th.sel if sel else th.text)
+                    else:
+                        style = STATUS_STYLE.get(value, "wait") + ("_sel" if sel else "")
+                        put(scr, y, x, fit("%s %s" % (sym["dot"], value), width), getattr(th, style))
+                x += width + 2
 
         # scrollbar when the list is longer than the screen
         if len(self.view) > body_h:
@@ -1789,25 +2621,52 @@ class App(object):
     # -- main loop ----------------------------------------------------------
 
     def run(self):
-        while True:
-            if self.batch and not self.batch.running and not self.batch.reported:
-                self.batch.reported = True
-                if not self.batch.cancelled:
-                    self.message("Batch ping done: %s" % self.batch.summary(), seconds=20)
-                self.save_status()
-                self.status_changed()
-            self.draw()
-            key = read_key(self.scr, 250)
-            if key is None:
-                continue
-            if self.handle(key) is False:
-                if self.batch:
-                    self.batch.cancel()
-                self.mouse(False)
-                return
+        try:
+            while True:
+                self.check_sessions()
+                self.check_password_lifetime()
+                if self.batch and not self.batch.running and not self.batch.reported:
+                    self.batch.reported = True
+                    if not self.batch.cancelled:
+                        self.message("Batch ping done: %s" % self.batch.summary(), seconds=20)
+                    self.save_status()
+                    self.status_changed()
+                self.draw()
+                key = read_key(self.scr, 250)
+                if key is None:
+                    continue
+                if self.handle(key) is False:
+                    break
+        except KeyboardInterrupt:
+            pass                                      # Ctrl-C: still save what we have
+        if self.batch:
+            self.batch.cancel()
+            self.save_status()                        # finished pings are not thrown away
+        bracketed_paste(False)       # never leave the terminal in a mode we switched on
+
+    def check_password_lifetime(self):
+        """Forget the password password_lifetime minutes after it was typed.
+
+        This only deletes it from TRuffle.  Nothing you are connected to is touched: a
+        switch session you are sitting in is not interrupted (this check only runs while
+        TRuffle has the screen), and tmux panes keep running and stay logged in."""
+        if self.creds and creds_expired(time.time(), self.creds_at, self.cfg.password_lifetime):
+            self.forget_creds("typed %s ago" % minutes_text(self.cfg.password_lifetime))
+
+    def set_creds(self, creds):
+        self.creds = creds
+        self.creds_at = time.time()
 
     def handle(self, key):
         n = len(self.view)
+        if key == "PASTE":
+            # Pasted text is text: no Enter runs a command, no Tab marks a switch.
+            text = paste_text(PASTE["text"])
+            PASTE["text"] = ""
+            if text:
+                self.query += text
+                self.refilter()
+            return None
         if key == "RESIZE":
             self.sync_size()
         elif key == "UP":
@@ -1828,6 +2687,14 @@ class App(object):
             self.cmd = (self.cmd + 1) % len(COMMANDS)
         elif key == "ENTER":
             return self.execute()
+        elif key in ("TAB", "BTAB"):            # mark switches for a multi-switch ssh
+            if key == "BTAB":
+                self.cursor = max(0, self.cursor - 1)
+            dev = self.selected()
+            if dev is not None:
+                self.toggle_mark(dev)
+                if key == "TAB":
+                    self.cursor = min(max(0, n - 1), self.cursor + 1)
         elif key.startswith("F") and key[1:].isdigit():
             self.set_sort(int(key[1:]) - 1)
         elif key == "BACKSPACE":
@@ -1841,10 +2708,13 @@ class App(object):
             words = self.query.split()
             self.query = " ".join(words[:-1]) + (" " if len(words) > 1 else "")
             self.refilter()
-        elif key == "ESC":                   # one step at a time: search, batch ping, sort
+        elif key == "ESC":                   # one step: search, marks, batch ping, sort
             if self.query:
                 self.query = ""
                 self.refilter()
+            elif self.marked:
+                self.marked.clear()
+                self.message("Marks cleared")
             elif self.batch and self.batch.running:
                 self.batch.cancel()
                 self.message("Batch ping cancelled")
@@ -1861,8 +2731,12 @@ class App(object):
                 self.refilter(dev)
         elif key == "CTRL_E":
             self.export()
-        elif key == "MOUSE":
-            return self.click()
+        elif key == "CTRL_T":
+            self.reattach()
+        elif key == "CTRL_K":
+            self.close_sessions()
+        elif key == "CTRL_G":
+            self.settings()
         elif key == "CTRL_R":
             self.load()
             if not self.load_error:
@@ -1874,44 +2748,16 @@ class App(object):
             self.refilter()
         return None
 
-    def click(self):
-        """Mouse: click a tab / row to select it, double-click to run, click a column
-        header to sort, wheel to scroll."""
-        if not MOUSE["event"]:
-            return None
-        x, y, buttons = MOUSE["event"]
-        spans, n = self.spans, len(self.view)
-        if buttons & WHEEL_UP:
-            self.cursor = max(0, self.cursor - 3)
-        elif buttons & WHEEL_DOWN:
-            self.cursor = min(max(0, n - 1), self.cursor + 3)
-        elif buttons & (CLICK | DOUBLE_CLICK):
-            double = buttons & DOUBLE_CLICK
-            if y == spans["y_tabs"]:
-                for x0, x1, i in spans["tabs"]:
-                    if x0 <= x < x1:
-                        self.cmd = i
-                        return self.execute() if double else None
-            elif y == spans["y_head"]:
-                for x0, x1, i in spans["head"]:
-                    if x0 <= x < x1:
-                        self.set_sort(i)
-            elif spans["y_body"] <= y < spans["y_body"] + self.body_h and self.top + y - spans["y_body"] < n:
-                self.cursor = self.top + y - spans["y_body"]
-                if double:
-                    return self.execute()
-        return None
-
     def export(self):
         """Ctrl-E: the current list (filter + order) with all CSV columns and the
         ping / SSH results to a new CSV file."""
         if not self.view:
             self.message("Nothing to export", error=True)
             return
-        path = os.path.join(self.cfg.export_dir, "tree-li-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
+        path = os.path.join(self.cfg.export_dir, "truffle-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
         try:
-            export_csv(path, self.view, self.headers, self.delimiter,
-                       {"ping": self.ping, "ssh": self.ssh}, self.checked)
+            path = export_csv(path, self.view, self.headers, self.delimiter,
+                              self.word_results(), self.checked, self.save_detail())
         except OSError as e:
             self.message("Export failed: %s" % (e.strerror or e), error=True, seconds=10)
             return
@@ -1931,6 +2777,12 @@ class App(object):
             return None
         if command == "details":
             return self.show_details(dev)
+        if command == "ssh":
+            # Several marked switches go to tmux panes; only then does the selected
+            # row matter, so a bad IP on it must not block the marked ones.
+            marked = [d for d in self.marked_devices() if valid_host(d.host)]
+            if len(marked) > 1:
+                return self.connect_many(marked)
         if not valid_host(dev.host):
             self.message("'%s' has no usable IP/host ('%s')" % (dev.name, dev.host), error=True)
             return None
@@ -1940,12 +2792,17 @@ class App(object):
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
                                 env=dict(os.environ, LC_ALL="C"))      # predictable English output
             self.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+            ms = parse_rtt("\n".join(stream.snapshot()))
             if stream.done:
                 self.set_status("ping", dev.host, PING_UP if stream.returncode == 0 else PING_DOWN)
             elif any(" bytes from " in line for line in stream.snapshot()):
                 self.set_status("ping", dev.host, PING_UP)   # closed early, but a reply came back
             else:
                 return None
+            if ms is None:
+                self.rtt.pop(dev.host, None)
+            else:
+                self.rtt[dev.host] = ms
             self.save_status()
             self.status_changed(dev)
         return None
@@ -1960,15 +2817,16 @@ class App(object):
             self.message("'ping' is not installed", error=True)
             return
         hosts, seen = [], set()
-        for d in self.view:
+        for d in self.marked_devices() or self.view:
             if valid_host(d.host) and d.host not in seen:
                 seen.add(d.host)
                 hosts.append(d.host)
         if not hosts:
             self.message("No switches to ping", error=True)
             return
-        self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping}, self.checked)
-        self.message("Batch ping started: %d switches, about %d s" % (len(hosts), len(hosts) // self.cfg.ping_rate + 1))
+        self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping, "rtt": self.rtt}, self.checked)
+        self.message("Batch ping started: %d %sswitches, about %d s"
+                     % (len(hosts), "marked " if self.marked_devices() else "", len(hosts) // self.cfg.ping_rate + 1))
 
     # -- popups -------------------------------------------------------------
 
@@ -2017,16 +2875,8 @@ class App(object):
                 scr.refresh()
 
                 key = read_key(scr, 150)
-                if key == "MOUSE" and MOUSE["event"]:
-                    buttons = MOUSE["event"][2]
-                    key = "WHEEL_UP" if buttons & WHEEL_UP else "WHEEL_DOWN" if buttons & WHEEL_DOWN else None
                 if key in ("ESC", "ENTER", "q", "Q"):
                     break
-                elif key == "WHEEL_UP":
-                    offset, follow = offset - 3, False
-                elif key == "WHEEL_DOWN":
-                    offset += 3
-                    follow = stream is not None and offset >= max_off
                 elif key == "UP":
                     offset, follow = offset - 1, False
                 elif key == "DOWN":
@@ -2055,11 +2905,21 @@ class App(object):
             stamp = self.checked.get((kind, dev.host))
             text = states.get(dev.host, "not checked")
             return text + ("   (%s)" % time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else "")
+        ms = self.rtt.get(dev.host)
+        reason = self.detail.get(("ssh", dev.host), "")
         values = list(dev.values.items()) + [
             ("Ping", result("ping", self.ping)),
-            ("SSH (last try)", result("ssh", self.ssh) + (
-                "   %s" % self.ssh_reason[dev.host] if self.ssh.get(dev.host) == SSH_FAILED
-                and dev.host in self.ssh_reason else "")),
+            ("Ping time", "%s ms   (one packet: not loss, not jitter)" % format_rtt(ms)
+                          if ms is not None else "not measured"),
+            ("SSH (last try)", result("ssh", self.ssh)),
+        ]
+        if reason:
+            # The reason is why this column exists, so it is wrapped onto its own lines
+            # instead of being clipped at the right edge.
+            room = max(20, self.scr.getmaxyx()[1] - 24)
+            for i, line in enumerate(textwrap.wrap(reason, room)[:4]):
+                values.append(("why it failed" if i == 0 else "", line))
+        values += [
             ("Favourite", "yes" if device_key(dev) in self.state.favorites else "no"),
             ("Last connected", time.strftime("%Y-%m-%d %H:%M", time.localtime(last)) if last else "never"),
         ]
@@ -2113,6 +2973,88 @@ class App(object):
             put(scr, y0, x0 + 4 + len(title), "%s %s " % (th.sym["sep"], subtitle), th.win_frame)
         return y0, x0
 
+    # Settings you may want to flip in the middle of a day.  Everything else
+    # (columns, ping rate, paths) is set once in truffle.conf and left alone.
+    #   key, label, what it changes
+    TOGGLES = [("l", "Session log", "session_log"),
+               ("d", "Debug log", "debug"),
+               ("t", "Several switches at once (tmux)", "tmux")]
+
+    def settings(self):
+        """Ctrl-G: turn the things on that you only want for the next hour.
+
+        Ctrl-G and not Ctrl-O: ^O is the tty "discard" character (VDISCARD), which the
+        terminal driver eats before curses ever sees it, because cbreak() clears ICANON
+        but not IEXTEN.  ^U / ^W / ^R are ICANON-only, which is why those do arrive.
+
+        Session-only on purpose: writing these back would rewrite truffle.conf and
+        throw away its comments, and "just for now" is what this screen is for."""
+        scr, th = self.scr, self.th
+        while True:
+            rows = []
+            for key, label, option in self.TOGGLES:
+                on = getattr(self.cfg, option)
+                extra = ""
+                if option == "session_log" and on:
+                    extra = self.cfg.log_dir
+                elif option == "debug" and on:
+                    extra = os.path.join(self.cfg.state_dir, "debug.log")
+                rows.append((key, label, "on" if on else "off", extra))
+            rows.append(("c", "Screen symbols", self.cfg.charset_setting +
+                         ("" if self.cfg.charset_setting != "auto" else " (%s)" % self.cfg.charset), ""))
+            rows.append(("p", "Forget the stored password now",
+                         "held" if self.creds else "not held", ""))
+            width = min(80, max(56, scr.getmaxyx()[1] - 6))
+            label_w, value_x = 34, 3 + 4 + 34 + 2
+            y0, x0 = self.draw_window("Settings", "for this TRuffle only", len(rows) + 7, width)
+            for i, (key, label, value, extra) in enumerate(rows):
+                y = y0 + 2 + i
+                put(scr, y, x0 + 3, key, th.win_key)
+                put(scr, y, x0 + 7, fit(label, label_w).rstrip(), th.win_label)
+                text = value if not extra else "%s  %s" % (value, extra)
+                put(scr, y, x0 + value_x, fit(text, width - value_x - 3, self.th.sym["more"]).rstrip(),
+                    th.win_key if value == "on" else th.win_hint)
+            put(scr, y0 + len(rows) + 3, x0 + 3,
+                "Not saved - put it in truffle.conf to keep it"[:width - 6], th.win_hint)
+            put(scr, y0 + len(rows) + 5, x0 + 3, "ESC", th.win_key)
+            put(scr, y0 + len(rows) + 5, x0 + 7, "close", th.win_hint)
+            scr.refresh()
+
+            key = read_key(scr, -1)
+            if key in ("ESC", "ENTER", "q", "Q", "CTRL_G"):
+                return
+            if key == "RESIZE":
+                self.sync_size()
+                continue
+            for k, label, option in self.TOGGLES:
+                if key == k:
+                    setattr(self.cfg, option, not getattr(self.cfg, option))
+                    self.message("%s %s" % (label, "on" if getattr(self.cfg, option) else "off"))
+            if key == "c":
+                order = ["auto", "unicode", "ascii"]
+                nxt = order[(order.index(self.cfg.charset_setting) + 1) % len(order)]
+                self.cfg.charset_setting = nxt
+                self.cfg.charset = detect_charset(nxt)
+                self.th = Theme(self.cfg.charset)        # rebuild: symbols change at once
+                self.message("Screen symbols: %s" % nxt)
+            elif key == "p":
+                if self.creds:
+                    self.forget_creds("you asked")
+                else:
+                    self.message("No password is stored")
+
+    def confirm(self, title, question, detail=()):
+        """A y/n window.  Anything other than y / Enter means no."""
+        width = min(72, max(40, self.scr.getmaxyx()[1] - 6))
+        lines = list(textwrap.wrap(question, width - 6)) + [""] + list(detail)
+        y0, x0 = self.draw_window(title, "", len(lines) + 4, width)
+        for i, line in enumerate(lines):
+            put(self.scr, y0 + 1 + i, x0 + 3, line[:width - 6], self.th.win_hint if i else self.th.win_label)
+        put(self.scr, y0 + len(lines) + 2, x0 + 3, "y", self.th.win_key)
+        put(self.scr, y0 + len(lines) + 2, x0 + 5, "yes      any other key: no", self.th.win_hint)
+        self.scr.refresh()
+        return read_key(self.scr, -1) in ("y", "Y")
+
     # -- credentials --------------------------------------------------------
 
     def credential_dialog(self, error=None):
@@ -2137,7 +3079,7 @@ class App(object):
             if error:
                 for i, line in enumerate(textwrap.wrap(sym["dot"] + " " + error, bw - 6, subsequent_indent="  ")[:2]):
                     put(scr, y0 + 6 + i, x0 + 3, line, th.win_err)
-            put(scr, y0 + 8, x0 + 3, ("Kept in memory only %s forgotten when TRee-Li exits" % sym["sep"])[:bw - 6],
+            put(scr, y0 + 8, x0 + 3, ("Kept in memory only %s forgotten when TRuffle exits" % sym["sep"])[:bw - 6],
                 th.win_hint)
             put(scr, y0 + 9, x0 + 3, "Empty password: ssh asks at every login"[:bw - 6], th.win_hint)
             x = x0 + 3
@@ -2175,6 +3117,13 @@ class App(object):
                     pw = ""
             elif key == "RESIZE":
                 self.sync_size()
+            elif key == "PASTE":            # first line only: a password gets no newline
+                text = paste_text(PASTE["text"], multiline=False)
+                PASTE["text"] = ""
+                if field == 0:
+                    user += text
+                else:
+                    pw += text
             elif len(key) == 1:
                 if field == 0:
                     user += key
@@ -2191,128 +3140,192 @@ class App(object):
                 if creds is None:
                     self.message("ssh cancelled")
                     return
-                self.creds = creds
+                self.set_creds(creds)
             user, password = self.creds
             result = self.run_ssh(dev, user, password)
             if result.auth_failed:
                 self.creds = None             # wipe the wrong password, ask again
                 error = "Login failed for '%s' on %s - please re-enter." % (user, dev.name)
                 continue
+            reason = ""
             if result.hostkey_changed:
-                self.ssh_reason[dev.host] = "host key changed - not connected"
+                reason = "host key changed - not connected"
                 self.message("%s: host key changed - not connected" % dev.name, error=True, seconds=15)
             elif not result.failed:
                 self.state.touch(device_key(dev))
                 self.message("Disconnected from %s" % dev.name)
             else:
-                self.ssh_reason[dev.host] = "exit code %d - %s" % (result.exit_code, result.last_line)
+                reason = ssh_failure_reason(result)
                 text = "%s: ssh exit code %d" % (dev.name, result.exit_code)
                 if result.last_line:
                     text += " - " + result.last_line
                 self.message(text, error=True, seconds=10)
             if result.prompt_missed:
                 self.message("%s: no password prompt recognised - you had to type it yourself. "
-                             "Run 'tree-li --debug' and connect again to see what the switch sent."
+                             "Run 'truffle --debug' and connect again to see what the switch sent."
                              % dev.name, error=True, seconds=20)
-            # the SSH column remembers how your last real attempt went - no extra connections
-            self.set_status("ssh", dev.host, SSH_FAILED if result.failed or result.hostkey_changed else SSH_OK)
+            # the SSH column remembers how your last real attempt went - no extra connections.
+            # The reason is saved with it, so it survives a restart and reaches the export.
+            self.set_status("ssh", dev.host,
+                            SSH_FAILED if result.failed or result.hostkey_changed else SSH_OK, reason)
             self.save_status()
             self.status_changed(dev, force=True)        # is:recent, ssh: searches, status sorts
             return
 
     def note(self, *lines):
-        """Text printed outside curses, around an ssh session: 'TRee-Li > first line', rest indented."""
-        prefix = "TRee-Li"
-        if self.th.colors:
-            prefix = "\033[1;34m%s\033[0m" % prefix          # bold blue: every colour terminal knows it
-        indent = "\r\n" + " " * 10
-        return "\r\n%s %s %s" % (prefix, self.th.sym["gt"], indent.join(lines))
+        return note_text(lines, self.th.colors, self.th.sym["gt"])
 
-    def debug_log(self, dev, argv, password, result):
-        """--debug: append what happened around this login to debug.log (0600).
-        Contains the ssh command, prompts, decisions and the output BEFORE the
-        login - never the password, never the session itself."""
-        lines = [
-            "=== %s  %s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S"), dev.name, dev.host),
-            "command      : %s" % " ".join(shlex.quote(a) for a in argv),
-            "password     : %s" % ("stored, TRee-Li types it" if password else "none stored, you type it"),
-        ] + ["event        : %s" % e for e in result.events] + [
-            "exit code    : %s   failed: %s   auth failed: %s   host key changed: %s" % (
-                result.exit_code, result.failed, result.auth_failed, result.hostkey_changed),
-            "last line    : %s" % result.last_line,
-            "before login :",
-        ] + ["  | " + line for line in result.pre_login.strip("\n").split("\n")[-40:]] + [""]
-        path = os.path.join(self.cfg.state_dir, "debug.log")
-        try:
-            os.makedirs(self.cfg.state_dir, mode=0o700, exist_ok=True)
-            with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "a",
-                           encoding="utf-8") as f:
-                f.write("\n".join(lines) + "\n")
-        except OSError as e:
-            self.message("cannot write %s: %s" % (path, e.strerror or e), error=True, seconds=10)
+    def live_sessions(self):
+        """Ask tmux right now - a cached list may name a session that has just ended.
+        Sets sessions_foreign when the only sessions left were started by another
+        TRuffle window of ours, so Ctrl-K / Ctrl-T can say so before touching them."""
+        if not which("tmux"):
+            self.sessions_foreign = False
+            return []
+        alive = set(truffle_sessions())
+        self.my_sessions = [s for s in self.my_sessions if s in alive]
+        self.sessions = list(self.my_sessions)
+        self._sessions_checked = time.time()
+        self.sessions_foreign = not self.my_sessions and bool(alive)
+        return self.my_sessions or sorted(alive)
 
-    def open_log(self, dev, user):
+    def enter_tmux(self, session):
+        """Hand the terminal to tmux and come back.  Returns an error text or ''."""
+        self.leave_curses()
         try:
-            os.makedirs(self.cfg.log_dir, mode=0o700, exist_ok=True)
-            name = re.sub(r"[^A-Za-z0-9_.-]", "_", dev.name or dev.host)[:60]
-            path = os.path.join(self.cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), name))
-            f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
-            f.write(("# TRee-Li session log: %s (%s) as %s, %s\n"
-                     % (dev.name, dev.host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
-            return f
-        except OSError as e:
-            os.write(sys.stdout.fileno(), self.note("cannot write session log: %s\r\n" % e).encode("utf-8", "replace"))
-            return None
+            if os.environ.get("TMUX"):      # tmux refuses to nest: switch instead of attach
+                try:
+                    tmux_run("switch-client", "-t", "=" + session)
+                    return ""
+                except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+                    return str(e)
+            ok, error = attach_session(session)
+            return "" if ok else error
+        finally:
+            self.resume_curses()
+            self.reload_status()
+
+    def reattach(self):
+        """Ctrl-T: back into the tmux session that holds the open switches."""
+        if not which("tmux"):
+            self.message("tmux is not installed", error=True, seconds=10)
+            return
+        sessions = self.live_sessions()
+        if not sessions:
+            self.message("No open switch session - mark 2 or more switches with Tab, then run ssh",
+                         seconds=10)
+            return
+        session = sessions[-1]              # the newest one
+        if self.sessions_foreign and not self.confirm(
+                "Go into another window's session",
+                "%s was not started by this TRuffle window. Go into it anyway?" % session,
+                detail=["  another TRuffle of yours is probably using it"]):
+            self.message("Nothing opened")
+            return
+        error = self.enter_tmux(session)
+        if error:
+            self.message("Could not go back to %s: %s" % (session, error), error=True, seconds=15)
+            return
+        left = self.live_sessions()
+        if os.environ.get("TMUX"):
+            self.message("Switched to %s (Ctrl-b L switches back here)" % session, seconds=10)
+        elif len(left) > 1:
+            self.message("Back from %s - still running: %s" % (session, ", ".join(s for s in left
+                                                                                 if s != session)), seconds=15)
+        else:
+            self.message("Back from %s" % session if session in left else "%s has ended" % session)
+
+    def close_sessions(self):
+        """Ctrl-K: close the switch sessions without hunting for a tmux key."""
+        sessions = self.live_sessions()
+        if not sessions:
+            self.message("No open switch session", seconds=8)
+            return
+        detail = ["  " + s for s in sessions]
+        if self.sessions_foreign:           # not ours: say so before logging anyone out
+            detail += ["", "  NOT started by this TRuffle window - another", "  TRuffle of yours may be using them."]
+        if not self.confirm("Close switch sessions",
+                            "Close %d tmux session%s and log out of every switch in them?"
+                            % (len(sessions), "" if len(sessions) == 1 else "s"), detail=detail):
+            self.message("Nothing closed")
+            return
+        for session in sessions:
+            tmux_try("kill-session", "-t", "=" + session)
+        self.live_sessions()
+        self.reload_status()
+        self.message("Closed %d tmux session%s" % (len(sessions), "" if len(sessions) == 1 else "s"))
+
+    def connect_many(self, devices):
+        """Several switches at once: one tmux session, one pane each, one login.
+        Ctrl-b d brings you back here; the sessions keep running until you log out."""
+        if not self.cfg.tmux or not which("tmux"):
+            self.message("%s - connecting to several switches at once needs it. "
+                         "Marks still limit batch ping; ssh connects to the selected switch."
+                         % ("tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux
+                            else "tmux is not installed"), error=True, seconds=12)
+            return
+        extra = len(devices) - MAX_PANES
+        devices = devices[:MAX_PANES]
+        if self.creds is None:
+            creds = self.credential_dialog()
+            if creds is None:
+                self.message("ssh cancelled")
+                return
+            self.set_creds(creds)
+        handover = Handover(lambda: self.creds)
+        try:
+            session = open_panes(self.cfg, devices, handover)
+        except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
+            handover.close()
+            self.message("tmux failed: %s" % e, error=True, seconds=15)
+            return
+        self.my_sessions.append(session)
+        self.marked.clear()
+        self.message("Starting %d panes and logging them in ..." % len(devices), seconds=30)
+        self.draw()                                  # the wait is short, but never silent
+        got_logins = wait_for_logins(handover)       # panes fetch immediately after they start
+        handover.close()                             # the socket is not needed any more
+        refused = handover.take_refusals()
+        held = self.creds is not None
+        error = self.enter_tmux(session)             # also reloads what the panes wrote
+        self.live_sessions()
+        # A pane may have reported a wrong password while we were in tmux, in which case
+        # forget_creds() already said so.  That is the message that matters, so it is
+        # carried into this one instead of being overwritten by it.
+        lost = held and self.creds is None
+        # The dropped password leads the line: a long message is cut off at the right
+        # edge, and this is the part the user has to act on.
+        lead = ("Password was wrong and has been dropped - you will be asked again.  %s  "
+                % self.th.sym["sep"]) if lost else ""
+        if error:
+            self.message("%stmux session %s started, but could not show it: %s" % (lead, session, error),
+                         error=True, seconds=15)
+            return
+        note = lead + "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
+        if not got_logins:
+            note += " - some panes had to ask for the password themselves"
+        if extra > 0:
+            note += " (%d more were not opened - %d panes at most)" % (extra, MAX_PANES)
+        if refused:
+            note += " - REFUSED: %s" % "; ".join(refused[:2])
+        note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in, Ctrl-K closes them" % self.th.sym["sep"]
+        self.message(note, error=bool(refused or lost), seconds=20)
+
+    def leave_curses(self):
+        """Give the plain terminal to ssh or tmux: our paste mode goes with it."""
+        bracketed_paste(False)
+        curses.endwin()
 
     def run_ssh(self, dev, user, password):
-        out = sys.stdout.fileno()
-        key_removed = False
-        self.mouse(False)                  # the switch session gets the plain terminal
-        curses.endwin()
+        """One session in TRuffle's own terminal: leave curses, connect, come back."""
+        self.leave_curses()
         try:
-            while True:
-                argv = build_ssh_argv(self.cfg, user, dev.host, inject_password=bool(password))
-                os.write(out, (self.note("Connecting to %s (%s) as %s" % (dev.name, dev.host, user),
-                                         "log out to return to TRee-Li, ~. force-disconnects") + "\r\n\r\n")
-                         .encode("utf-8", "replace"))
-                log = self.open_log(dev, user) if self.cfg.session_log else None
-                try:
-                    result = run_session(argv, password, log)
-                finally:
-                    if log is not None:
-                        log.close()
-                if self.cfg.debug:
-                    self.debug_log(dev, argv, password, result)
-                if result.hostkey_changed and not result.auth_failed:
-                    known_hosts = result.known_hosts or os.path.join(os.path.expanduser("~"), ".ssh", "known_hosts")
-                    if key_removed:
-                        terminal_wait_key(self.note("The host key is still reported as changed.",
-                                                    "Please check %s by hand." % known_hosts,
-                                                    "Press any key to return to TRee-Li ..."))
-                        return result
-                    answer = terminal_wait_key(self.note(
-                        "The host key of %s (%s) has CHANGED." % (dev.name, dev.host),
-                        "Expected if the switch was replaced - otherwise do NOT continue.",
-                        "Remove the old key from %s and connect again? [y/N] " % known_hosts))
-                    if answer not in (b"y", b"Y"):
-                        return result
-                    ok, text = remove_host_key(dev.host, known_hosts)
-                    os.write(out, (text.replace("\n", "\r\n") + "\r\n").encode("utf-8", "replace"))
-                    if not ok:
-                        terminal_wait_key(self.note("Could not remove the old key.",
-                                                    "Press any key to return to TRee-Li ..."))
-                        return result
-                    key_removed = True
-                    continue
-                if result.failed and not result.auth_failed:
-                    terminal_wait_key(self.note("Connection to %s ended (exit code %d)." % (dev.name, result.exit_code),
-                                                "Press any key to return to TRee-Li ..."))
-                return result
+            return ssh_flow(self.cfg, dev.name, dev.host, user, password, self.note)
         finally:
             self.resume_curses()
 
     def resume_curses(self):
-        self.mouse(True)
+        bracketed_paste(True)
         self.scr.keypad(True)
         curses.flushinp()
         self.sync_size()
@@ -2334,10 +3347,15 @@ def help_sections(cfg, ncols, switches):
         ("item", "Enter", "run the selected command"),
         ("item", "just type", "search - fuzzy, best matches first (see below)"),
         ("item", "Backspace  Ctrl-W  Ctrl-U", "delete a character / word / the whole search"),
-        ("item", "ESC", "clear the search, then: cancel batch ping, then: clear the sort"),
+        ("item", "paste", "pasted text goes into the search as text - a newline"),
+        ("item", "", "in it no longer runs ssh (needs a terminal that"),
+        ("item", "", "supports bracketed paste; others are unchanged)"),
+        ("item", "ESC", "step by step: clear the search, clear the marks,"),
+        ("item", "", "cancel batch ping, clear the sort"),
+        ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)"),
         ("item", "Ctrl-F", "mark / unmark the switch as favourite (*)"),
         ("item", "Ctrl-E", "export the current list to CSV (%s)" % cfg.export_dir),
-        ("item", "mouse", "click: select, double-click: run, header: sort, wheel: scroll"),
+        ("item", "Ctrl-G", "settings for this session (logging, tmux, symbols)"),
         ("item", "F1..F%d" % ncols, "sort by column: press again for reverse, a third time for off"),
         ("item", "Ctrl-R", "reload the switch list"),
         ("item", "Ctrl-C", "quit"),
@@ -2354,16 +3372,38 @@ def help_sections(cfg, ncols, switches):
         ("section", "Commands"),
         ("item", "ssh", "connect - user/password are asked once and kept in memory"),
         ("item", "", "only. Log out of the switch to come back."),
+        ("item", "", "The password is forgotten %s. Sessions and tmux"
+                     % ("%s after you typed it" % minutes_text(cfg.password_lifetime)
+                        if cfg.password_lifetime else "only when TRuffle exits")),
+        ("item", "", "panes you already have are never touched by that."),
+        ("item", "", "With 2+ marked (Tab): one tmux session, one pane each,"),
+        ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
+        ("item", "", "logged in until you log out or close them."),
         ("item", "ping", "ping the selected switch (4 packets, live output)"),
-        ("item", "batch ping", "ping every switch in the current list -> PING column."),
-        ("item", "", "ICMP only, at most %d per second. ESC cancels." % cfg.ping_rate),
+        ("item", "batch ping", "ping the marked switches, or the whole current list"),
+        ("item", "", "-> PING column. ICMP only, at most %d per second." % cfg.ping_rate),
         ("item", "details", "all fields of the selected switch"),
         ("item", "help", "this screen"),
-        ("item", "exit", "quit TRee-Li and forget the credentials"),
+        ("item", "exit", "quit TRuffle and forget the credentials"),
         ("section", "Columns"),
         ("item", "PING", "result of the last ping / batch ping"),
-        ("item", "SSH", "how your last real ssh attempt went - TRee-Li never"),
+        ("item", "MS", "round-trip time of that ping. One packet, so it is one"),
+        ("item", "", "number - not packet loss and not jitter. Sorting it"),
+        ("item", "", "puts the slowest switches first"),
+        ("item", "SSH", "how your last real ssh attempt went - TRuffle never"),
         ("item", "", "probes SSH on its own, so it makes no extra traffic"),
+        ("section", "Several switches at once (tmux)"),
+        ("item", "Tab", "mark switches, then run ssh with 2 or more marked"),
+        ("item", "Ctrl-b d", "back to TRuffle - the switches stay logged in"),
+        ("item", "Ctrl-T", "back into the tmux session from TRuffle"),
+        ("item", "Ctrl-K", "close the switch sessions (asks first)"),
+        ("item", "Ctrl-b o", "next pane      Ctrl-b z  zoom one pane in / out"),
+        ("item", "exit  or  Ctrl-d", "in a pane: log out of that one switch; when the last"),
+        ("item", "", "pane closes, the tmux session ends by itself"),
+        ("item", "tmux ls", "from any shell: list the sessions that are still running"),
+        ("item", "tmux attach -t NAME", "from any shell: go back into one"),
+        ("item", "tmux kill-session -t NAME", "from any shell: close one and its logins"),
+        ("item", "tmux", "%s" % ("on" if cfg.tmux else "off (tmux = yes in truffle.conf)")),
         ("section", "Inside an ssh session"),
         ("item", "~.", "(at the start of a line) force-disconnect a hanging session"),
         ("section", "Setup"),
@@ -2381,15 +3421,16 @@ def check(cfg):
     ok, clean = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
-    for key, where in cfg.obsolete:
-        print("  note: '%s' in %s is from an older version and is ignored" % (key, where))
     print("switch list  : %s" % cfg.data)
     try:
         report = {}
         headers, rows = read_table(cfg.data, report)
-        devices, columns, warns = build_devices(headers, rows, cfg)
+        devices, columns, warns, picked = build_devices(headers, rows, cfg)
         print("switches     : %d" % len(devices))
         print("columns      : %s" % ", ".join("%s (%s)" % c for c in columns))
+        # Which column is which is the thing you cannot see from the table, so say it.
+        print("switch name  : %s" % picked["name"])
+        print("ssh target   : %s" % picked["host"])
         issues = warns + data_issues(devices, report["lines"], report["issues"])
         clean = not issues
         print("data check   : %s" % ("ok" if clean else "%d warning(s)" % len(issues)))
@@ -2405,33 +3446,45 @@ def check(cfg):
         ok = ok and path is not None
     print("state dir    : %s" % cfg.state_dir)
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
+    print("password     : %s" % ("forgotten %s after you type it, sessions untouched"
+                                 % minutes_text(cfg.password_lifetime) if cfg.password_lifetime
+                                 else "kept until TRuffle exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
     return 0 if clean else 1          # 1 = warnings only, so a cron check can gate on it
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="tree-li", description=TITLE + " - connect to your switches over SSH.")
-    parser.add_argument("--data", metavar="CSV", help="switch list (default: 'data' in tree-li.conf, else data.csv next to tree-li)")
+    parser = argparse.ArgumentParser(prog="truffle", description=TITLE + " - connect to your switches over SSH.")
+    parser.add_argument("--data", metavar="CSV", help="switch list (default: 'data' in truffle.conf, else data.csv next to truffle)")
     parser.add_argument("--config", metavar="FILE", help="additional config file")
     parser.add_argument("--log", action="store_true", help="record ssh sessions to log files")
     parser.add_argument("--debug", action="store_true",
                         help="write what happens around each ssh login to debug.log in the state "
-                             "directory (tree-li --check prints the path)")
+                             "directory (truffle --check prints the path)")
     parser.add_argument("--ascii", action="store_true", help="plain ASCII screen (if lines/symbols look garbled)")
     parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
+    parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
+                        help=argparse.SUPPRESS)        # internal: one switch inside a tmux pane
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
     args = parser.parse_args(argv)
 
     try:
         cfg = load_config(args)
     except ConfigError as e:
-        print("tree-li: config error: %s" % e, file=sys.stderr)
+        print("truffle: config error: %s" % e, file=sys.stderr)
         return 2
     if args.check:
         return check(cfg)
+    if args.pane:                                 # started by TRuffle inside a tmux pane
+        harden_process()
+        try:
+            locale.setlocale(locale.LC_ALL, "")
+        except locale.Error:
+            pass
+        return pane_main(cfg, *args.pane)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("tree-li: must be run in an interactive terminal", file=sys.stderr)
+        print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2
 
     harden_process()                              # before the password can ever be in memory
@@ -2447,9 +3500,16 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     except curses.error as e:
-        print("tree-li: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
+        print("truffle: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
         return 1
-    print("TRee-Li closed - credentials forgotten.")
+    finally:
+        # Also on the paths where run() never reached its end (a failed startup, a
+        # curses error): the terminal must not keep a mode we switched on.
+        bracketed_paste(False)
+    print("TRuffle closed - credentials forgotten.")
+    for session in truffle_sessions():
+        print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"
+              % (session, session))
     return 0
 
 

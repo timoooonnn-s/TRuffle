@@ -2,9 +2,12 @@
 
 Each entry records who proposed it, who objected, and the outcome.
 
-## D1: Name: **TRee-Li** (2026-10-02)
+## D1: Name: **TRee-Li** (2026-10-02) - SUPERSEDED by D31
 Spelled **TRee-Li**: T + R for Timmy and Ruffy. "Tree" fits a network tool, and "-Li" keeps the V-Li family name.
-The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name doesn't collide).
+The command was `tree-li` (`tree` already exists on Linux, so the hyphenated name didn't collide).
+
+*Left as it was written, because a decision log that gets rewritten is worth nothing. The project
+was renamed to **TRuffle** on 2026-10-05; see [D31](#d31-renamed-to-truffle-user-2026-10-05).*
 
 ## D2: Python 3, standard library only, one executable file
 - Target: RHEL with Python 3.11. Tested with Python 3.8, 3.9, 3.11 and 3.14. RHEL 9's default `python3` is 3.9, so 3.8+ compatibility is required.
@@ -21,7 +24,7 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 
 ## D4: Host keys
 - `StrictHostKeyChecking=accept-new`: new switches are accepted silently.
-- When a stored key has changed (device replaced), TRee-Li asks y/N and then runs `ssh-keygen -R`. It never removes a key silently (*Warden*).
+- When a stored key has changed (device replaced), TRuffle asks y/N and then runs `ssh-keygen -R`. It never removes a key silently (*Warden*).
 
 ## D5: After disconnect, return to the menu
 - After a normal logout the main screen comes back immediately.
@@ -33,26 +36,26 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - Same commands: `ssh · ping · traceroute · batch ping · details · help · exit`. Same keys.
 - `traceroute` runs `traceroute` if it's installed, otherwise `tracepath` (the server only has tracepath).
 - `batch ping` writes UP/DOWN into a `Ping` column, which is sortable.
-- *Critic/Operator:* TRee-Li parses escape sequences itself, so F1–F6 work in PuTTY's default mode too. `Tab` cycles the sort column as a backup.
+- *Critic/Operator:* TRuffle parses escape sequences itself, so F1–F6 work in PuTTY's default mode too. `Tab` cycles the sort column as a backup.
 - Only ASCII is used for the UI chrome. PuTTY line-drawing characters break with UTF-8, so there are none.
 
 ## D7: Data & config
 - Same CSV format as V-Li. The delimiter is auto-detected. UTF-8 (including a BOM) is accepted, with a fallback to cp1252 (Excel on Windows).
 - The data path is resolved relative to the config file or the script, **never the CWD** (V-Li bug).
-- Shared defaults live in `tree-li.conf` next to the script. Personal overrides go in `~/.config/tree-li/tree-li.conf`.
+- Shared defaults live in `truffle.conf` next to the script. Personal overrides go in `~/.config/truffle/truffle.conf`.
 - Visible columns are configurable, so future CSV columns (e.g. location) can be added without code changes.
 
 ## D8: Session logging: optional, off by default
 - Turned on with the `--log` flag or `session_log = yes`.
-- Logs are per user, in `~/.local/state/tree-li/logs`, with modes 0700/0600. Never in the shared directory (*Warden*).
+- Logs are per user, in `~/.local/state/truffle/logs`, with modes 0700/0600. Never in the shared directory (*Warden*).
 
 ## D9: Normal logout vs. failure (Operator + Critic, 2026-10-02)
 - Many switches end the session with ssh exit code 255 ("closed by remote host"), so the exit code alone can't tell a normal logout from a failure.
-- Rule: if the user typed anything after the login, it was a session. TRee-Li returns to the menu immediately and shows "Disconnected".
-- If the user never typed anything and the exit code is non-zero, it was a connection failure. TRee-Li waits for a key so the error stays readable, and also shows it in the status line.
+- Rule: if the user typed anything after the login, it was a session. TRuffle returns to the menu immediately and shows "Disconnected".
+- If the user never typed anything and the exit code is non-zero, it was a connection failure. TRuffle waits for a key so the error stays readable, and also shows it in the status line.
 
 ## D10: Repository hygiene (Warden)
-- `data.csv` and `tree-li.conf` are git-ignored. The real inventory never goes to GitHub; `data.example.csv` and `tree-li.conf.example` are shipped instead.
+- `data.csv` and `truffle.conf` are git-ignored. The real inventory never goes to GitHub; `data.example.csv` and `truffle.conf.example` are shipped instead.
 - `.gitattributes` forces LF line endings, because the repo travels through Windows and a CRLF shebang breaks.
 
 ## D11: Visual redesign (user choices, 2026-10-02)
@@ -67,9 +70,9 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - Search terms: `word`, `field:value` (any CSV column or table label, `field:` = empty), `ping:up|down|wait|none`, `is:fav`, `is:recent`, and `-term` to negate. Unknown `x:y` is treated as plain text, so IPv6 addresses (`fe80::1`) keep working (*Critic*).
 - The favourite key is **Ctrl-F**, not `*`: every printable key belongs to the search (*Operator*).
 - Without a chosen sort column, favourites are pinned on top and `is:recent` orders newest first. Choosing a sort column (F1-F6) always wins, because otherwise "sort by Ping" would be confusing (*Operator*).
-- Stored per user in `~/.local/state/tree-li/{favorites,recent}`: mode 0600, atomic writes, re-read before every write (two TRee-Li windows of the same user don't overwrite each other), history capped at 200. Only successful logins are recorded (*Warden*).
+- Stored per user in `~/.local/state/truffle/{favorites,recent}`: mode 0600, atomic writes, re-read before every write (two TRuffle windows of the same user don't overwrite each other), history capped at 200. Only successful logins are recorded (*Warden*).
 
-## D13: Dialog windows and the TRee-Li palette (user request, 2026-10-02)
+## D13: Dialog windows and the TRuffle palette (user request, 2026-10-02)
 - First version (dark navy panel, strong grey-out, drop shadow) was rejected as too dark.
 - Now: the screen behind a dialog only **fades a bit** (grey 246), there is **no shadow**, and the window is a **lighter mid-blue panel** with a thin rounded **frame** that carries the title (`╭─ Login · asked once per session ─╮`). The input fields are pale blue, and the active one is the lightest.
 - The whole UI uses one blue palette with several shades (the user's choice), defined in `STYLE.md`. Light shades carry text on dark terminals; strong shades are backgrounds (tab, selection bar, panel).
@@ -94,7 +97,7 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - **Fuzzy search, fzf-style (user's choice):** plain words match when their letters appear in order within one visible column. A substring always outranks a scattered match; word starts and adjacent letters score higher. Without a sort column, the best matches come first (favourites win ties). Matched letters are underlined.
   - `'word` forces an exact match.
   - Excludes (`-word`), `field:value` and status filters stay exact. A fuzzy exclude would hide far too much (*Critic*).
-- **SSH check (user's choice: separate column, inside batch ping):** TCP connect to `ssh_port` (22) and wait for the server's `SSH-` greeting. If the server waits for the client, TRee-Li sends its own greeting first. Results: `open`, `closed` (refused), `no answer` (timeout, unreachable, no SSH greeting). No login, no password (*Warden*); the switch only logs a short connection.
+- **SSH check (user's choice: separate column, inside batch ping):** TCP connect to `ssh_port` (22) and wait for the server's `SSH-` greeting. If the server waits for the client, TRuffle sends its own greeting first. Results: `open`, `closed` (refused), `no answer` (timeout, unreachable, no SSH greeting). No login, no password (*Warden*); the switch only logs a short connection.
   - Ping and SSH run as separate tasks in the same worker pool, so a host with ICMP filtered can still show `ssh open`.
   - `ssh:no` matches "no answer" but not unchecked hosts (`none`), because status filters treat `none` specially (*Critic*).
 - Sorting by PING/SSH puts problems first.
@@ -111,7 +114,7 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - **Bundle (*Warden*):** only git-tracked files are packed. Untracked files are listed and never shipped. Without git, an allow-list is used.
 - **Data check:** field-count mismatches with line numbers, duplicate names and IPs, missing or invalid IPs, leading zeros. Shown in `--check`, plus a hint at startup.
 - **Export (`Ctrl-E`):** the current view with all CSV columns plus Ping/SSH and their times, to a new file (0600, UTF-8 with BOM for Excel, the list's own delimiter) in `export_dir` (default `~`).
-- **Saved check results:** `~/.local/state/tree-li/status`, merged per host (newest wins), restored at startup with a hint. `wait` is never saved.
+- **Saved check results:** `~/.local/state/truffle/status`, merged per host (newest wins), restored at startup with a hint. `wait` is never saved.
 - **Mouse** (stdlib curses, on by default, `mouse = no` to switch off):
   - click selects, double-click runs (300 ms window), a header click sorts, the wheel scrolls
   - switched off during ssh sessions
@@ -119,7 +122,7 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
   - wheel-down needs ncurses mouse v2 (RHEL 8+); older builds only scroll up
 
 ## D18: traceroute removed (user, 2026-10-03)
-- The command, `trace_command` and the `--check` line are gone. An old `tree-li.conf` that still sets `trace_command` keeps working: the option is silently ignored (`OBSOLETE`).
+- The command, `trace_command` and the `--check` line are gone. An old `truffle.conf` that still sets `trace_command` keeps working: the option is silently ignored (`OBSOLETE`).
 
 ## D19: Slimmed down + --debug (user, 2026-10-03)
 - **Removed:** Tab/Shift-Tab sorting (F-keys, ESC and header clicks cover it), `TREELI_DATA`, `--user`, and the `delimiter` / `host_column` / `name_column` settings (auto-detection covers them). Old configs that still set these keep working (`OBSOLETE`).
@@ -133,16 +136,315 @@ The command is `tree-li` (`tree` already exists on Linux, so the hyphenated name
 - The removed settings are listed in `OBSOLETE`, so old config files keep working.
 
 ## D21: Process hardening + credit (2026-10-03)
-- From the handover security review, the parts that apply to TRee-Li as it is: **no core dumps** (`RLIMIT_CORE=0`), and on Linux **`PR_SET_DUMPABLE=0`**, so other processes of the same user can't attach or read `/proc/<pid>/mem`, where the stored password lives. Root still can. ssh and ping children are unaffected, because exec resets this.
+- From the handover security review, the parts that apply to TRuffle as it is: **no core dumps** (`RLIMIT_CORE=0`), and on Linux **`PR_SET_DUMPABLE=0`**, so other processes of the same user can't attach or read `/proc/<pid>/mem`, where the stored password lives. Root still can. ssh and ping children are unaffected, because exec resets this.
 - The **tmux pane feature is NOT built.** It's parked in `council/ideas/tmux-panes.md` with option 1, the hardening and the Warden's concern about forgotten background sessions.
 - Credit **"by Timmy & Ruffy"**: small, in Steel, bottom right of the footer (when no batch progress is shown there) and on the help screen.
 
 ## D22: Review round 4 - fixes, --check as a gate, version discipline (2026-10-03)
 - **Crash fix (*Architect*):** the batch-ping rate limiter could call `time.sleep()` with a negative value when a worker was descheduled between the loop condition and the argument. The `ValueError` killed the thread, printed a traceback over the curses screen and left hosts stuck in `wait`. Reproduced deterministically, now `max(0.0, ...)`.
 - **`user_typed` simplified (*Critic*):** it used to be set only when a password had already been sent. If the prompt was never recognised and the user typed the password by hand, a normal logout (exit 255 on most switches) was then reported as a failure. Any keystroke now counts, which is both simpler and correct.
-- **Prompt-not-recognised hint:** `SessionResult.prompt_missed` is true when a password was stored, the switch answered, and no prompt was ever matched. TRee-Li now says so instead of silently doing nothing. It stays false for connection failures, where no prompt could appear. This is the Universal 4300 failure shape made visible.
+- **Prompt-not-recognised hint:** `SessionResult.prompt_missed` is true when a password was stored, the switch answered, and no prompt was ever matched. TRuffle now says so instead of silently doing nothing. It stays false for connection failures, where no prompt could appear. This is the Universal 4300 failure shape made visible.
 - **`--check` is a gate (*Operator*):** exit 0 = fine, 1 = data warnings, 2 = cannot run. It also lists obsolete options from an old config, which were silently ignored before, and prints the state directory.
-- **Version discipline (*Warden*):** `VERSION` is 1.1.0 and must be bumped per bundle. `make-bundle.py` refuses to overwrite an existing bundle with different contents (`--force` overrides), and the extractor refuses to downgrade without a confirmation. Previously every bundle was called `tree-li-bundle-1.0.0.py`.
+- **Version discipline (*Warden*):** `VERSION` is 1.1.0 and must be bumped per bundle. `make-bundle.py` refuses to overwrite an existing bundle with different contents (`--force` overrides), and the extractor refuses to downgrade without a confirmation. Previously every bundle was called `truffle-bundle-1.0.0.py`.
 - **Help page is data (`help_sections`)**, rendered by `show_help` and checked by tests: every command must be documented and no removed feature may still be advertised. The stale "ping + SSH check" line got through exactly because nothing tested this.
 - **Cleanup:** dead `delimiter` parameter on `read_table`, the double refilter in `connect()`, the defensive `getattr(args, "debug")` (the test helper now mirrors the real parser), the `--debug` help text that hardcoded the state path, and stray blank lines.
 - **Session logging stays** (user's call) - it is the only feature with no demonstrated user, revisit later.
+
+## D23: tmux panes built on the `tmux-version` branch (2026-10-03)
+- Not merged. The user wants to try it before deciding; `main` is untouched.
+- **Mark with `Tab`** (right-click too), `+` in the list, "N marked" in the top bar. With 2+ marked, ssh opens one tmux session with one pane per switch (max 9), all logging in at once - the user's call: a mistyped password is their problem, as when using tmux by hand.
+- **Back out:** `Ctrl-b d`. **Back in:** `Ctrl-T`. Logging out of the last pane ends the session and TRuffle picks the results up by itself.
+- **Handover (option 1)** with all the hardening from the idea doc: private 0700 directory, 0600 socket, kernel uid *and* pid check, one-time ticket bound to the pane tmux started, 15 s lifetime, socket deleted once the logins are out.
+- **Results go through the status file, not the socket** - simpler, survives long sessions, and lets the socket close early. The DONE protocol is gone.
+- *Warden:* `N tmux` in the top bar while sessions live, and they are named again on exit. `synchronize-panes` is forced off so one command can never go to every switch.
+- Works on Linux (`SO_PEERCRED`) and macOS (`LOCAL_PEERCRED` / `LOCAL_PEERPID`), both verified.
+- 14 security tests in `tests/test_handover.py`; 80 tests overall on Python 3.8 / 3.9 / 3.14.
+
+## D24: tmux hardening after the first real use (2026-10-03)
+User feedback: "Ctrl-T is a bit buggy" and "Ctrl-b & does not close the session for me (Swiss German layout)".
+- **Ctrl-T had four faults**, all now fixed: it trusted a session list cached for up to 3 s (so it could attach to a session that had just ended), `attach_session` returned an exception object nobody looked at, a failed attach left curses and came straight back with no message, and a successful switch inside tmux said nothing at all. It now asks tmux for the live list, checks the session exists, reports every outcome, and names the sessions still running.
+- **Closing without a tmux key:** `Ctrl-K` in TRuffle closes the sessions after a y/n window. Keyboard layouts make `Ctrl-b &` unreliable, and binding a tmux key ourselves would change the user's global tmux config, so the action belongs in TRuffle. The tmux status bar now advertises `exit` per pane instead of `&`.
+- **Handover: one thread per connection.** The accept loop was serial with a 5 s timeout, so a single client that connected and said nothing blocked every other pane from fetching its login - measured: the second pane timed out completely. The `parent_pid()` lookup (which runs `ps` on macOS) also no longer happens while holding the lock. Single use is still exact, re-checked under the lock.
+- **Session names could collide** inside one second (`truffle-HHMMSS`); `free_session_name()` now suffixes.
+- **A half-built session is killed** if a `split-window` fails, instead of being left behind.
+- Sessions are created with the real terminal size, not tmux's detached default of 80x24.
+- **`win_text` did not exist** in the palette and only crashed when the new confirm window opened. `TestTheme` now checks every `th.<name>` in the source, the dynamically built status styles and the MONO fallback against the palette - that class of bug must not reach a user again.
+
+## D25: Standing rules written down: dependencies and target platform (user, 2026-10-04)
+The user stated two rules that had been implicit since D2. They now live in
+[COUNCIL.md](COUNCIL.md#standing-rules) as **R1** and **R2**, so every future proposal is measured against them
+instead of re-arguing them:
+- **R1 - as few dependencies as possible.** Standard library first, then a tool already on the server, then a
+  vendored file we own, then (only with a named benefit) an external package. "Easier, more secure, or another
+  clear benefit" is the test; "nicer" is not. The cost side is concrete: on a locked-down RHEL box every
+  `pip install` is a ticket, and TRuffle's promise is "copy one file".
+- **R2 - RHEL Linux is the target, macOS is only a test bench.** Local testing happens on macOS, so macOS
+  support is a convenience and never the yardstick. Platform-split code states both paths, Linux first; the
+  supported Pythons are the ones RHEL ships (3.8/3.9 up, RHEL 9's `python3` is 3.9); a macOS-only feature is
+  not built.
+
+## D26: Review round 5 - crash, the unreported pane login failure, honest counters (2026-10-04)
+Seven findings and six smaller observations from a full review of the `tmux-version` branch. 92 tests.
+- **Crash (*Architect*):** `UserState.save_status` walked the live ping dict while a cancelled batch ping's
+  worker threads were deleting hosts from that same dict (`BatchPing._restore`), so a single ping right after
+  an `ESC` could raise `RuntimeError: dictionary changed size during iteration` over the curses screen. Same
+  class as the D22 rate-limiter crash. Now iterates a snapshot. Reproduced deterministically and kept as a
+  threaded regression test.
+- **A tmux pane's login failure never reached TRuffle (*Warden*).** `ideas/tmux-panes.md` step 5 promised the
+  stored password is wiped on a login failure; D23 moved results to the status file and the wipe was quietly
+  lost with the DONE protocol. So one mistyped password was spent on up to 9 panes **and then kept**, costing
+  another failed auth on the next single ssh - exactly the TACACS+/RADIUS lockout D3 exists to prevent.
+  Panes now report it through the state directory (`authfail`, 0600), TRuffle picks it up within 3 s while the
+  sessions are still running, drops the password and says so. Sub-second timestamps: a pane can fail inside
+  the same second the password was typed, and a whole-second stamp looked *older* than the password it
+  belonged to - found by the end-to-end test, not by reading.
+- **"N marked" lied (*Operator*).** The top bar counted every mark; `ssh` and `batch ping` act only on marks
+  in the current view. Mark 3, search so one stays visible, and the bar said "3 marked" while `ssh` opened a
+  single session to the *selected* row, which need not be marked at all. The bar now shows what will be used:
+  `1 marked (+2 hidden)`.
+- **A bad IP on the selected row blocked a multi-switch ssh.** The `valid_host` gate ran before the single/
+  multi decision. The marked switches are now handled first; the selected row only has to be usable when it
+  is the one being connected to.
+- **`Ctrl-K` / `Ctrl-T` could touch another TRuffle window's sessions (*Warden*).** The fallback to "any
+  `truffle-*` session" stays - it is how an orphaned session is recovered - but both now say so and ask first.
+- **Idle password timeout built (*Warden*, the condition from `ideas/tmux-panes.md` risk 5).** Background tmux
+  sessions exist on this branch, so the "mandatory if" is met. `password_timeout = 15` minutes, `0` = never.
+  Idle means no keypress in TRuffle; a switch session and a return from tmux both count as use, and tmux panes
+  running in the background deliberately do **not**.
+- **Help page and README named the wrong `ESC` chain** (the marks step was missing). D22 made the help page
+  data so this drift gets caught, but the test only checked commands - it now checks the `ESC` entry itself.
+- **Observations fixed:** a pane faster than tmux's pane-pid report is waited for instead of refused
+  (`BIND_GRACE`, still never answering an unbound ticket); `--ascii` is passed on to panes; two exports in the
+  same second no longer collide (`-2`, `-3`); `Ctrl-C` saves finished ping results instead of dropping them;
+  a bare `ping:` / `ssh:` now means "not checked", consistent with an empty `location:`; and with `tmux = no`
+  the refusal explains what marks still do (limit batch ping) instead of being a dead end.
+- **New end-to-end tests:** two marked switches really do share one login through the handover (and no pane
+  command line carries the password), and a pane that cannot log in really does make TRuffle forget it.
+- **The dropped-password notice leads its line.** `connect_many`'s closing message used to overwrite it, and
+  once both were in one message the right-hand truncation cut off the half that mattered. Per D22's version
+  discipline, `VERSION` is now **1.2.1-tmux**.
+
+## D27: PuTTY and Tabby field-tested (user + Ruffy, 2026-10-04)
+Milestone 2's open client test is done: **Tabby** tested by the user, **PuTTY** tested and approved by Ruffy,
+the second engineer. Both fine, so the D6/D11 bets (own escape-sequence parser for PuTTY's `ESC[11~` F-keys,
+ASCII-only chrome, 8-colour fallback, the dialog drawing its own block cursor) hold up against real clients.
+Still open: the batch ping and the ssh pass over the **full ~700-switch inventory**, which needs the inventory.
+
+## D28: Password lifetime, bracketed paste, latency, failure reasons (user, 2026-10-04)
+
+### Password: 10 hours, absolute, and it never touches a session
+The 15-minute idle timeout from D26 was wrong for this team and is replaced. The user's input:
+devices are secured, no engineer uses another's machine, and the **switches themselves drop an idle
+session after 900 s** (now in [KNOWLEDGE.md](KNOWLEDGE.md) section 6). A tight timeout priced in a threat
+that does not exist here.
+- **`password_lifetime = 600` (10 hours), measured from when the password was TYPED**, not from the last
+  keypress. Idle time was the wrong clock: a window someone pokes once a morning would keep a live
+  credential alive for weeks, while an absolute lifetime always expires and costs at most one re-entry
+  per day. `0` = never.
+- **One variable:** `PASSWORD_LIFETIME_MINUTES` at the top of `truffle`, with the reasoning next to it, is
+  the single place to change if the team argues for longer or shorter. The config option defaults to it.
+- **Expiry only deletes the password inside TRuffle** (user's explicit requirement). A switch session you
+  are sitting in is never interrupted - the check only runs while TRuffle has the screen - and tmux panes
+  keep running and stay logged in. Nothing in the workspace is touched.
+- `password_timeout` goes into `OBSOLETE`, so a config written in the last two days keeps working.
+- *Warden:* accepted. With a 900 s switch timeout and per-user accounts, the residual case this covers is
+  narrow (TRuffle parked inside tmux for days), and the cost is near zero. Honest limit: Python cannot wipe
+  a string from memory, so this shrinks the usable window, not the theoretical one.
+
+### Bracketed paste (idea B, built)
+Terminals paste by *typing* at the application, so a copied switch name with its trailing newline arrived
+as `ENTER` - which ran `ssh` on whatever row the filter happened to put first. Now TRuffle enables
+bracketed paste (`ESC[?2004h`), and everything between the terminal's `ESC[200~`/`ESC[201~` markers is
+treated as text: control characters are dropped, so a pasted tab cannot mark a switch and a pasted newline
+cannot start a connection. Line breaks become spaces in the search (all terms must match, so a pasted list
+visibly matches nothing); in the login dialog only the first line is taken, so a pasted password gets no
+newline. The mode is switched off before the terminal is handed to ssh or tmux and on again afterwards.
+*Critic:* timing-based paste detection was rejected - over a laggy link it misfires both ways. A terminal
+that does not support the mode never sends the markers, so nothing changes there. **Open:** PuTTY support
+still to be confirmed by Ruffy; until then this is a Tabby-only improvement.
+
+### Latency (idea D, built)
+`ping_once` threw its output away and kept only the exit code. It now runs with **`LC_ALL=C`** (the single
+ping already did - without it, D17's German-server bug returns) and parses `time=`. The value gets its
+**own 6-wide sortable `MS` column**, because the point is finding the outlier in 700 rows, which sorting
+inside the PING column could never do. Sorting it puts the **slowest first**, consistent with the state
+columns putting problems first; unknown values go last. Batch ping also reports the measured range.
+Stated plainly in help and README: one packet is one number, **not** packet loss and not jitter - getting
+loss would mean 4x the traffic and fight D20's quietness.
+
+### Why a ssh attempt failed (idea F, built)
+`ssh_reason` was an in-memory dict, filled only by `connect()`, shown only in `details`, lost on exit and
+never written by panes. "failed" alone is useless in a report: `Connection timed out`, `Permission denied`
+and `no matching key exchange method` are three different tickets. The reason is now saved with the result,
+so it survives a restart, panes contribute theirs, `details` shows it (wrapped onto its own line rather
+than clipped at the screen edge), and `Ctrl-E` exports an "SSH reason" column - so `ssh:failed` + `Ctrl-E`
+produces a list someone else can act on.
+- **Status file:** `host TAB kind TAB state TAB time` gains an optional **5th** detail field (the ms for a
+  ping, the reason for a ssh attempt). `load_status` accepts **4 or 5**, and a result with no detail is
+  still written with 4 - so an older TRuffle sharing the state directory keeps reading what it can instead
+  of dropping the whole file. A second file was rejected: one file already merges by time.
+
+### Also
+- The `MS` column makes sorting `F1`-`F8`; `TestSearchSort` now derives its indices from `STATUS_KINDS`
+  instead of hardcoding them, so adding a column can never again make a test silently sort the wrong one.
+- **[TMUX-SECURITY.md](../TMUX-SECURITY.md)** written for the other engineers: the handover explained from
+  first principles (what a Unix socket is, why `/run/user/<uid>` is private, why the kernel's peer check
+  cannot be faked, why the ticket in `ps` is deliberately not the secret), the attacker table, the honest
+  limits, and the fact that background sessions - bounded by the 900 s switch timeout - were always the
+  bigger exposure than the password. It ships with the tool, unlike `council/`.
+- `VERSION` 1.2.2-tmux. 102 tests.
+
+## D29: Review round 6 - mouse out, settings page in, 11 findings fixed (2026-10-04)
+A full review of the 695 lines added in round 5. Eleven findings, four of them bugs in code written
+that same day. 108 tests.
+
+### The two that mattered
+- **An oversized paste put the newlines back (*Architect*).** `read_paste` stopped consuming at its
+  cap **without draining to the `ESC[201~` end marker**, so everything past 1024 characters stayed in
+  the input queue and was read as ordinary keys. Measured on a 200-line paste: **87 leaked `ENTER`
+  presses**, each running ssh on the selected switch. Strictly worse than having no bracketed paste,
+  because the user now trusts pasting. The cap now limits what is **kept**, never what is consumed,
+  with a hard `HUGE_PASTE` stop so a terminal that never ends a paste cannot hang us.
+- **The terminal kept our paste mode after exit.** `bracketed_paste(False)` existed only in the
+  ssh/tmux hand-off; neither `run()` nor `main()` ever switched it off, so quitting left DECSET 2004
+  enabled and later pastes in an unaware shell arrived wrapped in literal `200~`. Now switched off at
+  the end of `run()` **and** in a `finally` around `curses.wrapper`, so a failed startup cannot leak it.
+
+### Data correctness
+- **Stale latency survived a host going down.** `save_status` copied `self.detail` and only overwrote
+  the hosts still in `self.rtt`, so a switch that stopped answering kept yesterday's ms and showed
+  `● down  1.20` after a restart - and the export said the same. One `App.save_detail()` now rebuilds
+  the ping details from `self.rtt`, which removes a duplicated three-line block at the same time.
+- **A 0.0 ms reading sorted as "never measured".** `sort_devices` split rows on truthiness, and `0.0`
+  is falsy, so a real measurement landed with the unmeasured hosts while `draw()` still printed it.
+  Now `!= ""`. *Tester:* the first regression test for this **passed on the broken code too** - with
+  only one other measured host the two orders coincide. The test now puts an unmeasured host first in
+  CSV order, which is what actually tells the behaviours apart. A test that cannot fail is worse than
+  no test.
+
+### Mouse support removed (user, 2026-10-04)
+Reversing D17's mouse decision. It was the one feature that **made something done constantly worse in
+exchange for something done rarely**: while TRuffle held the mouse, PuTTY and Tabby needed Shift to
+select text, so copying an IP out of the list - the most common action in the tool - got worse, in
+exchange for clicking a row instead of pressing a key that is already under your finger. Gone with it:
+`mousemask`/`mouseinterval`, the `MOUSE` dict and button constants, `App.click()`, the whole `spans`
+bookkeeping threaded through `draw()`, the wheel handling in `show_text`, the `mouse` option and the
+README troubleshooting row that existed only to explain the damage. The user: "haven't used it that
+much."
+
+### Settings page: Ctrl-G (user request)
+Every setting was judged on one question: *would you want to flip this in the middle of a day?* Five
+were: **session log**, **debug log**, **tmux mode**, **screen symbols**, and "forget the password
+now". Those are the settings page. Columns, ping rate, paths and the password lifetime are set once
+in `truffle.conf` and stay there.
+- **Session-only on purpose.** Writing them back would rewrite `truffle.conf` with configparser and
+  destroy its comments, and "just for now" is the whole point of the screen. It says so on screen.
+- ***Operator:* `Ctrl-G`, not `Ctrl-O`.** `Ctrl-O` was built first and silently did nothing: `^O` is
+  the tty **discard** character (`VDISCARD`), which the terminal driver eats before curses sees it,
+  because `cbreak()` clears `ICANON` but not `IEXTEN`. `^U`/`^W`/`^R` are `ICANON`-only, which is why
+  those have always worked. Caught by driving the real UI, not by reading the code. Recorded in
+  [KNOWLEDGE.md](KNOWLEDGE.md).
+
+### Cut, and why
+- **Old-config back-compat (`OBSOLETE`) deleted** (user: "No need to keep stuff for old configs").
+  The tool has only ever run on one or two test machines and `truffle.conf` is git-ignored, so the
+  entire population of old config files is those machines. A retired option is now a hard startup
+  error that names itself, which `--check` also reports - a ten-second fix instead of a permanent
+  carrying cost. **Kept** on purpose: `load_status` still accepts 4 **or** 5 fields, because that is
+  tolerant parsing of files the test machines already have, not back-compat theatre.
+- **`BIND_GRACE` deleted** - my own over-engineering from D26. The race it closed was theoretical
+  (Python startup is ~50 ms, `bind()` lands microseconds after `tmux_run` returns), the fallback was
+  already graceful, and the 2 s wait widened the window in which anything could ask while pushing
+  macOS towards the client's 5 s timeout. An unbound ticket is refused at once again.
+- **`parent_pid` no longer runs on every handover request:** `expected not in (pid, parent_pid(pid))`
+  built the tuple eagerly, forking `ps` on macOS even when the pid already matched.
+
+### Smaller
+- `set_or_clear()` replaces four copies of "store it unless it is empty". Not used for `self.rtt`,
+  where `0.0` is a real value and only `None` clears - the same trap as the sort bug.
+- One `App.results()` now maps kind to dict; `column_results()` (drawing/sorting, STATUS_COLUMNS
+  order) and `word_results()` (what the status file saves) derive from it, so adding a column cannot
+  make `reload_status` raise. The old `status()`/`states()` pair was a mix-up waiting to happen.
+- `minutes_text()`: `password_lifetime = 90` used to report "typed 2 h ago".
+- The `MS` column and its header are right-aligned, so magnitudes line up without sorting.
+- `VERSION` 1.3.0-tmux (mouse removed and the config contract changed - not a patch release).
+
+## D30: The column label decides the job (user's Infoblox export, 2026-10-05)
+The first real inventory export arrived - an Infoblox network export - and TRuffle showed a single
+column with the **subnet** address in it. Two separate causes, one of them a silent data bug:
+- `columns` defaults to `Name, IP, subnet, aliases:Alias, comment`. In that export the only header
+  that matched anything was `SUBNET`, so the table had one column showing the network address
+  (`198.51.100.0`), not the host address (`192.0.2.98`, which sits in `ADDRESS`).
+- Worse: the switch **name** fell back to `headers[0]` **silently**, which in this export is `SUBNET`.
+  Two switches in one subnet therefore shared an identity - so favourites, history and the duplicate
+  check were all keyed on the subnet. The export has exactly that case (`cd-34-s56-r1` and
+  `cd-34-s56-r2` are both in `198.51.100.0`).
+
+**Decision: the label in `columns` picks the column.** The column labelled `Name` is the switch name,
+the one labelled `IP` is the ssh target; the old header-name search stays as the fallback. So the
+user's whole setup is one config line and no code change:
+
+```ini
+columns = PRIMARY_DN_CODE:Name, ADDRESS:IP
+```
+
+- *Architect:* this reuses something that already exists instead of adding an option. **D19 removed
+  `name_column` / `host_column`** on the grounds that auto-detection covered them; this export proves
+  it does not, but re-adding two options would reverse D19 for a case the labels already express.
+- *Critic:* the label must win over a same-named header, otherwise you could never point TRuffle at a
+  different column in a list that happens to have its own `Name`. Tested.
+- *Operator:* the silent fallback is the real fault. It now **warns and names the fix**
+  (`no 'Name' column: using 'SUBNET' as the switch name - set it with columns = <header>:Name`), and
+  `--check` prints `switch name` and `ssh target` outright - the one thing you could not see from the
+  table was which column was doing which job.
+- The other twelve Infoblox columns are left in the file on purpose: they are searchable
+  (`vlan_id:2301`), listed by **details**, and ready for the location and comment EAs the user says
+  are coming, which then only need adding to `columns`.
+- `build_devices` returns a 4th value (`picked`) so `--check` can report it. 111 tests.
+- Not built, offered: a data check that the hostname matches the site pattern `xx-xx-sxx-xx`. Waiting
+  for the user - it is easy to add and easy to get wrong if the pattern has exceptions.
+
+## D31: Renamed to **TRuffle** (user, 2026-10-05)
+The user's call, no debate needed. **TRee-Li → TRuffle**, and the command is now `truffle`.
+The name still carries the **T** and **R** of Timmy and Ruffy that D1 was built on - and "Ruffy"
+sits inside "TRuffle" - so the origin survives the rename. `CREDIT` ("by Timmy & Ruffy") is unchanged.
+
+**What moved:**
+- `tree-li` → `truffle`, `tree-li.conf` → `truffle.conf`, config section `[tree-li]` → `[truffle]`
+- state and logs: `~/.local/state/tree-li` → `~/.local/state/truffle`, personal config
+  `~/.config/tree-li/` → `~/.config/truffle/`
+- tmux sessions `tree-li-HHMMSS` → `truffle-HHMMSS`; the handover directory prefix with them
+- exports `tree-li-export-*.csv` → `truffle-export-*.csv`; bundles `truffle-bundle-<version>.py`;
+  the bundle manifest `.tree-li-files` → `.truffle-files`
+- `tests/test_tree_li.py` → `tests/test_truffle.py`; `tree_li_sessions()` → `truffle_sessions()`
+- the palette colour **TRee Blue** → **Truffle Blue** (`STYLE.md`, and the CSS variables
+  `--treeli-*` → `--truffle-*`)
+- a new 5-row ASCII banner reading TRuffle, generated in the same figlet style; the README shows
+  the exact same art the help screen draws, so the two cannot drift
+
+**Deliberately NOT renamed:**
+- **`V-Li`** - that is the separate, real reference tool (seismicindustries/switch-manager), not us.
+- **`TREELI_DATA`** in D19 - an environment variable that was *removed*. Renaming it would make that
+  decision record describe something that never existed.
+- **D1 itself**, restored to what it actually said and marked superseded. A log that is rewritten to
+  match the present is not a log.
+
+**What this breaks, on purpose** (D28's reasoning: the tool has only ever run on one or two test
+machines, so a loud break is cheaper than carrying compatibility):
+- an existing `tree-li.conf` is not read any more - rename it to `truffle.conf` and change the
+  section header to `[truffle]`. A wrong section name is a clear startup error.
+- favourites, history and saved ping/SSH results live under the old state directory. Either
+  `mv ~/.local/state/tree-li ~/.local/state/truffle` or let them be re-created empty.
+- tmux sessions started by the old binary keep their `tree-li-` names until they end; the new one
+  neither lists nor closes them. `tmux ls` and `tmux kill-session` still reach them by hand.
+
+**Also in this round:** every trace of the user's real inventory was removed from the repository -
+no company name, no real hostnames, no real internal subnets. The Infoblox examples in `README.md`,
+`council/` and the tests now use invented names in the same `xx-xx-sxx-xx` shape and RFC 5737
+documentation addresses (`192.0.2.x`, `198.51.100.x`), so the tests still prove exactly what they did
+(including two switches sharing one subnet). `data.csv` stays git-ignored.
+
+**One thing to check before rollout (*Researcher*):** a `truffle` command already exists in the wild
+(the Ethereum/Solidity development framework, installed via npm). It is very unlikely to be on a
+RHEL switch-management server, but `command -v truffle` on the target box is a five-second check that
+D1 explicitly did for `tree`, and is worth repeating here.

@@ -3,7 +3,7 @@ import time
 import types
 import unittest
 
-from test_tree_li import tl
+from test_truffle import tl
 
 
 class BatchPingTest(unittest.TestCase):
@@ -13,7 +13,7 @@ class BatchPingTest(unittest.TestCase):
 
         def fake_ping(host, timeout):           # no real ICMP needed in tests
             self.started.append(time.time())
-            return host.endswith(".1")
+            return host.endswith(".1"), 1.5 if host.endswith(".1") else None
         tl.ping_once = fake_ping
 
     def tearDown(self):
@@ -28,13 +28,15 @@ class BatchPingTest(unittest.TestCase):
     def test_results_and_rate_limit(self):
         cfg = types.SimpleNamespace(ping_rate=10, ping_timeout=1)
         hosts = ["10.0.0.%d" % i for i in range(1, 11)]
-        ping, checked = {}, {}
-        batch = tl.BatchPing(hosts, cfg, {"ping": ping}, checked)
+        ping, rtt, checked = {}, {}, {}
+        batch = tl.BatchPing(hosts, cfg, {"ping": ping, "rtt": rtt}, checked)
         self.wait(batch)
         self.assertEqual(ping["10.0.0.1"], tl.PING_UP)
         self.assertEqual(ping["10.0.0.2"], tl.PING_DOWN)
         self.assertEqual(batch.percent, 100)
-        self.assertEqual(batch.summary(), "1 up, 9 down")
+        self.assertEqual(batch.summary(), "1 up, 9 down, 1.50-1.50 ms")
+        self.assertEqual(rtt, {"10.0.0.1": 1.5})             # only hosts that answered
+        self.assertNotIn("10.0.0.2", rtt)
         self.assertIn(("ping", "10.0.0.5"), checked)
         span = max(self.started) - min(self.started)
         self.assertGreaterEqual(span, 0.8)                  # 10 pings at 10/s: spread over ~0.9 s
@@ -43,7 +45,7 @@ class BatchPingTest(unittest.TestCase):
         cfg = types.SimpleNamespace(ping_rate=2, ping_timeout=1)
         hosts = ["10.0.0.%d" % i for i in range(2, 8)]
         ping = dict((h, tl.PING_UP) for h in hosts)
-        batch = tl.BatchPing(hosts, cfg, {"ping": ping}, {})
+        batch = tl.BatchPing(hosts, cfg, {"ping": ping, "rtt": {}}, {})
         time.sleep(0.1)
         batch.cancel()
         self.wait(batch)

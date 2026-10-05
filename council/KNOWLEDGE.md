@@ -1,4 +1,4 @@
-# T-Li Switch Manager: Knowledge Base
+# TRuffle Switch Manager: Knowledge Base
 
 Maintained by **the Researcher**. Facts only; decisions go in `DECISIONS.md`.
 
@@ -21,7 +21,7 @@ Maintained by **the Researcher**. Facts only; decisions go in `DECISIONS.md`.
 - **Data:** CSV with a `;` delimiter. Header: `Name;IP;subnet;aliases;comment;type;id;responsible;aix_server`
 - **Env vars:** `SM_USER` (ssh user), `SM_CSV_DATA` (default `data.csv`, resolved against the current working directory), `SM_DELIMITER`, `SM_DEBUG`.
 - **Commands**
-  - `ssh` opens a **new GUI terminal window** (osascript/Terminal.app, xterm or cmd.exe). This cannot work over an SSH session, and it is the main thing T-Li has to replace.
+  - `ssh` opens a **new GUI terminal window** (osascript/Terminal.app, xterm or cmd.exe). This cannot work over an SSH session, and it is the main thing TRuffle has to replace.
   - `ping` streams the output of `ping -c 4`.
   - `traceroute` streams its output.
   - `batch ping` runs `ping -c 1` in parallel on all *filtered* rows and shows the combined text.
@@ -78,7 +78,61 @@ Maintained by **the Researcher**. Facts only; decisions go in `DECISIONS.md`.
 - **Exit code 255 on logout:** network devices often close the channel without sending an exit status. See decision D9.
 - **Fabric Engine / VOSS:** SSH password and keyboard-interactive auth are enabled by default. Older VOSS releases only offer RSA/DSA host keys, which may need `HostKeyAlgorithms=+ssh-rsa`.
   Sources: [VOSS: Enable SSH password authentication](https://documentation.extremenetworks.com/VOSS/SW/90/VOSSUserGuide/GUID-EA130EDE-AA9C-4171-8D4B-8744557DEBD5.shtml), [Control::CLI::Extreme](https://metacpan.org/pod/Control::CLI::Extreme)
-- **PuTTY + ncurses line drawing** breaks under UTF-8, so TRee-Li uses only ASCII chrome.
-- **PuTTY default F-keys** are `ESC[11~`..`ESC[15~`. Under `TERM=xterm`, ncurses doesn't recognise them, so TRee-Li parses them itself.
+- **PuTTY + ncurses line drawing** breaks under UTF-8, so TRuffle uses only ASCII chrome.
+- **PuTTY default F-keys** are `ESC[11~`..`ESC[15~`. Under `TERM=xterm`, ncurses doesn't recognise them, so TRuffle parses them itself.
 - **Python strings can't be wiped from memory.** The password object lives until the process exits (it is dropped on auth failure). This is acceptable for the threat model: same-user/root memory access already means game over.
-- **ControlPersist in ~/.ssh/config** can keep the pty open after ssh exits. TRee-Li also polls the child with `waitpid` so it doesn't hang.
+- **ControlPersist in ~/.ssh/config** can keep the pty open after ssh exits. TRuffle also polls the child with `waitpid` so it doesn't hang.
+
+---
+
+## 6. Hard numbers from the field
+
+| Fact | Value | Why it matters |
+|---|---|---|
+| **Switch idle timeout** | **900 seconds (15 min)** - confirmed by the user, 2026-10-04 | The number the whole tmux security case rests on. After `Ctrl-b d` the panes stay logged in, and anyone who can run commands as you could `tmux attach` into them without a password. That window is **15 minutes**, not hours - which is why the background-session risk (`ideas/tmux-panes.md` risk 5) is acceptable and why a tight password timeout was not needed. Quote this number in any security discussion rather than re-deriving it |
+
+## 7. Field results (2026-10-04)
+
+- **Tabby:** tested by the user. Works, nothing to change.
+- **PuTTY:** tested and approved by Ruffy, the second engineer. So the bets taken for PuTTY hold in
+  practice: TRuffle's own escape-sequence parser (default F-keys `ESC[11~`..`ESC[15~`, which ncurses
+  does not recognise under `TERM=xterm`), ASCII-only UI chrome, the 8-colour fallback, and the login
+  dialog drawing its own block cursor.
+- **Still unverified:** the full ~700-switch inventory (batch ping timing, ssh pass, screen behaviour
+  with a list that long). Everything so far was measured on small lists.
+- **Platform reminder (R2):** development and these local test runs happen on macOS, the real
+  deployment is RHEL. macOS-only evidence does not count as tested.
+
+### The real inventory: Infoblox network export (2026-10-05)
+The switch list comes from **Infoblox**, exported per network, not hand-written. First export's
+header:
+```
+SUBNET,MASK,VLAN_ID,PRIMARY_DN_CODE,CREATION_DATE,Default-GW,Name-Server,WINS-Server,
+BootP_NextServer,BootP_BootFile,MAC_ADDRESS,RFC_MAC_ADDRESS,ADDRESS
+```
+- **`PRIMARY_DN_CODE` is the hostname**, as an FQDN (`cd-34-s56-r1.prod...`).
+- **`ADDRESS` is the switch's own address.** `SUBNET` is the network address and must never be used
+  as the ssh target or the name - it is the same for every switch in that subnet.
+- Comma-separated, `CREATION_DATE` is quoted, and most fields are empty. All auto-detected.
+- **Hostname pattern: `xx-xx-sxx-xx`**, where each `x` can be any letter or digit, plus the domain
+  suffix. Fuzzy search works well on it: `s56r` finds `cd-34-s56-r1` and `cd-34-s56-r2`.
+- Still to come from Infoblox **extensible attributes (EAs)**: location and comments. They will
+  appear as extra columns; only `columns` has to change when they do.
+- Only `Name` and `IP` are actually wanted in the table (user, 2026-10-05).
+
+### Terminal keys that never arrive (2026-10-04)
+`curses.wrapper` puts the terminal in **cbreak**, which clears `ICANON` but **not `IEXTEN`**. So:
+- `^U` (kill), `^W` (werase), `^R` (rprnt) are `ICANON`-only specials and **do** reach the
+  application - which is why TRuffle has always been able to bind them.
+- `^O` (**discard**, `VDISCARD`) and `^V` (lnext) are `IEXTEN` specials: the tty driver consumes
+  them and curses never sees them. A shortcut bound to `^O` silently does nothing.
+- Also unusable: `^S`/`^Q` (flow control - `^S` freezes the terminal), `^C` (intr), `^Z` (susp),
+  `^D` (eof), `^\` (quit), and `^H`/`^I`/`^M` (which are Backspace/Tab/Enter).
+- Free and safe, and why the settings page is on `Ctrl-G`: `^G`, `^A`, `^N`, `^P`, `^X`, `^Y`.
+  Avoid `^B` as well - tmux eats it as its prefix when TRuffle runs inside tmux.
+
+### Pane timestamps, the hard way (2026-10-04)
+A tmux pane reporting a failed login writes its timestamp into the shared state directory. Written as
+whole seconds (`%d`), a pane that fails in the *same second* the password was typed looks **older** than
+that password, so the "is this failure about the password I am holding?" test fails and nothing happens.
+Sub-second stamps fix it. Only the end-to-end test surfaced this - reading the code did not.
