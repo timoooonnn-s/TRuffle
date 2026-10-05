@@ -10,7 +10,7 @@ whose plan line ("per-device or global extra ssh options, configurable") was onl
 for the global half.
 
 ## The shape the council agreed on
-The options live in `tree-li.conf`; the CSV only carries a **value that selects** one:
+The options live in `truffle.conf`; the CSV only carries a **value that selects** one:
 
 ```ini
 ssh_options.legacy = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa
@@ -22,7 +22,7 @@ profile name is a `--check` warning.
 
 ## Why NOT free-form options in the CSV (*Warden*)
 `data.csv` is a shared team file. Free-form ssh options there means anyone who can write it gets
-`-o ProxyCommand=...`, i.e. command execution as every colleague who opens TRee-Li - the same
+`-o ProxyCommand=...`, i.e. command execution as every colleague who opens TRuffle - the same
 class of hole as V-Li's AppleScript injection. The shared file must only ever hold a *name*.
 
 ## Effort

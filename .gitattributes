@@ -1,5 +1,5 @@
 # Always LF: a CRLF shebang ("python3\r") breaks the script on Linux,
 # and the repo travels through Windows machines.
 * text=auto eol=lf
-tree-li text eol=lf
+truffle text eol=lf
 *.csv text eol=lf

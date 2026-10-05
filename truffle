@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-TRee-Li: Switch Manager
+TRuffle: Switch Manager
 
 A terminal (curses) switch manager for use over plain SSH sessions.
 Inspired by V-Li: Switch Manager (github.com/seismicindustries/switch-manager).
 
-Python 3.8+, standard library only.  Run `tree-li --help`.
+Python 3.8+, standard library only.  Run `truffle --help`.
 """
 
 import argparse
@@ -42,12 +42,12 @@ import time
 import tty
 import warnings
 
-VERSION = "1.3.0-tmux"     # experimental tmux branch; bump before building a bundle
-TITLE = "TRee-Li: Switch Manager"
+VERSION = "1.3.1-tmux"     # experimental tmux branch; bump before building a bundle
+TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
-CONFIG_NAME = "tree-li.conf"
-CONFIG_SECTION = "tree-li"
+CONFIG_NAME = "truffle.conf"
+CONFIG_SECTION = "truffle"
 COMMANDS = ["ssh", "ping", "batch ping", "details", "help", "exit"]
 
 # Status words are stored, shown and searched as they are (ping:down, ssh:failed).
@@ -65,24 +65,24 @@ STATUS_RANK = {PING_DOWN: 0, SSH_FAILED: 0, PING_UP: 2, SSH_OK: 2, WAIT: 3}
 STATUS_STYLE = {PING_UP: "up", SSH_OK: "up", PING_DOWN: "down", SSH_FAILED: "down", WAIT: "wait"}
 
 # ---------------------------------------------------------------------------
-# How long TRee-Li keeps the password you typed.
+# How long TRuffle keeps the password you typed.
 #
 # THIS IS THE ONE NUMBER TO CHANGE if the team wants it longer or shorter.  It is the
-# default for `password_lifetime` in tree-li.conf, so a single site can still override
+# default for `password_lifetime` in truffle.conf, so a single site can still override
 # it without touching the code.
 #
 #   600 = 10 hours  (one long working day: never expires while you work, always has
 #                    expired by the next morning)
-#    60 = 1 hour    0 = never forget it, keep it until TRee-Li exits
+#    60 = 1 hour    0 = never forget it, keep it until TRuffle exits
 #
 # It is measured from the moment you TYPED the password, not from your last keypress -
 # so touching the window cannot keep it alive for days.
 #
 # What expiry does and does NOT do:
-#   does      - forget the password inside TRee-Li, so the next ssh asks again
+#   does      - forget the password inside TRuffle, so the next ssh asks again
 #   does NOT  - touch anything you are connected to.  A switch session you are sitting
 #               in keeps running, and tmux panes keep running and stay logged in.  The
-#               password is only deleted from TRee-Li, never from your workspace.
+#               password is only deleted from TRuffle, never from your workspace.
 # ---------------------------------------------------------------------------
 PASSWORD_LIFETIME_MINUTES = 600
 
@@ -113,7 +113,7 @@ DEFAULTS = {
     "ssh_options": "",
     "connect_timeout": "10",
     "session_log": "no",
-    "log_dir": "~/.local/state/tree-li/logs",
+    "log_dir": "~/.local/state/truffle/logs",
     "state_dir": "",
     "ping_rate": "20",
     "ping_timeout": "1",
@@ -132,7 +132,7 @@ class DataError(Exception):
 
 
 class Config(object):
-    """Resolved settings; every option is documented in tree-li.conf.example."""
+    """Resolved settings; every option is documented in truffle.conf.example."""
 
 
 def parse_bool(value, option):
@@ -180,11 +180,11 @@ def default_user():
 
 def user_config_path():
     base = os.environ.get("XDG_CONFIG_HOME") or os.path.join(os.path.expanduser("~"), ".config")
-    return os.path.join(base, "tree-li", CONFIG_NAME)
+    return os.path.join(base, "truffle", CONFIG_NAME)
 
 
 def load_config(args):
-    """Defaults <- tree-li.conf next to the script <- ~/.config/tree-li/tree-li.conf
+    """Defaults <- truffle.conf next to the script <- ~/.config/truffle/truffle.conf
     <- --config FILE <- command line."""
     raw = dict(DEFAULTS)
     data_base = SCRIPT_DIR
@@ -234,7 +234,7 @@ def load_config(args):
     cfg.session_log = args.log or parse_bool(raw["session_log"], "session_log")
     cfg.log_dir = os.path.abspath(os.path.expanduser(raw["log_dir"]))
     state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
-    cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "tree-li")))
+    cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "truffle")))
     cfg.ping_rate = parse_int(raw["ping_rate"], "ping_rate", 1, 100)
     cfg.ping_timeout = parse_int(raw["ping_timeout"], "ping_timeout", 1, 30)
     cfg.password_lifetime = parse_int(raw["password_lifetime"], "password_lifetime", 0, 1440)
@@ -342,24 +342,42 @@ def find_header(headers, wanted):
 
 
 def build_devices(headers, rows, cfg):
-    """Return (devices, columns, warnings); columns are (header, label) pairs."""
-    warns = []
-    host_h = None
-    for alt in ("ip", "host", "hostname", "address", "ip address"):
-        host_h = host_h or find_header(headers, alt)
-    if host_h is None:
-        raise DataError("no 'IP' column in the switch list (found: %s)" % ", ".join(headers))
-    name_h = find_header(headers, "name") or headers[0]
+    """Return (devices, columns, warnings, picked); columns are (header, label) pairs and
+    picked is {"name": header, "host": header}.
 
-    columns = []
+    Which column is the switch's NAME and which is the ssh TARGET comes from the LABELS
+    in `columns` first: the column you label "Name" is the name, the one you label "IP"
+    is the address.  That makes an export with its own header names work with one config
+    line and no code change - e.g. an Infoblox export where the hostname sits in
+    PRIMARY_DN_CODE and the host address in ADDRESS, next to a SUBNET column that must
+    NOT be used as either.  Without such a label the usual header names are looked for."""
+    warns = []
+    columns, by_label = [], {}
     for key, label in cfg.columns:
         h = find_header(headers, key)
         if h is None:
             warns.append("column '%s' not found in the switch list" % key)
         else:
             columns.append((h, label))
+            by_label.setdefault(label.strip().lower(), h)
+
+    host_h = by_label.get("ip")
+    for alt in ("ip", "host", "hostname", "address", "ip address"):
+        host_h = host_h or find_header(headers, alt)
+    if host_h is None:
+        raise DataError("no 'IP' column in the switch list (found: %s)"
+                        "  - label one with  columns = <header>:IP" % ", ".join(headers))
+    name_h = by_label.get("name") or find_header(headers, "name")
+    if name_h is None:
+        # Falling back to the first column used to happen silently, and on an export
+        # whose first column is the SUBNET that made every switch in a subnet share one
+        # identity - so favourites, history and the duplicate check all went wrong.
+        name_h = headers[0]
+        warns.append("no 'Name' column: using '%s' as the switch name"
+                     " - set it with  columns = <header>:Name" % name_h)
     if not columns:
         columns = [(name_h, name_h), (host_h, host_h)]
+    picked = {"name": name_h, "host": host_h}
 
     devices = []
     for row in rows:
@@ -371,7 +389,7 @@ def build_devices(headers, rows, cfg):
         d.lcells = [c.lower() for c in d.cells]
         d.search = "\x00".join(d.lcells)          # \x00: a word never matches across two columns
         devices.append(d)
-    return devices, columns, warns
+    return devices, columns, warns, picked
 
 
 IPV4_LIKE = re.compile(r"^[0-9.]+$")
@@ -626,13 +644,13 @@ def creds_expired(now, entered_at, minutes):
 
     Absolute, not idle: measured from when it was TYPED, so a window someone keeps
     touching cannot hold a live credential for days.  Expiry only forgets the password
-    inside TRee-Li - sessions and tmux panes are never disturbed."""
+    inside TRuffle - sessions and tmux panes are never disturbed."""
     return bool(minutes) and now - entered_at > minutes * 60
 
 
 class UserState(object):
     """Favourites and connection history of the current user, kept in
-    ~/.local/state/tree-li - never in the shared directory."""
+    ~/.local/state/truffle - never in the shared directory."""
 
     MAX_RECENT = 200
 
@@ -684,7 +702,7 @@ class UserState(object):
                 pass
 
     def toggle_favorite(self, key):
-        self.load()                        # another TRee-Li of the same user may have changed it
+        self.load()                        # another TRuffle of the same user may have changed it
         if key in self.favorites:
             self.favorites.discard(key)
         else:
@@ -699,7 +717,7 @@ class UserState(object):
         failed ssh.
 
         A line is `host TAB kind TAB state TAB time` with an optional 5th detail field.
-        Both lengths are accepted on purpose: a TRee-Li without the detail field keeps
+        Both lengths are accepted on purpose: a TRuffle without the detail field keeps
         reading every line that has none, instead of dropping the whole file."""
         status = dict((kind, {}) for kind in STATE_KINDS)
         checked, detail = {}, {}
@@ -717,7 +735,7 @@ class UserState(object):
         return status, checked, detail
 
     def save_status(self, status, checked, detail=None):
-        """Merge our results into the saved ones (newest wins, another TRee-Li may
+        """Merge our results into the saved ones (newest wins, another TRuffle may
         have checked other switches meanwhile) and write them back."""
         saved, saved_checked, saved_detail = self.load_status()
         detail = detail or {}
@@ -745,9 +763,9 @@ class UserState(object):
         self.recent = dict(newest)
         self._write("recent", ["%d\t%s" % (stamp, k) for k, stamp in reversed(newest)])
 
-    # A tmux pane cannot tell TRee-Li anything over the socket (it is closed once the
+    # A tmux pane cannot tell TRuffle anything over the socket (it is closed once the
     # panes have their login), so a wrong password is reported through this file -
-    # the same way results are.  TRee-Li then wipes the password it holds, instead of
+    # the same way results are.  TRuffle then wipes the password it holds, instead of
     # spending it on switch after switch (a central TACACS+/RADIUS account would lock).
     def note_auth_failure(self, host):
         stamp, _ = self.load_auth_failure()
@@ -1180,7 +1198,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
             os.execvp(argv[0], argv)
         except BaseException as e:
             try:
-                os.write(2, ("TRee-Li: cannot run %s: %s\r\n" % (argv[0], e)).encode())
+                os.write(2, ("TRuffle: cannot run %s: %s\r\n" % (argv[0], e)).encode())
             except Exception:
                 pass
         os._exit(127)
@@ -1245,8 +1263,8 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                 if not data:           # our own terminal is gone
                     break
                 if armed:
-                    result.events.append("you typed -> TRee-Li stops watching for prompts" if result.password_sent
-                                         else "you typed before any password prompt -> TRee-Li will not type it")
+                    result.events.append("you typed -> TRuffle stops watching for prompts" if result.password_sent
+                                         else "you typed before any password prompt -> TRuffle will not type it")
                 armed = False          # the user took over: never type the password again
                 result.user_typed = True
                 try:
@@ -1306,8 +1324,8 @@ def remove_host_key(host, known_hosts):
 
 
 def note_text(lines, colors=True, gt=">"):
-    """'TRee-Li > first line', further lines indented - printed outside curses."""
-    prefix = "\033[1;34mTRee-Li\033[0m" if colors else "TRee-Li"
+    """'TRuffle > first line', further lines indented - printed outside curses."""
+    prefix = "\033[1;34mTRuffle\033[0m" if colors else "TRuffle"
     return "\r\n%s %s %s" % (prefix, gt, ("\r\n" + " " * 10).join(lines))
 
 
@@ -1318,7 +1336,7 @@ def open_session_log(cfg, name, host, user):
         safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name or host)[:60]
         path = os.path.join(cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), safe))
         f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
-        f.write(("# TRee-Li session log: %s (%s) as %s, %s\n"
+        f.write(("# TRuffle session log: %s (%s) as %s, %s\n"
                  % (name, host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
         return f, None
     except OSError as e:
@@ -1332,7 +1350,7 @@ def write_debug_report(cfg, name, host, argv, password, result):
     lines = [
         "=== %s  %s (%s)" % (time.strftime("%Y-%m-%d %H:%M:%S"), name, host),
         "command      : %s" % " ".join(shlex.quote(a) for a in argv),
-        "password     : %s" % ("stored, TRee-Li types it" if password else "none stored, you type it"),
+        "password     : %s" % ("stored, TRuffle types it" if password else "none stored, you type it"),
     ] + ["event        : %s" % e for e in result.events] + [
         "exit code    : %s   failed: %s   auth failed: %s   host key changed: %s" % (
             result.exit_code, result.failed, result.auth_failed, result.hostkey_changed),
@@ -1366,7 +1384,7 @@ def ssh_failure_reason(result):
     return "exit code %s" % result.exit_code
 
 
-def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
+def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle"):
     """One ssh connection outside curses - used by the main screen and by tmux panes.
     Connects (typing the password once), offers to replace a changed host key, and waits
     for a key after a failure so the reason stays readable.  Returns a SessionResult."""
@@ -1423,16 +1441,16 @@ def ssh_flow(cfg, name, host, user, password, note, back="return to TRee-Li"):
 # --------------------------------------------------------------------------
 # Several switches at once: one tmux session, one pane per switch.
 #
-# The panes are started by tmux, not by TRee-Li, so their command line is visible
+# The panes are started by tmux, not by TRuffle, so their command line is visible
 # to every user on the machine (ps) and must not carry the password.  Each pane
 # gets a one-time ticket instead and fetches the login through a Unix socket that
-# lives in a private 0700 directory.  Before answering, TRee-Li asks the kernel
+# lives in a private 0700 directory.  Before answering, TRuffle asks the kernel
 # who is on the other end and only replies to our own user and to the exact
 # process tmux started for that ticket.  Linux and macOS.
 # --------------------------------------------------------------------------
 
 MAX_PANES = 9
-SESSION_PREFIX = "tree-li-"
+SESSION_PREFIX = "truffle-"
 TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
 
 
@@ -1453,7 +1471,7 @@ def tmux_try(*args):
         pass
 
 
-def tree_li_sessions():
+def truffle_sessions():
     """Our tmux sessions that are still alive, oldest first."""
     try:
         lines = tmux_run("list-sessions", "-F", "#{session_created} #{session_name}").splitlines()
@@ -1506,7 +1524,7 @@ class Handover(object):
 
     def __init__(self, credentials):
         self.credentials = credentials        # callable -> (user, password or None)
-        self.dir = tempfile.mkdtemp(prefix="tree-li-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
+        self.dir = tempfile.mkdtemp(prefix="truffle-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
         self.path = os.path.join(self.dir, "handover.sock")
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         old = os.umask(0o177)
@@ -1638,7 +1656,7 @@ def handover_request(path, line):
 
 
 def pane_main(cfg, socket_path, ticket, host, name):
-    """`tree-li --pane ...` runs inside one tmux pane: fetch the login once, connect,
+    """`truffle --pane ...` runs inside one tmux pane: fetch the login once, connect,
     report back, then the pane closes."""
     colors = os.environ.get("TERM", "dumb") not in ("", "dumb")
     gt = CHARSETS[detect_charset(cfg.charset_setting)]["gt"]
@@ -1657,35 +1675,35 @@ def pane_main(cfg, socket_path, ticket, host, name):
         user, password = login["user"], login["password"] or None
     except (OSError, ValueError, KeyError) as e:
         os.write(sys.stdout.fileno(), note(
-            "Could not get the login from TRee-Li (%s)." % e,
+            "Could not get the login from TRuffle (%s)." % e,
             "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
     result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
     password = None
     failed = result.failed or result.hostkey_changed
     state = SSH_FAILED if failed else SSH_OK
     # The status file is shared and merges by time, so the pane records its own result
-    # AND why it failed; TRee-Li picks both up when it comes back, however long this ran.
+    # AND why it failed; TRuffle picks both up when it comes back, however long this ran.
     user_state = UserState(cfg.state_dir)
     user_state.save_status({"ping": {}, "ssh": {host: state}}, {("ssh", host): time.time()},
                            {("ssh", host): ssh_failure_reason(result) if failed else ""})
     if state == SSH_OK:
         user_state.touch(name or host)
     if result.auth_failed:
-        # Tell TRee-Li too, so it drops the password instead of spending it on the
+        # Tell TRuffle too, so it drops the password instead of spending it on the
         # next switch as well - the socket is already closed by now.
         user_state.note_auth_failure(host)
         terminal_wait_key(note("Login failed on %s - wrong password?" % name,
-                               "TRee-Li will ask for the password again.",
+                               "TRuffle will ask for the password again.",
                                "Press any key to close this pane ..."))
     if result.prompt_missed:
         terminal_wait_key(note("No password prompt recognised on %s - you had to type it." % name,
-                               "Run TRee-Li with --debug and connect again to see what the switch sent.",
+                               "Run TRuffle with --debug and connect again to see what the switch sent.",
                                "Press any key to close this pane ..."))
     return 0
 
 
 # tmux starts panes from the tmux SERVER's environment, which can differ from ours
-# (a server started earlier, or with another HOME).  These decide where TRee-Li reads
+# (a server started earlier, or with another HOME).  These decide where TRuffle reads
 # its config and writes favourites, results and logs, so they are passed on explicitly.
 PANE_ENV = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
             "XDG_CONFIG_HOME", "XDG_STATE_HOME", "XDG_RUNTIME_DIR")
@@ -1732,9 +1750,9 @@ def open_panes(cfg, devices, handover):
     tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
     tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
-    tmux_try("set-option", "-t", session, "status-left", "[TRee-Li]  ")
+    tmux_try("set-option", "-t", session, "status-left", "[TRuffle]  ")
     tmux_try("set-option", "-t", session, "status-right",
-             " Ctrl-b d = back to TRee-Li   Ctrl-b o = next pane   exit = leave one switch ")
+             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one switch ")
     tmux_try("set-option", "-t", session, "status-right-length", "80")
     return session
 
@@ -1757,7 +1775,7 @@ def session_exists(session):
 
 
 def free_session_name():
-    """tree-li-HHMMSS, with a suffix if that name is taken - two multi-ssh actions in
+    """truffle-HHMMSS, with a suffix if that name is taken - two multi-ssh actions in
     the same second would otherwise collide."""
     base = SESSION_PREFIX + time.strftime("%H%M%S")
     name, n = base, 1
@@ -1782,8 +1800,8 @@ def harden_process():
     """The password lives in this process's memory, so keep that memory to ourselves:
     - no core dumps: a crash must not write the password into a file on disk
     - Linux: not "dumpable" - other processes of the same user can no longer attach
-      to TRee-Li or read /proc/<pid>/mem (root still can, as with every program).
-      ssh and ping started by TRee-Li are not affected (exec resets this)."""
+      to TRuffle or read /proc/<pid>/mem (root still can, as with every program).
+      ssh and ping started by TRuffle are not affected (exec resets this)."""
     try:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     except (ValueError, OSError):
@@ -2037,8 +2055,8 @@ def detect_charset(setting):
 # -1 = the terminal's own colour, so light and dark terminal themes both work.
 # Flags: b = bold, d = dim, u = underline, r = reverse.
 #
-# Colours follow STYLE.md (TRee-Li palette), as xterm-256 numbers:
-#   Navy 18   TRee Blue 25   Signal Blue 26   Steel 67   Sky 111   Mist 189   Highlight 214
+# Colours follow STYLE.md (TRuffle palette), as xterm-256 numbers:
+#   Navy 18   Truffle Blue 25   Signal Blue 26   Steel 67   Sky 111   Mist 189   Highlight 214
 # Light shades carry text on dark terminals, strong shades are used as backgrounds.
 PALETTE = {
     "brand":       ((111, -1, "b"), ("cyan", -1, "b")),
@@ -2138,11 +2156,11 @@ class Theme(object):
 
 
 BANNER = [
-    r" _____  ____                      _      _ ",
-    r"|_   _||  _ \   ___   ___        | |    (_)",
-    r"  | |  | |_) | / _ \ / _ \ _____ | |    | |",
-    r"  | |  |  _ < |  __/|  __/|_____|| |___ | |",
-    r"  |_|  |_| \_\ \___| \___|       |_____||_|",
+    r" _____  ____           __   __  _        ",
+    r"|_   _||  _ \  _   _  / _| / _|| |  ___  ",
+    r"  | |  | |_) || | | || |_ | |_ | | / _ \ ",
+    r"  | |  |  _ < | |_| ||  _||  _|| ||  __/ ",
+    r"  |_|  |_| \_\ \__,_||_|  |_|  |_| \___| ",
 ]
 
 
@@ -2168,9 +2186,9 @@ class App(object):
         self.headers, self.delimiter, self.issues = [], ";", []
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
         self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
-        self.my_sessions = []          # tmux sessions this TRee-Li started
+        self.my_sessions = []          # tmux sessions this TRuffle started
         self.sessions = []             # ... the ones still running (checked every few seconds)
-        self.sessions_foreign = False  # ... and whether those belong to another TRee-Li window
+        self.sessions_foreign = False  # ... and whether those belong to another TRuffle window
         self._sessions_checked = 0.0
         self.batch = None
         self.creds = None              # (user, password or None) - memory only
@@ -2273,7 +2291,7 @@ class App(object):
             self.forget_creds("a tmux pane could not log in to %s" % host)
 
     def reload_status(self):
-        """Pick up results another TRee-Li - or one of our tmux panes - has written."""
+        """Pick up results another TRuffle - or one of our tmux panes - has written."""
         saved, checked, detail = self.state.load_status()
         mine_by_kind = self.word_results()
         for kind, states in saved.items():
@@ -2299,7 +2317,7 @@ class App(object):
         try:
             report = {}
             headers, rows = read_table(self.cfg.data, report)
-            devices, columns, warns = build_devices(headers, rows, self.cfg)
+            devices, columns, warns, _ = build_devices(headers, rows, self.cfg)
         except DataError as e:
             self.load_error = str(e)
             self.devices = self.loaded = []
@@ -2316,7 +2334,7 @@ class App(object):
             if warns:
                 self.message("; ".join(warns), error=True, seconds=15)
             elif self.issues:
-                self.message("%d warning%s in the switch list - run: tree-li --check"
+                self.message("%d warning%s in the switch list - run: truffle --check"
                              % (len(self.issues), "" if len(self.issues) == 1 else "s"), error=True, seconds=15)
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.devices]))
                        for i, (_, label) in enumerate(self.columns)]
@@ -2373,7 +2391,7 @@ class App(object):
         # Do not wait for the session to end: a pane that could not log in has already
         # said so, and the password it used must go now, not in an hour.
         self.check_pane_auth_failure()
-        alive = set(tree_li_sessions())
+        alive = set(truffle_sessions())
         ended = [s for s in self.my_sessions if s not in alive]
         self.my_sessions = [s for s in self.my_sessions if s in alive]
         self.sessions = list(self.my_sessions)
@@ -2392,7 +2410,7 @@ class App(object):
 
     # -- drawing ------------------------------------------------------------
     #
-    #  TRee-Li  Switch Manager                          timmy · 2/29 switches   top bar
+    #  TRuffle  Switch Manager                          timmy · 2/29 switches   top bar
     # ───────────────────────────────────────────────────────────────────────  rule
     #   ssh   ping   batch ping   details   help   exit                         tabs
     #   ›  ber core                                                              search
@@ -2417,7 +2435,7 @@ class App(object):
         """Top bar + rule, footer rule + key hints / message.  Shared by all screens."""
         scr, th, sym = self.scr, self.th, self.th.sym
         h, w = scr.getmaxyx()
-        put(scr, 0, 2, "TRee-Li", th.brand)
+        put(scr, 0, 2, "TRuffle", th.brand)
         put(scr, 0, 11, subtitle[:max(0, w - 14 - len(right))], th.brand_sub)
         if right:
             put(scr, 0, max(0, w - len(right) - 2), right, th.info if right_attr is None else right_attr)
@@ -2448,7 +2466,7 @@ class App(object):
         scr.erase()
         h, w, y_tabs, y_search, y_head = self.layout()
         if h < 10 or w < 40:
-            put(scr, 0, 1, "TRee-Li", th.brand)
+            put(scr, 0, 1, "TRuffle", th.brand)
             put(scr, 1, 1, "Terminal too small", th.err)
             put(scr, 2, 1, "min. 40 x 10", th.hint)
             if refresh:
@@ -2629,9 +2647,9 @@ class App(object):
     def check_password_lifetime(self):
         """Forget the password password_lifetime minutes after it was typed.
 
-        This only deletes it from TRee-Li.  Nothing you are connected to is touched: a
+        This only deletes it from TRuffle.  Nothing you are connected to is touched: a
         switch session you are sitting in is not interrupted (this check only runs while
-        TRee-Li has the screen), and tmux panes keep running and stay logged in."""
+        TRuffle has the screen), and tmux panes keep running and stay logged in."""
         if self.creds and creds_expired(time.time(), self.creds_at, self.cfg.password_lifetime):
             self.forget_creds("typed %s ago" % minutes_text(self.cfg.password_lifetime))
 
@@ -2736,7 +2754,7 @@ class App(object):
         if not self.view:
             self.message("Nothing to export", error=True)
             return
-        path = os.path.join(self.cfg.export_dir, "tree-li-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
+        path = os.path.join(self.cfg.export_dir, "truffle-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
         try:
             path = export_csv(path, self.view, self.headers, self.delimiter,
                               self.word_results(), self.checked, self.save_detail())
@@ -2956,7 +2974,7 @@ class App(object):
         return y0, x0
 
     # Settings you may want to flip in the middle of a day.  Everything else
-    # (columns, ping rate, paths) is set once in tree-li.conf and left alone.
+    # (columns, ping rate, paths) is set once in truffle.conf and left alone.
     #   key, label, what it changes
     TOGGLES = [("l", "Session log", "session_log"),
                ("d", "Debug log", "debug"),
@@ -2969,7 +2987,7 @@ class App(object):
         terminal driver eats before curses ever sees it, because cbreak() clears ICANON
         but not IEXTEN.  ^U / ^W / ^R are ICANON-only, which is why those do arrive.
 
-        Session-only on purpose: writing these back would rewrite tree-li.conf and
+        Session-only on purpose: writing these back would rewrite truffle.conf and
         throw away its comments, and "just for now" is what this screen is for."""
         scr, th = self.scr, self.th
         while True:
@@ -2988,7 +3006,7 @@ class App(object):
                          "held" if self.creds else "not held", ""))
             width = min(80, max(56, scr.getmaxyx()[1] - 6))
             label_w, value_x = 34, 3 + 4 + 34 + 2
-            y0, x0 = self.draw_window("Settings", "for this TRee-Li only", len(rows) + 7, width)
+            y0, x0 = self.draw_window("Settings", "for this TRuffle only", len(rows) + 7, width)
             for i, (key, label, value, extra) in enumerate(rows):
                 y = y0 + 2 + i
                 put(scr, y, x0 + 3, key, th.win_key)
@@ -2997,7 +3015,7 @@ class App(object):
                 put(scr, y, x0 + value_x, fit(text, width - value_x - 3, self.th.sym["more"]).rstrip(),
                     th.win_key if value == "on" else th.win_hint)
             put(scr, y0 + len(rows) + 3, x0 + 3,
-                "Not saved - put it in tree-li.conf to keep it"[:width - 6], th.win_hint)
+                "Not saved - put it in truffle.conf to keep it"[:width - 6], th.win_hint)
             put(scr, y0 + len(rows) + 5, x0 + 3, "ESC", th.win_key)
             put(scr, y0 + len(rows) + 5, x0 + 7, "close", th.win_hint)
             scr.refresh()
@@ -3061,7 +3079,7 @@ class App(object):
             if error:
                 for i, line in enumerate(textwrap.wrap(sym["dot"] + " " + error, bw - 6, subsequent_indent="  ")[:2]):
                     put(scr, y0 + 6 + i, x0 + 3, line, th.win_err)
-            put(scr, y0 + 8, x0 + 3, ("Kept in memory only %s forgotten when TRee-Li exits" % sym["sep"])[:bw - 6],
+            put(scr, y0 + 8, x0 + 3, ("Kept in memory only %s forgotten when TRuffle exits" % sym["sep"])[:bw - 6],
                 th.win_hint)
             put(scr, y0 + 9, x0 + 3, "Empty password: ssh asks at every login"[:bw - 6], th.win_hint)
             x = x0 + 3
@@ -3144,7 +3162,7 @@ class App(object):
                 self.message(text, error=True, seconds=10)
             if result.prompt_missed:
                 self.message("%s: no password prompt recognised - you had to type it yourself. "
-                             "Run 'tree-li --debug' and connect again to see what the switch sent."
+                             "Run 'truffle --debug' and connect again to see what the switch sent."
                              % dev.name, error=True, seconds=20)
             # the SSH column remembers how your last real attempt went - no extra connections.
             # The reason is saved with it, so it survives a restart and reaches the export.
@@ -3160,11 +3178,11 @@ class App(object):
     def live_sessions(self):
         """Ask tmux right now - a cached list may name a session that has just ended.
         Sets sessions_foreign when the only sessions left were started by another
-        TRee-Li window of ours, so Ctrl-K / Ctrl-T can say so before touching them."""
+        TRuffle window of ours, so Ctrl-K / Ctrl-T can say so before touching them."""
         if not which("tmux"):
             self.sessions_foreign = False
             return []
-        alive = set(tree_li_sessions())
+        alive = set(truffle_sessions())
         self.my_sessions = [s for s in self.my_sessions if s in alive]
         self.sessions = list(self.my_sessions)
         self._sessions_checked = time.time()
@@ -3200,8 +3218,8 @@ class App(object):
         session = sessions[-1]              # the newest one
         if self.sessions_foreign and not self.confirm(
                 "Go into another window's session",
-                "%s was not started by this TRee-Li window. Go into it anyway?" % session,
-                detail=["  another TRee-Li of yours is probably using it"]):
+                "%s was not started by this TRuffle window. Go into it anyway?" % session,
+                detail=["  another TRuffle of yours is probably using it"]):
             self.message("Nothing opened")
             return
         error = self.enter_tmux(session)
@@ -3225,7 +3243,7 @@ class App(object):
             return
         detail = ["  " + s for s in sessions]
         if self.sessions_foreign:           # not ours: say so before logging anyone out
-            detail += ["", "  NOT started by this TRee-Li window - another", "  TRee-Li of yours may be using them."]
+            detail += ["", "  NOT started by this TRuffle window - another", "  TRuffle of yours may be using them."]
         if not self.confirm("Close switch sessions",
                             "Close %d tmux session%s and log out of every switch in them?"
                             % (len(sessions), "" if len(sessions) == 1 else "s"), detail=detail):
@@ -3243,7 +3261,7 @@ class App(object):
         if not self.cfg.tmux or not which("tmux"):
             self.message("%s - connecting to several switches at once needs it. "
                          "Marks still limit batch ping; ssh connects to the selected switch."
-                         % ("tmux mode is off (tmux = yes in tree-li.conf)" if not self.cfg.tmux
+                         % ("tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux
                             else "tmux is not installed"), error=True, seconds=12)
             return
         extra = len(devices) - MAX_PANES
@@ -3299,7 +3317,7 @@ class App(object):
         curses.endwin()
 
     def run_ssh(self, dev, user, password):
-        """One session in TRee-Li's own terminal: leave curses, connect, come back."""
+        """One session in TRuffle's own terminal: leave curses, connect, come back."""
         self.leave_curses()
         try:
             return ssh_flow(self.cfg, dev.name, dev.host, user, password, self.note)
@@ -3356,7 +3374,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "", "only. Log out of the switch to come back."),
         ("item", "", "The password is forgotten %s. Sessions and tmux"
                      % ("%s after you typed it" % minutes_text(cfg.password_lifetime)
-                        if cfg.password_lifetime else "only when TRee-Li exits")),
+                        if cfg.password_lifetime else "only when TRuffle exits")),
         ("item", "", "panes you already have are never touched by that."),
         ("item", "", "With 2+ marked (Tab): one tmux session, one pane each,"),
         ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
@@ -3366,18 +3384,18 @@ def help_sections(cfg, ncols, switches):
         ("item", "", "-> PING column. ICMP only, at most %d per second." % cfg.ping_rate),
         ("item", "details", "all fields of the selected switch"),
         ("item", "help", "this screen"),
-        ("item", "exit", "quit TRee-Li and forget the credentials"),
+        ("item", "exit", "quit TRuffle and forget the credentials"),
         ("section", "Columns"),
         ("item", "PING", "result of the last ping / batch ping"),
         ("item", "MS", "round-trip time of that ping. One packet, so it is one"),
         ("item", "", "number - not packet loss and not jitter. Sorting it"),
         ("item", "", "puts the slowest switches first"),
-        ("item", "SSH", "how your last real ssh attempt went - TRee-Li never"),
+        ("item", "SSH", "how your last real ssh attempt went - TRuffle never"),
         ("item", "", "probes SSH on its own, so it makes no extra traffic"),
         ("section", "Several switches at once (tmux)"),
         ("item", "Tab", "mark switches, then run ssh with 2 or more marked"),
-        ("item", "Ctrl-b d", "back to TRee-Li - the switches stay logged in"),
-        ("item", "Ctrl-T", "back into the tmux session from TRee-Li"),
+        ("item", "Ctrl-b d", "back to TRuffle - the switches stay logged in"),
+        ("item", "Ctrl-T", "back into the tmux session from TRuffle"),
         ("item", "Ctrl-K", "close the switch sessions (asks first)"),
         ("item", "Ctrl-b o", "next pane      Ctrl-b z  zoom one pane in / out"),
         ("item", "exit  or  Ctrl-d", "in a pane: log out of that one switch; when the last"),
@@ -3385,7 +3403,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "tmux ls", "from any shell: list the sessions that are still running"),
         ("item", "tmux attach -t NAME", "from any shell: go back into one"),
         ("item", "tmux kill-session -t NAME", "from any shell: close one and its logins"),
-        ("item", "tmux", "%s" % ("on" if cfg.tmux else "off (tmux = yes in tree-li.conf)")),
+        ("item", "tmux", "%s" % ("on" if cfg.tmux else "off (tmux = yes in truffle.conf)")),
         ("section", "Inside an ssh session"),
         ("item", "~.", "(at the start of a line) force-disconnect a hanging session"),
         ("section", "Setup"),
@@ -3407,9 +3425,12 @@ def check(cfg):
     try:
         report = {}
         headers, rows = read_table(cfg.data, report)
-        devices, columns, warns = build_devices(headers, rows, cfg)
+        devices, columns, warns, picked = build_devices(headers, rows, cfg)
         print("switches     : %d" % len(devices))
         print("columns      : %s" % ", ".join("%s (%s)" % c for c in columns))
+        # Which column is which is the thing you cannot see from the table, so say it.
+        print("switch name  : %s" % picked["name"])
+        print("ssh target   : %s" % picked["host"])
         issues = warns + data_issues(devices, report["lines"], report["issues"])
         clean = not issues
         print("data check   : %s" % ("ok" if clean else "%d warning(s)" % len(issues)))
@@ -3427,20 +3448,20 @@ def check(cfg):
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
     print("password     : %s" % ("forgotten %s after you type it, sessions untouched"
                                  % minutes_text(cfg.password_lifetime) if cfg.password_lifetime
-                                 else "kept until TRee-Li exits (password_lifetime = 0)"))
+                                 else "kept until TRuffle exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
     return 0 if clean else 1          # 1 = warnings only, so a cron check can gate on it
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="tree-li", description=TITLE + " - connect to your switches over SSH.")
-    parser.add_argument("--data", metavar="CSV", help="switch list (default: 'data' in tree-li.conf, else data.csv next to tree-li)")
+    parser = argparse.ArgumentParser(prog="truffle", description=TITLE + " - connect to your switches over SSH.")
+    parser.add_argument("--data", metavar="CSV", help="switch list (default: 'data' in truffle.conf, else data.csv next to truffle)")
     parser.add_argument("--config", metavar="FILE", help="additional config file")
     parser.add_argument("--log", action="store_true", help="record ssh sessions to log files")
     parser.add_argument("--debug", action="store_true",
                         help="write what happens around each ssh login to debug.log in the state "
-                             "directory (tree-li --check prints the path)")
+                             "directory (truffle --check prints the path)")
     parser.add_argument("--ascii", action="store_true", help="plain ASCII screen (if lines/symbols look garbled)")
     parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
     parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
@@ -3451,11 +3472,11 @@ def main(argv=None):
     try:
         cfg = load_config(args)
     except ConfigError as e:
-        print("tree-li: config error: %s" % e, file=sys.stderr)
+        print("truffle: config error: %s" % e, file=sys.stderr)
         return 2
     if args.check:
         return check(cfg)
-    if args.pane:                                 # started by TRee-Li inside a tmux pane
+    if args.pane:                                 # started by TRuffle inside a tmux pane
         harden_process()
         try:
             locale.setlocale(locale.LC_ALL, "")
@@ -3463,7 +3484,7 @@ def main(argv=None):
             pass
         return pane_main(cfg, *args.pane)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
-        print("tree-li: must be run in an interactive terminal", file=sys.stderr)
+        print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2
 
     harden_process()                              # before the password can ever be in memory
@@ -3479,14 +3500,14 @@ def main(argv=None):
     except KeyboardInterrupt:
         pass
     except curses.error as e:
-        print("tree-li: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
+        print("truffle: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
         return 1
     finally:
         # Also on the paths where run() never reached its end (a failed startup, a
         # curses error): the terminal must not keep a mode we switched on.
         bracketed_paste(False)
-    print("TRee-Li closed - credentials forgotten.")
-    for session in tree_li_sessions():
+    print("TRuffle closed - credentials forgotten.")
+    for session in truffle_sessions():
         print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"
               % (session, session))
     return 0

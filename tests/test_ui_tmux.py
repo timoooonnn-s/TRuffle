@@ -10,7 +10,7 @@ import time
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-SESSION = "treeli-test-%d" % os.getpid()
+SESSION = "truffle-test-%d" % os.getpid()
 
 
 def tmux(*args):
@@ -31,13 +31,13 @@ class UiSmokeTest(unittest.TestCase):
                     "sw10;192.0.2.10;ber;Core Berlin;\n")
         conf = os.path.join(self.tmp, "test.conf")
         with open(conf, "w") as f:
-            f.write("[tree-li]\ndata = data.csv\nuser = timmy\nssh_command = %s %s\n"
+            f.write("[truffle]\ndata = data.csv\nuser = timmy\nssh_command = %s %s\n"
                     % (sys.executable, os.path.join(ROOT, "tests", "fake_ssh.py")))
         cmd = "env HOME=%s XDG_CONFIG_HOME=%s TERM=xterm %s %s --config %s; echo EXITED; sleep 30" % (
             shlex.quote(self.tmp), shlex.quote(self.tmp), shlex.quote(sys.executable),
-            shlex.quote(os.path.join(ROOT, "tree-li")), shlex.quote(conf))
+            shlex.quote(os.path.join(ROOT, "truffle")), shlex.quote(conf))
         tmux("new-session", "-d", "-s", SESSION, "-x", "110", "-y", "30", cmd)
-        self.wait_for("TRee-Li")
+        self.wait_for("TRuffle")
 
     def tearDown(self):
         tmux("kill-session", "-t", SESSION)
@@ -46,9 +46,9 @@ class UiSmokeTest(unittest.TestCase):
         shutil.rmtree(self.tmp)
 
     def our_sessions(self):
-        """The tmux sessions TRee-Li itself started (tree-li-HHMMSS)."""
+        """The tmux sessions TRuffle itself started (truffle-HHMMSS)."""
         out = tmux("list-sessions", "-F", "#{session_name}")
-        return [n for n in out.splitlines() if n.startswith("tree-li-")]
+        return [n for n in out.splitlines() if n.startswith("truffle-")]
 
     def wait_for_session(self, timeout=15):
         deadline = time.time() + timeout
@@ -57,7 +57,7 @@ class UiSmokeTest(unittest.TestCase):
             if names:
                 return names[0]
             time.sleep(0.2)
-        self.fail("TRee-Li never started a tmux session:\n%s" % self.screen())
+        self.fail("TRuffle never started a tmux session:\n%s" % self.screen())
 
     def panes(self, session):
         out = tmux("list-panes", "-t", "=" + session, "-F", "#{pane_id}")
@@ -121,7 +121,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("credentials forgotten")
 
     def test_two_marked_switches_share_one_login(self):
-        """The whole handover, end to end: one password typed in TRee-Li, two panes
+        """The whole handover, end to end: one password typed in TRuffle, two panes
         logged in by themselves, no password on any command line."""
         self.mark_two_and_ssh("secret")
         session = self.wait_for_session()
@@ -134,14 +134,14 @@ class UiSmokeTest(unittest.TestCase):
         for line in ours:                      # only the one-time ticket may be visible
             self.assertNotIn("secret", line, "the password reached a command line: %s" % line)
 
-    def test_a_pane_login_failure_makes_treeli_forget_the_password(self):
+    def test_a_pane_login_failure_makes_truffle_forget_the_password(self):
         """A pane cannot answer over the socket (it is closed by then), so it reports a
-        wrong password through the status directory - TRee-Li must drop that password
+        wrong password through the status directory - TRuffle must drop that password
         instead of spending it on switch after switch (TACACS+ lockout)."""
         self.mark_two_and_ssh("wrong-password")
         session = self.wait_for_session()
         self.wait_in_panes(session, "Login failed")
-        # Either wording is correct: the wipe can land while TRee-Li is still in
+        # Either wording is correct: the wipe can land while TRuffle is still in
         # connect_many (then it is carried into that message) or later, from the poll.
         self.wait_for("you will be asked again", timeout=25)
 

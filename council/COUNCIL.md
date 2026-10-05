@@ -26,7 +26,7 @@ A dependency may be added **only** when it makes things clearly **easier, more s
 brings another clear benefit** - and the proposer has to name that benefit out loud. "It is
 nicer", "everyone uses it" and "it saves a few lines" are not benefits. Weigh the cost
 honestly: on a locked-down RHEL server every `pip install` is a ticket, a review and a thing
-that can break on the next patch day, and TRee-Li's whole promise is "copy one file".
+that can break on the next patch day, and TRuffle's whole promise is "copy one file".
 
 Order of preference:
 1. the standard library
@@ -40,7 +40,7 @@ paramiko or `sshpass`) look the way they do. R1 is the general rule behind both.
 
 ### R2: RHEL Linux is the target, macOS is only a test bench (user, 2026-10-04)
 
-Every feature has to work on **RHEL Linux**, because that is where TRee-Li actually runs.
+Every feature has to work on **RHEL Linux**, because that is where TRuffle actually runs.
 Local development and testing happens on macOS, which makes macOS support a convenience,
 never the yardstick.
 

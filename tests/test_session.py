@@ -15,7 +15,7 @@ import time
 import unittest
 import warnings
 
-from test_tree_li import tl
+from test_truffle import tl
 
 FAKE_SSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_ssh.py")
 
@@ -132,7 +132,7 @@ class SessionTest(unittest.TestCase):
         result.wanted_password, result.password_sent = True, False
         result.user_typed, result.exit_code = True, 255        # logged in by hand, then logged out
         self.assertTrue(result.prompt_missed)
-        result.password_sent = True                            # TRee-Li did type it
+        result.password_sent = True                            # TRuffle did type it
         self.assertFalse(result.prompt_missed)
         result.password_sent, result.user_typed, result.exit_code = False, False, 255
         self.assertFalse(result.prompt_missed)                 # dead host: no prompt could appear

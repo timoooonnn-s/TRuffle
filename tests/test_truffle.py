@@ -1,4 +1,4 @@
-"""Unit tests for the logic in tree-li (stdlib unittest only).
+"""Unit tests for the logic in truffle (stdlib unittest only).
 
 Run from the repository root:  python3 -m unittest discover -s tests -v
 """
@@ -15,8 +15,8 @@ import types
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_loader = importlib.machinery.SourceFileLoader("treeli", os.path.join(ROOT, "tree-li"))
-_spec = importlib.util.spec_from_loader("treeli", _loader)
+_loader = importlib.machinery.SourceFileLoader("truffle", os.path.join(ROOT, "truffle"))
+_spec = importlib.util.spec_from_loader("truffle", _loader)
 tl = importlib.util.module_from_spec(_spec)
 _loader.exec_module(tl)
 
@@ -81,11 +81,68 @@ class TestCsv(TempDir):
     def test_build_devices_case_insensitive_and_warnings(self):
         p = self.write("f.csv", "name;ip;Subnet;aliases;location\nsw1;10.0.0.1;a;Core;Room 1\n")
         cfg = tl.load_config(args())
-        devices, columns, warns = tl.build_devices(*tl.read_table(p), cfg=cfg)
+        devices, columns, warns, picked = tl.build_devices(*tl.read_table(p), cfg=cfg)
         self.assertEqual(devices[0].host, "10.0.0.1")
         self.assertEqual(devices[0].name, "sw1")
         self.assertEqual([c[1] for c in columns], ["Name", "IP", "subnet", "Alias"])
         self.assertTrue(any("comment" in w for w in warns))
+
+    # An Infoblox network export: the hostname is in PRIMARY_DN_CODE, the host address in
+    # ADDRESS, and the FIRST column is the SUBNET - which must never be used as either.
+    INFOBLOX = ("SUBNET,MASK,VLAN_ID,PRIMARY_DN_CODE,CREATION_DATE,Default-GW,Name-Server,"
+                "WINS-Server,BootP_NextServer,BootP_BootFile,MAC_ADDRESS,RFC_MAC_ADDRESS,ADDRESS\n"
+                '192.0.2.96,255.255.255.224,43,ab-12-s34-r1.example.net,"1970-01-01 00:00:00.000"'
+                ",,,,,,,,192.0.2.98\n"
+                '198.51.100.0,255.255.255.0,2301,cd-34-s56-r1.example.net,"1970-01-01 00:00:00.000"'
+                ",,,,,,,,198.51.100.20\n"
+                '198.51.100.0,255.255.255.0,2301,cd-34-s56-r2.example.net,"1970-01-01 00:00:00.000"'
+                ",,,,,,,,198.51.100.21\n")
+
+    def test_infoblox_export_without_labels_warns_instead_of_using_the_subnet(self):
+        """With no Name column the first one was used silently - so two switches in one
+        subnet shared an identity, and favourites and history went with it."""
+        p = self.write("ib.csv", self.INFOBLOX)
+        report = {}
+        devices, columns, warns, picked = tl.build_devices(*tl.read_table(p, report),
+                                                           cfg=tl.load_config(args()))
+        self.assertEqual(picked["host"], "ADDRESS")          # not SUBNET: the host address
+        self.assertEqual(picked["name"], "SUBNET")           # the silent fallback ...
+        self.assertTrue(any("no 'Name' column" in w for w in warns), warns)   # ... now says so
+        issues = tl.data_issues(devices, report["lines"], report["issues"])
+        self.assertTrue(any("appears 2 times" in i for i in issues), issues)
+
+    def test_infoblox_export_with_labelled_columns_is_clean(self):
+        """columns = PRIMARY_DN_CODE:Name, ADDRESS:IP is the whole fix - no code change.
+        The label picks the column, so an export with its own header names just works."""
+        p = self.write("ib2.csv", self.INFOBLOX)
+        conf = self.write("ib.conf", "[truffle]\ndata = %s\n"
+                          "columns = PRIMARY_DN_CODE:Name, ADDRESS:IP\n" % p)
+        report = {}
+        devices, columns, warns, picked = tl.build_devices(
+            *tl.read_table(p, report), cfg=tl.load_config(args(config=conf)))
+        self.assertEqual(warns, [])
+        self.assertEqual(picked, {"name": "PRIMARY_DN_CODE", "host": "ADDRESS"})
+        self.assertEqual([c[1] for c in columns], ["Name", "IP"])
+        self.assertEqual([d.name for d in devices],
+                         ["ab-12-s34-r1.example.net", "cd-34-s56-r1.example.net",
+                          "cd-34-s56-r2.example.net"])
+        self.assertEqual([d.host for d in devices], ["192.0.2.98", "198.51.100.20", "198.51.100.21"])
+        self.assertEqual(tl.data_issues(devices, report["lines"], report["issues"]), [])
+        self.assertEqual(report["delimiter"], ",")           # comma-separated, auto-detected
+        # the columns nobody asked for are still searchable and shown by "details"
+        self.assertEqual(devices[1].values["VLAN_ID"], "2301")
+
+    def test_the_label_wins_over_a_same_named_header(self):
+        """A CSV that has its own 'Name'/'IP' columns AND a label must follow the label -
+        otherwise you could never point TRuffle at a different column."""
+        p = self.write("both.csv", "Name,IP,PRIMARY_DN_CODE,ADDRESS\n"
+                                   "wrong,10.0.0.1,right.example.net,10.0.0.9\n")
+        conf = self.write("both.conf", "[truffle]\ndata = %s\n"
+                          "columns = PRIMARY_DN_CODE:Name, ADDRESS:IP\n" % p)
+        devices, _, _, picked = tl.build_devices(*tl.read_table(p), cfg=tl.load_config(args(config=conf)))
+        self.assertEqual(picked, {"name": "PRIMARY_DN_CODE", "host": "ADDRESS"})
+        self.assertEqual(devices[0].name, "right.example.net")
+        self.assertEqual(devices[0].host, "10.0.0.9")
 
     def test_data_check(self):
         p = self.write("h.csv", "Name;IP;comment\n"
@@ -97,7 +154,7 @@ class TestCsv(TempDir):
                        "sw6;;no ip\n"
                        "sw7;10.0.0.7;a;b\n")
         report = {}
-        devices, _, _ = tl.build_devices(*tl.read_table(p, report), cfg=tl.load_config(args()))
+        devices = tl.build_devices(*tl.read_table(p, report), cfg=tl.load_config(args()))[0]
         self.assertEqual(report["lines"], [2, 3, 4, 5, 6, 7, 8])
         issues = "\n".join(tl.data_issues(devices, report["lines"], report["issues"]))
         for expected in ("line 8: 4 fields, the header has 3", "IP 10.0.0.1 is used 2 times",
@@ -108,7 +165,7 @@ class TestCsv(TempDir):
     def test_export(self):
         p = self.write("i.csv", "Name;IP;location\nsw1;10.0.0.1;Room 1\n")
         headers, rows = tl.read_table(p)
-        devices, _, _ = tl.build_devices(headers, rows, tl.load_config(args()))
+        devices = tl.build_devices(headers, rows, tl.load_config(args()))[0]
         out = os.path.join(self.tmp, "export.csv")
         tl.export_csv(out, devices, headers, ";", {"ping": {"10.0.0.1": "up"}, "ssh": {}}, {("ping", "10.0.0.1"): 0.0})
         h2, r2 = tl.read_table(out)
@@ -132,7 +189,7 @@ class TestConfig(TempDir):
         self.assertFalse(cfg.session_log)
 
     def test_config_file_relative_data_and_overrides(self):
-        conf = self.write("my.conf", "[tree-li]\ndata = lists/sw.csv\n"
+        conf = self.write("my.conf", "[truffle]\ndata = lists/sw.csv\n"
                           "columns = Name, location:Where\nsession_log = yes\nuser = netadmin\n")
         cfg = tl.load_config(args(config=conf))
         self.assertEqual(cfg.data, os.path.join(self.tmp, "lists", "sw.csv"))
@@ -141,8 +198,8 @@ class TestConfig(TempDir):
         self.assertEqual(cfg.user, "netadmin")
 
     def test_unknown_option_and_bad_values(self):
-        for body in ("[tree-li]\ndatta = x\n", "[tree-li]\nping_rate = lots\n",
-                     "[tree-li]\nsession_log = maybe\n", "[other]\n", "[tree-li]\nuser = -oProxyCommand=x\n"):
+        for body in ("[truffle]\ndatta = x\n", "[truffle]\nping_rate = lots\n",
+                     "[truffle]\nsession_log = maybe\n", "[other]\n", "[truffle]\nuser = -oProxyCommand=x\n"):
             conf = self.write("bad.conf", body)
             with self.assertRaises(tl.ConfigError, msg=body):
                 tl.load_config(args(config=conf))
@@ -249,7 +306,7 @@ class TestTheme(unittest.TestCase):
     """Theme names are looked up as attributes, so a typo only shows on a rare screen.
     This checks every name the source uses against the palette."""
 
-    SOURCE = open(os.path.join(ROOT, "tree-li"), encoding="utf-8").read()
+    SOURCE = open(os.path.join(ROOT, "truffle"), encoding="utf-8").read()
 
     def palette(self):
         return set(re.findall(r'^    "(\w+)":\s+\(\(', self.SOURCE, re.M))
@@ -276,7 +333,7 @@ class TestTheme(unittest.TestCase):
 class TestCheck(TempDir):
     def run_check(self, csv_body, conf=""):
         data = self.write("sw.csv", csv_body)
-        path = self.write("c.conf", "[tree-li]\ndata = %s\n%s" % (data, conf))
+        path = self.write("c.conf", "[truffle]\ndata = %s\n%s" % (data, conf))
         cfg = tl.load_config(args(config=path))
         out = io.StringIO()
         stdout, sys.stdout = sys.stdout, out
@@ -299,7 +356,7 @@ class TestCheck(TempDir):
         self.assertIn("is used 2 times", out)
 
     def test_missing_list_exits_two(self):
-        path = self.write("c.conf", "[tree-li]\ndata = %s/nope.csv\n" % self.tmp)
+        path = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)
         cfg = tl.load_config(args(config=path))
         out = io.StringIO()
         stdout, sys.stdout = sys.stdout, out
@@ -312,7 +369,7 @@ class TestCheck(TempDir):
         """Back-compat for old config files was dropped on purpose: a stale option now
         refuses to start and names itself, instead of being quietly ignored."""
         data = self.write("sw.csv", self.COLUMNS + "sw1;10.0.0.1;a;b;c\n")
-        path = self.write("c.conf", "[tree-li]\ndata = %s\nping_workers = 200\n" % data)
+        path = self.write("c.conf", "[truffle]\ndata = %s\nping_workers = 200\n" % data)
         with self.assertRaises(tl.ConfigError) as caught:
             tl.load_config(args(config=path))
         self.assertIn("ping_workers", str(caught.exception))
@@ -327,7 +384,7 @@ class TestSearchSyntax(unittest.TestCase):
             ("muc-core-01", "fe80::1", "core", "Core Munich", "Room 9"),
             ("ber-test-01", "10.0.0.4", "edge", "Test", "Lab"))]
         cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP"), ("aliases", "Alias")])
-        self.devices, columns, _ = tl.build_devices(headers, rows, cfg)
+        self.devices, columns = tl.build_devices(headers, rows, cfg)[:2]
         self.fields = dict((h.lower(), h) for h in headers)
         self.fields.update((label.lower(), h) for h, label in columns)
 
@@ -458,7 +515,7 @@ class TestUserState(TempDir):
 
     def test_the_detail_field_round_trips_and_stays_backward_compatible(self):
         """The 5th field carries the ping's ms and the reason a ssh attempt failed.
-        Rows without it must keep working - an older TRee-Li writes only 4 fields,
+        Rows without it must keep working - an older TRuffle writes only 4 fields,
         and a row with no detail is still written with 4 so an older one can read it."""
         d = os.path.join(self.tmp, "state")
         tl.UserState(d).save_status(
@@ -468,7 +525,7 @@ class TestUserState(TempDir):
         status, checked, detail = tl.UserState(d).load_status()
         self.assertEqual(detail[("ping", "10.0.0.1")], "1.25")
         self.assertEqual(detail[("ssh", "10.0.0.1")], "Connection timed out (exit 255)")
-        # a result with no detail is written as 4 fields, readable by an older TRee-Li
+        # a result with no detail is written as 4 fields, readable by an older TRuffle
         tl.UserState(d).save_status({"ping": {"10.0.0.2": "down"}, "ssh": {}},
                                     {("ping", "10.0.0.2"): 200})
         with open(os.path.join(d, "status"), encoding="utf-8") as f:
@@ -513,7 +570,7 @@ class TestUserState(TempDir):
 
     def test_a_pane_login_failure_is_reported_and_read_back(self):
         """The handover socket is closed before a pane ever logs in, so a wrong password
-        comes back through this file - TRee-Li then drops the password it holds."""
+        comes back through this file - TRuffle then drops the password it holds."""
         d = os.path.join(self.tmp, "state")
         st = tl.UserState(d)
         self.assertEqual(tl.UserState(d).load_auth_failure(), (0.0, ""))
@@ -734,7 +791,7 @@ class TestCharset(TempDir):
         self.assertIn(tl.detect_charset("auto"), ("ascii", "unicode"))
         self.assertEqual(tl.load_config(args(ascii=True)).charset_setting, "ascii")
         with self.assertRaises(tl.ConfigError):
-            tl.load_config(args(config=self.write("c.conf", "[tree-li]\ncharset = emoji\n")))
+            tl.load_config(args(config=self.write("c.conf", "[truffle]\ncharset = emoji\n")))
 
     def test_symbol_sets_match(self):
         self.assertEqual(set(tl.CHARSETS["ascii"]), set(tl.CHARSETS["unicode"]))

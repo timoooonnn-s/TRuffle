@@ -1,7 +1,7 @@
 # Current Plan (Drafter)
 
 ## Milestone 1: working tool. DONE (2026-10-02)
-1. [x] `tree-li` single file: config, CSV loading, search, sort
+1. [x] `truffle` single file: config, CSV loading, search, sort
 2. [x] curses UI matching V-Li: title, command bar, search, table, status line
 3. [x] Own key parser (PuTTY `ESC[11~`, xterm `ESC OP`, Linux console `ESC[[A`)
 4. [x] Popups: ping (streamed), traceroute/tracepath (streamed), details, help
@@ -9,7 +9,7 @@
 6. [x] Credential dialog, pty ssh relay, handling of auth failures and changed host keys
 7. [x] Optional session log (0600, never contains the password)
 8. [x] Tests: 36 (logic, ssh relay against `tests/fake_ssh.py` through a pty, tmux UI smoke test); Python 3.8/3.9/3.11/3.14
-9. [x] README, `data.example.csv`, `tree-li.conf.example`, `.gitignore`, `.gitattributes`
+9. [x] README, `data.example.csv`, `truffle.conf.example`, `.gitignore`, `.gitattributes`
 
 ## Milestone 1b: review fixes + redesign. DONE (2026-10-02)
 - [x] All 10 review findings fixed (see code-review), 38 tests
@@ -22,7 +22,7 @@
 - [x] 46 tests
 
 ## Milestone 1d: transport without GitHub. DONE (2026-10-02)
-- [x] `tools/make-bundle.py` -> one self-extracting text file (checksum, safe paths, keeps data.csv / tree-li.conf, survives CRLF)
+- [x] `tools/make-bundle.py` -> one self-extracting text file (checksum, safe paths, keeps data.csv / truffle.conf, survives CRLF)
 
 ## Milestone 1e: review round 3 + data check, export, saved results, mouse. DONE (2026-10-02)
 
@@ -35,7 +35,7 @@
 - [x] Idle password timeout built (`password_timeout`, 15 min) - the Warden's condition for
       background tmux sessions is finally met
 - [x] 92 tests, incl. two tmux end-to-end runs: two marked switches share one login, and a pane
-      that cannot log in makes TRee-Li forget the password
+      that cannot log in makes TRuffle forget the password
 
 ## Milestone 1g: paste safety, latency, failure reasons. DONE (2026-10-04)
 - [x] Password lifetime: 10 h **absolute**, one variable (`PASSWORD_LIFETIME_MINUTES`), never
@@ -58,8 +58,22 @@
 - [x] Old-config back-compat (`OBSOLETE`) and `BIND_GRACE` deleted
 - [x] 108 tests, VERSION 1.3.0-tmux
 
+## Milestone 1i: Infoblox export + renamed to TRuffle. DONE (2026-10-05)
+- [x] The column **label** decides the job: `columns = PRIMARY_DN_CODE:Name, ADDRESS:IP` makes the
+      real Infoblox export work with no code change (D30). `--check` prints which column it picked
+- [x] The silent "first column is the name" fallback warns now - it was making every switch in a
+      subnet share one identity
+- [x] **Renamed TRee-Li → TRuffle** (D31): script, config, config section, state dir, tmux session
+      names, exports, bundles, tests, banner
+- [x] Every trace of the real inventory removed from the repo (no company name, no real hostnames,
+      no real subnets); examples use the same shape with documentation addresses
+- [x] 111 tests, bundle builds and self-extracts under the new name, VERSION 1.3.1-tmux
+- [ ] **On the server:** rename `tree-li.conf` → `truffle.conf` with `[truffle]`, and move
+      `~/.local/state/tree-li` → `~/.local/state/truffle` (or let it start empty)
+- [ ] `command -v truffle` on the target box - an npm tool of that name exists
+
 ## Milestone 2: field test (needs the user)
-- [x] `./tree-li --check` on the RHEL server: works (2026-10-02)
+- [x] `./truffle --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu
 - [x] Wrong password: one attempt only, then asked again
 - [x] Dead host: ssh gives up after `connect_timeout`, then back in the menu (user likes it)
@@ -73,4 +87,4 @@ All open ideas, including the parked tmux pane feature: [ideas/README.md](ideas/
 
 ## Backlog (only if asked)
 - Extra CSV columns (location, ...): configure `columns`, no code change needed
-- Change the username mid-session (today: restart TRee-Li)
+- Change the username mid-session (today: restart TRuffle)

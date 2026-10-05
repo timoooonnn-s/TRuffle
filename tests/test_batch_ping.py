@@ -3,7 +3,7 @@ import time
 import types
 import unittest
 
-from test_tree_li import tl
+from test_truffle import tl
 
 
 class BatchPingTest(unittest.TestCase):

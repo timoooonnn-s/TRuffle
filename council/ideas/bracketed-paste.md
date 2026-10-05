@@ -4,11 +4,11 @@
 
 ## The problem, concretely
 
-A terminal pastes by *typing* the text at the application - there is no "paste" event. TRee-Li's
+A terminal pastes by *typing* the text at the application - there is no "paste" event. TRuffle's
 `read_key` therefore sees a pasted string one character at a time and cannot tell it from typing.
 
 So if you copy a switch name out of a ticket, an e-mail or an Excel cell, the copy almost always
-carries a **trailing newline** - and TRee-Li reads that newline as `ENTER`:
+carries a **trailing newline** - and TRuffle reads that newline as `ENTER`:
 
 1. the name lands in the search box, the list filters, fine
 2. the newline arrives as `ENTER`
@@ -35,7 +35,7 @@ ESC[200~   <the pasted text, verbatim>   ESC[201~
 The application can then treat everything between the markers as **literal text**, never as keys.
 Turned off again with `ESC[?2004l`.
 
-## How TRee-Li would use it
+## How TRuffle would use it
 
 - enable on start, disable on exit - and disable before handing the terminal to `ssh` or `tmux`
   and re-enable on the way back, so a switch session never inherits our terminal mode

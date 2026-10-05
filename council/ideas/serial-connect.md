@@ -7,22 +7,22 @@
 Marking stays exactly as it is today: **`Tab`** marks, **`Shift-Tab`** marks the row above,
 **right-click** marks, **`ESC`** clears the marks, the top bar counts them.
 
-With **2 or more marked** and `ssh` chosen, TRee-Li asks which way to go - one small window,
+With **2 or more marked** and `ssh` chosen, TRuffle asks which way to go - one small window,
 the same one `Ctrl-K` already uses:
 
 ```
   ╭─ 7 switches marked ─────────────────────────────╮
   │  p   all at once, one tmux pane each (max 9)    │
-  │  s   one after another, here in TRee-Li         │
+  │  s   one after another, here in TRuffle         │
   │  ESC cancel                                     │
   ╰─────────────────────────────────────────────────╯
 ```
 
-With `s`, TRee-Li connects to the first marked switch exactly as a single `ssh` does today.
+With `s`, TRuffle connects to the first marked switch exactly as a single `ssh` does today.
 When you log out, it does not go back to the list - it shows the step screen:
 
 ```
-  TRee-Li  ›  3 of 7 done                     timmy
+  TRuffle  ›  3 of 7 done                     timmy
 
     done      ber-core-01   logged out
     done      ber-core-02   logged out
@@ -52,7 +52,7 @@ marks, chosen in the window above; the config option `tmux = no` simply removes 
 and goes straight to serial. Serial mode uses no tmux, no socket, no ticket, no handover - it is
 the existing single-session code path (`ssh_flow`) in a loop.
 
-One extra benefit: it also works when **TRee-Li itself runs inside tmux**, where the pane feature
+One extra benefit: it also works when **TRuffle itself runs inside tmux**, where the pane feature
 has to do the `switch-client` dance because tmux refuses to nest.
 
 ## What it ACTUALLY solves over tmux mode - brutally honest

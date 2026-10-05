@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 
-from test_tree_li import tl
+from test_truffle import tl
 
 
 class HandoverTest(unittest.TestCase):
@@ -143,13 +143,13 @@ def _args():
 @unittest.skipUnless(tl.which("tmux"), "tmux not installed")
 class TmuxHelpersTest(unittest.TestCase):
     def test_sessions_list_only_ours(self):
-        name = "notatreelisession-%d" % os.getpid()
+        name = "notatrufflesession-%d" % os.getpid()
         try:
             tl.tmux_run("new-session", "-d", "-s", name, "sleep 5")
         except (RuntimeError, OSError):
             self.skipTest("cannot start tmux here")
         try:
-            self.assertNotIn(name, tl.tree_li_sessions())
+            self.assertNotIn(name, tl.truffle_sessions())
         finally:
             tl.tmux_try("kill-session", "-t", name)
 

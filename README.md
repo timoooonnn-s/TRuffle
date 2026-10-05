@@ -1,11 +1,11 @@
-# TRee-Li: Switch Manager
+# TRuffle: Switch Manager
 
 ```
- _____  ____                      _      _
-|_   _||  _ \   ___   ___        | |    (_)
-  | |  | |_) | / _ \ / _ \ _____ | |    | |
-  | |  |  _ < |  __/|  __/|_____|| |___ | |
-  |_|  |_| \_\ \___| \___|       |_____||_|
+ _____  ____           __   __  _
+|_   _||  _ \  _   _  / _| / _|| |  ___
+  | |  | |_) || | | || |_ | |_ | | / _ \
+  | |  |  _ < | |_| ||  _||  _|| ||  __/
+  |_|  |_| \_\ \__,_||_|  |_|  |_| \___|
 ```
 
 *by Timmy & Ruffy*
@@ -14,11 +14,11 @@ Search your switch list, ssh into a switch, log out, and you're back in the list
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
 
 - **One file, Python 3 standard library only.** No pip, no venv, no root.
-- **Password asked once per session.** It stays in memory only and is forgotten when TRee-Li exits.
-- **After you log out of a switch, you're back in TRee-Li.**
+- **Password asked once per session.** It stays in memory only and is forgotten when TRuffle exits.
+- **After you log out of a switch, you're back in TRuffle.**
 
 Inspired by [V-Li: Switch Manager](https://github.com/seismicindustries/switch-manager).
-TRee-Li keeps its menu, but runs ssh inside your terminal instead of a new desktop window.
+TRuffle keeps its menu, but runs ssh inside your terminal instead of a new desktop window.
 
 **[Quick start](#quick-start)**: up and running in five minutes.
 **[Reference](#reference)**: everything in detail.
@@ -31,10 +31,10 @@ TRee-Li keeps its menu, but runs ssh inside your terminal instead of a new deskt
 
 On the server: Linux, **Python 3.8 or newer** (`python3 --version`), the OpenSSH client and `ping`.
 
-### 2. Get TRee-Li
+### 2. Get TRuffle
 
 ```bash
-git clone <repo-url> ~/tree-li
+git clone <repo-url> ~/truffle
 ```
 
 Any directory works, for example a [shared team folder](#team-setup).
@@ -43,7 +43,7 @@ No git on the server? Use the [single-file bundle](#single-file-bundle) instead.
 ### 3. Add your switches
 
 ```bash
-cd ~/tree-li
+cd ~/truffle
 cp data.example.csv data.csv
 ```
 
@@ -51,30 +51,30 @@ Then put your switches into `data.csv`: one line per switch, at least `Name` and
 ([format](#switch-list-datacsv)). Check it, including a [data check](#data-check) for duplicates and typos:
 
 ```bash
-./tree-li --check
+./truffle --check
 ```
 
 ### 4. Start it
 
 ```bash
-./tree-li
+./truffle
 ```
 
-To start it from anywhere with just `tree-li`, add an alias:
+To start it from anywhere with just `truffle`, add an alias:
 
 ```bash
-echo "alias tree-li='$HOME/tree-li/tree-li'" >> ~/.bashrc
+echo "alias truffle='$HOME/truffle/truffle'" >> ~/.bashrc
 ```
 
 ### 5. Use it
 
 1. **Type** to filter the list. A few letters are enough: `bc01` finds `ber-core-01`.
 2. Pick a switch with **↑ ↓**. **ssh** is already selected, so press **Enter**.
-3. Enter your username and password **once**. TRee-Li logs you in, now and for every following switch.
+3. Enter your username and password **once**. TRuffle logs you in, now and for every following switch.
 4. **Log out** of the switch, and you're back in the list.
 5. **← →** selects the other commands (ping, batch ping, details, help, exit).
 
-All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something looks wrong, see [Troubleshooting](#troubleshooting).
+All keys: [Keys](#keys) or the **help** command inside TRuffle. If something looks wrong, see [Troubleshooting](#troubleshooting).
 
 ---
 
@@ -104,7 +104,7 @@ All keys: [Keys](#keys) or the **help** command inside TRee-Li. If something loo
 ## Screen
 
 ```
-  TRee-Li  Switch Manager                                     timmy · 2/29 switches
+  TRuffle  Switch Manager                                     timmy · 2/29 switches
 ───────────────────────────────────────────────────────────────────────────────────
 
    ssh   ping   batch ping   details   help   exit
@@ -132,7 +132,7 @@ From top to bottom:
     number, not packet loss and not jitter. Sorting MS puts the slowest switches first, which is how you
     find the one behind a congested link.
   - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
-    TRee-Li never tests SSH on its own, so there's no extra traffic. When it failed, **details** and the
+    TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details** and the
     [export](#export) also tell you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
 - **Footer:** key hints, or a message for a few seconds.
@@ -161,14 +161,14 @@ From top to bottom:
 
 In full-screen output (ping, details, help): `↑` `↓` `PgUp` `PgDn` scroll, and `ESC` / `Enter` / `q` closes.
 
-**No mouse.** TRee-Li is keyboard-only on purpose, so selecting text in PuTTY or Tabby works
+**No mouse.** TRuffle is keyboard-only on purpose, so selecting text in PuTTY or Tabby works
 normally — no Shift needed.
 
 ## Commands
 
 | Command | What it does |
 |---|---|
-| **ssh** | Connects to the selected switch. The first time, TRee-Li asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
+| **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
 | **ping** | `ping -c 4` with live output; also updates the Ping and MS columns. |
 | **batch ping** | Pings every switch in the **current, filtered** list and fills the PING column. It's deliberately **quiet**: at most 20 pings per second (`ping_rate`), so 700 switches take about 35 s and one site a few seconds. You can keep working meanwhile; `ESC` (with an empty search) cancels. |
 | **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
@@ -199,7 +199,7 @@ Press `Ctrl-E` on that and you have the list [exported](#export) — with the re
 
 > **Experimental**, on the `tmux-version` branch. Needs `tmux` on the server. Turn it off with `tmux = no`.
 
-Mark switches with **`Tab`**, then run **ssh**. With **two or more** marked, TRee-Li opens its
+Mark switches with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
 own tmux session with **one pane per switch**, up to **9**. You type your password **once** and every pane
 logs in by itself.
 
@@ -207,43 +207,43 @@ logs in by itself.
 |---|---|
 | mark / unmark a switch | `Tab` (`Shift-Tab` marks the one above) |
 | clear all marks | `ESC` (with an empty search) |
-| **back to TRee-Li**, panes keep running | `Ctrl-b d` |
-| **back into the panes** | `Ctrl-T` in TRee-Li |
-| **close them all**, from TRee-Li | `Ctrl-K` (asks first) |
+| **back to TRuffle**, panes keep running | `Ctrl-b d` |
+| **back into the panes** | `Ctrl-T` in TRuffle |
+| **close them all**, from TRuffle | `Ctrl-K` (asks first) |
 | switch between panes | `Ctrl-b o`, or `Ctrl-b` and an arrow key |
 | make one pane full screen (and back) | `Ctrl-b z` |
 | log out of one switch | `exit` in that pane; its pane closes |
 
-`Ctrl-K` in TRee-Li is the reliable way to close everything: it needs no tmux key and works on any keyboard
+`Ctrl-K` in TRuffle is the reliable way to close everything: it needs no tmux key and works on any keyboard
 layout. tmux's own `Ctrl-b &` does the same from inside, but the `&` is awkward on some layouts.
 
-When the last pane is gone the tmux session ends by itself and you are back in TRee-Li.
+When the last pane is gone the tmux session ends by itself and you are back in TRuffle.
 The tmux status bar shows these keys while you are in the session, and each pane border carries its switch name.
 
-**From any shell**, the sessions are normal tmux sessions named `tree-li-HHMMSS`:
+**From any shell**, the sessions are normal tmux sessions named `truffle-HHMMSS`:
 
 ```bash
 tmux ls                              # which are still running
-tmux attach -t tree-li-143052        # go back into one
-tmux kill-session -t tree-li-143052  # close one and its logins
+tmux attach -t truffle-143052        # go back into one
+tmux kill-session -t truffle-143052  # close one and its logins
 ```
 
 **They keep running after you detach.** That is the point — a dropped PuTTY connection does not lose your
-sessions — but it also means switches stay logged in. TRee-Li shows `N tmux` in the top bar while any of
+sessions — but it also means switches stay logged in. TRuffle shows `N tmux` in the top bar while any of
 its sessions are alive, and names them again when you quit.
 
 **How the single login works, and what it costs:** panes are started by tmux, so their command line is
 visible to every user on the machine (`ps`) and cannot carry the password. Each pane gets a one-time ticket
-instead and fetches the login through a Unix socket in a private directory. Before answering, TRee-Li asks
+instead and fetches the login through a Unix socket in a private directory. Before answering, TRuffle asks
 the kernel who is connecting and replies only to **your own user** and to **the exact process tmux started**,
 once, within 15 seconds. The socket is deleted as soon as the panes have their login.
 Anything running as *your* user could still ask for it during those seconds — that is the trade-off of the
 single login. Set `tmux = no` if you would rather type the password per pane.
 
-**If a pane can't log in,** it says so in that pane and tells TRee-Li, which drops the stored password and
+**If a pane can't log in,** it says so in that pane and tells TRuffle, which drops the stored password and
 asks you again. A mistyped password therefore costs you the panes you opened, not every switch you visit
 afterwards. The password is also forgotten 10 hours after you typed it (see [Security](#security)); that
-only clears it inside TRee-Li and leaves running panes alone.
+only clears it inside TRuffle and leaves running panes alone.
 
 **Worried about the shared login, or asked to justify it?** [TMUX-SECURITY.md](TMUX-SECURITY.md) explains
 the whole mechanism from first principles — what a Unix socket is, why the ticket is deliberately public,
@@ -253,7 +253,7 @@ to a colleague who doesn't work in Linux every day.
 ## Settings
 
 Some things you only want for the next hour — recording a change window, or chasing one switch
-that won't log in. **`Ctrl-G`** opens them without restarting TRee-Li:
+that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 
 | Key | Setting | What it does |
 |---|---|---|
@@ -264,8 +264,8 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRee-Li:
 | `p` | Forget the stored password | drops it now, e.g. before you leave your desk. Running sessions and tmux panes are untouched |
 | `ESC` | | close |
 
-Changes apply to **this TRee-Li only** and take effect on the next connection — put them in
-[`tree-li.conf`](#configuration) to make them permanent.
+Changes apply to **this TRuffle only** and take effect on the next connection — put them in
+[`truffle.conf`](#configuration) to make them permanent.
 
 Everything else (columns, ping rate, paths, password lifetime) is set once in the configuration
 file; nothing else is worth flipping mid-day.
@@ -275,17 +275,17 @@ file; nothing else is worth flipping mid-day.
 - `Ctrl-F` marks a switch as a favourite (`*`). Favourites are listed first as long as no column is sorted.
   During a search, better matches come first and favourites only win ties.
 - Every successful login is remembered. Find those switches with `is:recent`, or see "Last connected" in **details**.
-- Both are stored **per user** in `~/.local/state/tree-li/` (only readable by you), never in the shared folder or the CSV.
+- Both are stored **per user** in `~/.local/state/truffle/` (only readable by you), never in the shared folder or the CSV.
 
 ## Saved check results
 
 The PING results (with their ms), and your last ssh attempts with the reason they failed, each with its time, are saved per user in
-`~/.local/state/tree-li/status`. After a restart they're shown again until the next check, and **details** shows when
-each one was taken. Several TRee-Li windows merge their results, and the newest one wins.
+`~/.local/state/truffle/status`. After a restart they're shown again until the next check, and **details** shows when
+each one was taken. Several TRuffle windows merge their results, and the newest one wins.
 
 ## Export
 
-`Ctrl-E` writes the **current list** (filter and order as on screen) to `tree-li-export-<date>-<time>.csv`
+`Ctrl-E` writes the **current list** (filter and order as on screen) to `truffle-export-<date>-<time>.csv`
 in your home directory (`export_dir` in the [configuration](#configuration)). It contains:
 - all CSV columns
 - **Ping** with its round-trip time in ms, and your last **SSH** attempt with the reason it failed, each with its time
@@ -297,14 +297,14 @@ The file uses the switch list's delimiter, opens directly in Excel, and is reada
 
 ## Data check
 
-`tree-li --check` checks the switch list and shows the CSV line of every problem:
+`truffle --check` checks the switch list and shows the CSV line of every problem:
 - rows with more or fewer fields than the header (often a `;` inside a comment, which shifts the columns)
 - names or IPs that appear more than once
 - missing IPs, unusable hosts, invalid IPv4 addresses (`10.0.0.300`), leading zeros (`010.0.0.5`, which ping reads as octal)
 
-TRee-Li also says so at startup when the list has warnings.
+TRuffle also says so at startup when the list has warnings.
 
-It reports obsolete options from an older `tree-li.conf` too (they are ignored, not applied).
+It reports obsolete options from an older `truffle.conf` too (they are ignored, not applied).
 
 **Exit codes**, so you can run it from cron or a pipeline:
 
@@ -315,7 +315,7 @@ It reports obsolete options from an older `tree-li.conf` too (they are ignored, 
 | `2` | cannot run: switch list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
-./tree-li --check || echo "please fix the switch list"
+./truffle --check || echo "please fix the switch list"
 ```
 
 ## Switch list (`data.csv`)
@@ -332,13 +332,49 @@ ber-core-01;192.0.2.1;ber;Core switch Berlin;5520;core;101;Ruffy;-
   To show one in the table, add it to `columns` in the [configuration](#configuration).
 - `data.csv` is in `.gitignore`, so your inventory never ends up in git.
 
+### A list whose columns are named differently
+
+An export from another system rarely has columns called `Name` and `IP`. You don't have to rename
+anything — **the label you give a column in `columns` decides what it is**: the column you label
+`Name` becomes the switch name, the one you label `IP` becomes the ssh target.
+
+For an Infoblox network export, where the hostname is in `PRIMARY_DN_CODE`, the host address is in
+`ADDRESS`, and the **first** column is the network address (`SUBNET`):
+
+```csv
+SUBNET,MASK,VLAN_ID,PRIMARY_DN_CODE,CREATION_DATE,...,ADDRESS
+198.51.100.0,255.255.255.0,2301,cd-34-s56-r1.example.net,...,198.51.100.20
+```
+
+one line in [`truffle.conf`](#configuration) is the whole setup:
+
+```ini
+columns = PRIMARY_DN_CODE:Name, ADDRESS:IP
+```
+
+Every other column is still there — searchable as `vlan_id:2301` and listed by **details** — so you
+can add more to the table later (`columns = PRIMARY_DN_CODE:Name, ADDRESS:IP, location, comment`)
+as soon as the export carries them.
+
+**Check it before you trust it.** `truffle --check` prints which column it uses for each job:
+
+```
+columns      : PRIMARY_DN_CODE (Name), ADDRESS (IP)
+switch name  : PRIMARY_DN_CODE
+ssh target   : ADDRESS
+data check   : ok
+```
+
+Without the labels it warns instead of guessing silently — using the first column as the name would
+give every switch in a subnet the same identity, and favourites and history go by that name.
+
 ## Configuration
 
-Everything is optional. All options with explanations are in [`tree-li.conf.example`](tree-li.conf.example).
-TRee-Li reads these files in order, and later ones win:
+Everything is optional. All options with explanations are in [`truffle.conf.example`](truffle.conf.example).
+TRuffle reads these files in order, and later ones win:
 
-1. `tree-li.conf` next to the `tree-li` script: team defaults (git-ignored)
-2. `~/.config/tree-li/tree-li.conf`: your personal settings
+1. `truffle.conf` next to the `truffle` script: team defaults (git-ignored)
+2. `~/.config/truffle/truffle.conf`: your personal settings
 3. the file given with `--config FILE`
 
 | Command line | Effect |
@@ -350,63 +386,63 @@ TRee-Li reads these files in order, and later ones win:
 | `--check` | check config, switch list ([data check](#data-check)) and required tools, then exit |
 | `--version` | show the version |
 
-`--debug` writes to `debug.log` in the state directory; `tree-li --check` prints that path.
+`--debug` writes to `debug.log` in the state directory; `truffle --check` prints that path.
 
 ## Team setup
 
-No system-wide install is needed. Put the TRee-Li directory where your colleagues can read it, e.g.
-`/srv/netops/tree-li`, together with one `data.csv` and an optional `tree-li.conf` for team defaults.
-Everyone runs the same `tree-li`. Passwords, favourites, history and logs stay per user.
+No system-wide install is needed. Put the TRuffle directory where your colleagues can read it, e.g.
+`/srv/netops/truffle`, together with one `data.csv` and an optional `truffle.conf` for team defaults.
+Everyone runs the same `truffle`. Passwords, favourites, history and logs stay per user.
 
 ## Single-file bundle
 
-To move TRee-Li without git, e.g. as a mail attachment, pack it into one plain-text file:
+To move TRuffle without git, e.g. as a mail attachment, pack it into one plain-text file:
 
 ```bash
-python3 tools/make-bundle.py          # creates dist/tree-li-bundle-<version>.py
+python3 tools/make-bundle.py          # creates dist/truffle-bundle-<version>.py
 ```
 
-**Bump `VERSION` in `tree-li` before building a bundle whose contents changed.** The version is part of
+**Bump `VERSION` in `truffle` before building a bundle whose contents changed.** The version is part of
 the file name, so two different bundles must never share one. `make-bundle.py` refuses to overwrite an
 existing bundle that has different contents and tells you to bump; `--force` overrides that.
 
 On the server, copy the bundle into the folder you want to update and run it there:
 
 ```bash
-cd ~/tree-li                       # e.g. your git checkout
-python3 tree-li-bundle-<version>.py
+cd ~/truffle                       # e.g. your git checkout
+python3 truffle-bundle-<version>.py
 git status                         # if it's a git checkout: review, commit, push
 ```
 
 | Run | Effect |
 |---|---|
-| `python3 tree-li-bundle-<version>.py` | inside an existing TRee-Li folder: **updates it in place**; anywhere else: unpacks into `./tree-li` |
-| `python3 tree-li-bundle-<version>.py DIR` | unpacks / updates exactly in `DIR` |
-| `python3 tree-li-bundle-<version>.py --list` | only shows what's inside |
+| `python3 truffle-bundle-<version>.py` | inside an existing TRuffle folder: **updates it in place**; anywhere else: unpacks into `./truffle` |
+| `python3 truffle-bundle-<version>.py DIR` | unpacks / updates exactly in `DIR` |
+| `python3 truffle-bundle-<version>.py --list` | only shows what's inside |
 
 - **Damage check:** a checksum catches a damaged attachment before anything is written.
 - **Removed files:** files that a newer version no longer has are removed, but only files a bundle installed
-  (they're listed in `.tree-li-files`).
-- **Never touched:** `.git`, `data.csv`, `tree-li.conf` and your own files.
-- **No accidental downgrade:** if the folder already holds a newer TRee-Li, the bundle says so and asks before
+  (they're listed in `.truffle-files`).
+- **Never touched:** `.git`, `data.csv`, `truffle.conf` and your own files.
+- **No accidental downgrade:** if the folder already holds a newer TRuffle, the bundle says so and asks before
   installing the older one.
-- **Not committed by accident:** the bundle file and `.tree-li-files` are in `.gitignore`.
+- **Not committed by accident:** the bundle file and `.truffle-files` are in `.gitignore`.
 
 ## Session logging
 
-Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRee-Li when
+Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRuffle when
 you want it just for the next session (a change window, say). Each ssh session is written to
-`~/.local/state/tree-li/logs/<date>-<time>_<switch>.log`, readable only by you.
-The log contains what was on screen, never the password TRee-Li typed. Commands like
+`~/.local/state/truffle/logs/<date>-<time>_<switch>.log`, readable only by you.
+The log contains what was on screen, never the password TRuffle typed. Commands like
 `show running-config` can still put secrets into it.
 
 ## Debug log
 
-`tree-li --debug` — or **`Ctrl-G`** inside TRee-Li, when a switch starts misbehaving and you don't
-want to restart — appends a short report of every ssh login to `~/.local/state/tree-li/debug.log`
+`truffle --debug` — or **`Ctrl-G`** inside TRuffle, when a switch starts misbehaving and you don't
+want to restart — appends a short report of every ssh login to `~/.local/state/truffle/debug.log`
 (readable only by you):
 - the ssh command
-- which password prompts TRee-Li saw
+- which password prompts TRuffle saw
 - whether it typed the password
 - exit code and the reason for a failure
 - the switch's output **before** the login (banner, prompts)
@@ -422,13 +458,13 @@ The password and the session itself are never in it.
 
 ## Security
 
-- **Memory only.** The password lives only in the memory of the running TRee-Li. It never goes to disk,
+- **Memory only.** The password lives only in the memory of the running TRuffle. It never goes to disk,
   command lines or environment variables, so it isn't visible in `ps`.
 - **Memory protected:**
-  - TRee-Li switches off crash dumps for itself, so a crash can't write the password to a file.
+  - TRuffle switches off crash dumps for itself, so a crash can't write the password to a file.
   - On Linux it also marks itself "not dumpable", so other programs of your own user can't attach to it or read its memory.
   - root still can, as with every program.
-- **Typed once, only at a real prompt.** TRee-Li types it once per connection, only at a real password prompt,
+- **Typed once, only at a real prompt.** TRuffle types it once per connection, only at a real password prompt,
   and never at an SSH-key passphrase prompt. If it does not recognise the switch's prompt it types **nothing**
   and says so afterwards, so you always know whether the auto-login fired.
 - **Wrong password:** ssh is stopped right away instead of retrying, the stored password is wiped,
@@ -439,27 +475,27 @@ The password and the session itself are never in it.
   again (`password_lifetime` in minutes, `0` turns it off). It's measured from when you typed it, not from
   your last keypress, so a window left running for days can't keep a live login — but it never expires in
   the middle of a working day.
-  **It only deletes the password inside TRee-Li.** A switch session you're sitting in keeps running, and
+  **It only deletes the password inside TRuffle.** A switch session you're sitting in keeps running, and
   tmux panes keep running and stay logged in. Nothing in your workspace is touched.
-- **Once you type in a session,** TRee-Li stops watching. A later `Password:` prompt on the switch is never answered for you.
+- **Once you type in a session,** TRuffle stops watching. A later `Password:` prompt on the switch is never answered for you.
 - **Host keys:** new switches are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
-  TRee-Li asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.
+  TRuffle asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.
 - **CSV values** never pass through a shell, and hosts that look like command-line options (`-o...`) are rejected.
 
 ## Troubleshooting
 
 | Problem | Fix |
 |---|---|
-| `switch list not found` | `cp data.example.csv data.csv`, or set `data =` in `tree-li.conf` |
-| `python3\r: No such file or directory` or `Permission denied` after copying via Windows | `sed -i 's/\r$//' tree-li; chmod +x tree-li`, or start it with `python3 tree-li` |
+| `switch list not found` | `cp data.example.csv data.csv`, or set `data =` in `truffle.conf` |
+| `python3\r: No such file or directory` or `Permission denied` after copying via Windows | `sed -i 's/\r$//' truffle; chmod +x truffle`, or start it with `python3 truffle` |
 | Old switch: `no matching key exchange method` / `host key type` | e.g. `ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`. On RHEL 9 the system crypto policy may also need to allow SHA-1 |
 | Lines or symbols look like `â”€` or `?` | `--ascii` / `charset = ascii`, or PuTTY *Window → Translation* → UTF-8 |
 | Only a few colours in PuTTY | PuTTY *Connection → Data → Terminal-type string* → `xterm-256color` |
 | F-keys don't sort | Click the column header |
-| TRee-Li says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `tree-li --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
-| Login works with plain ssh but not in TRee-Li | Start with `tree-li --debug`, try again, and look at the [debug log](#debug-log) |
+| TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
+| Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled | `Ctrl-L` |
-| Not sure what's wrong | `tree-li --check` |
+| Not sure what's wrong | `truffle --check` |
 
 ## Development
 

@@ -1,22 +1,22 @@
 #!/usr/bin/env python3
-"""Pack TRee-Li into ONE self-extracting text file, e.g. to send it by mail.
+"""Pack TRuffle into ONE self-extracting text file, e.g. to send it by mail.
 
-    python3 tools/make-bundle.py            ->  dist/tree-li-bundle-<version>.py
+    python3 tools/make-bundle.py            ->  dist/truffle-bundle-<version>.py
     python3 tools/make-bundle.py --force    ->  rebuild even if that version exists already
 
-The file name carries VERSION from tree-li, so bump VERSION before building a bundle
+The file name carries VERSION from truffle, so bump VERSION before building a bundle
 whose contents changed - otherwise two different bundles would share one file name.
 
 On the target machine:
 
-    python3 tree-li-bundle-<version>.py               # inside an existing copy / git checkout:
-                                                      # update it in place; elsewhere: ./tree-li
-    python3 tree-li-bundle-<version>.py /srv/tree-li  # or into a directory of your choice
-    python3 tree-li-bundle-<version>.py --list        # only show what is inside
+    python3 truffle-bundle-<version>.py               # inside an existing copy / git checkout:
+                                                      # update it in place; elsewhere: ./truffle
+    python3 truffle-bundle-<version>.py /srv/truffle  # or into a directory of your choice
+    python3 truffle-bundle-<version>.py --list        # only show what is inside
 
 The bundle is plain ASCII (the files are a base64-encoded tar.gz), carries a SHA-256
 checksum so a damaged attachment is detected, and never contains or overwrites
-site files such as data.csv or tree-li.conf - it can also be used to update.
+site files such as data.csv or truffle.conf - it can also be used to update.
 Only files under version control are packed: commit new files before bundling.
 Python 3.8+, standard library only.
 """
@@ -33,28 +33,28 @@ import time
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Without git, only these project files are shipped.
-ALLOW = re.compile(r"^(tree-li|[^/]+\.md|data\.example\.csv|tree-li\.conf\.example|\.git(ignore|attributes)"
+ALLOW = re.compile(r"^(truffle|[^/]+\.md|data\.example\.csv|truffle\.conf\.example|\.git(ignore|attributes)"
                    r"|(tests|tools)/[^/]+\.py)$")
 # Never shipped, even if tracked: site data, local settings, build output, caches.
 # council/ holds the design notes of this workspace - it is not part of the deliverable.
-EXCLUDE = re.compile(r"^council/|(^|/)(data\.csv|tree-li\.conf|dist|\.git|__pycache__|\.DS_Store)(/|$)|\.pyc$|\.log$")
+EXCLUDE = re.compile(r"^council/|(^|/)(data\.csv|truffle\.conf|dist|\.git|__pycache__|\.DS_Store)(/|$)|\.pyc$|\.log$")
 
 EXTRACTOR = r'''#!/usr/bin/env python3
-"""TRee-Li %(version)s - self-extracting bundle, created %(created)s.
+"""TRuffle %(version)s - self-extracting bundle, created %(created)s.
 
-    python3 %(name)s              in a folder that already holds TRee-Li (e.g. your git
-                                  checkout): update it in place; anywhere else: unpack into ./tree-li
+    python3 %(name)s              in a folder that already holds TRuffle (e.g. your git
+                                  checkout): update it in place; anywhere else: unpack into ./truffle
     python3 %(name)s TARGET_DIR   unpack / update exactly there
     python3 %(name)s --list       show the contents only
 
 Files a newer version no longer has are removed - but only files a bundle installed
-(listed in .tree-li-files).  .git, data.csv, tree-li.conf and your own files are never touched.
+(listed in .truffle-files).  .git, data.csv, truffle.conf and your own files are never touched.
 """
 import base64, hashlib, io, os, re, sys, tarfile
 
 SHA256 = "%(sha256)s"
 VERSION = "%(version)s"
-MANIFEST = ".tree-li-files"
+MANIFEST = ".truffle-files"
 PAYLOAD = """
 %(payload)s
 """
@@ -65,13 +65,13 @@ def safe(name):
 
 
 def installed_version(folder):
-    """VERSION of the tree-li already in that folder, or None if there is none."""
+    """VERSION of the truffle already in that folder, or None if there is none."""
     try:
-        with open(os.path.join(folder, "tree-li"), encoding="utf-8", errors="replace") as f:
+        with open(os.path.join(folder, "truffle"), encoding="utf-8", errors="replace") as f:
             head = f.read(4096)
     except OSError:
         return None
-    if "TRee-Li" not in head:
+    if "TRuffle" not in head:
         return None
     m = re.search(r'^VERSION = "([^"]+)"', head, re.M)
     return m.group(1) if m else "?"
@@ -99,9 +99,9 @@ def main(argv):
         elif installed_version(os.getcwd()):
             target = os.getcwd()            # run inside an existing copy: update it in place
         else:
-            target = os.path.abspath("tree-li")
+            target = os.path.abspath("truffle")
         here = installed_version(target)
-        print("TRee-Li %%s -> %%s%%s\n" %% (VERSION, target, "   (replacing %%s)" %% here if here else ""))
+        print("TRuffle %%s -> %%s%%s\n" %% (VERSION, target, "   (replacing %%s)" %% here if here else ""))
         if here and as_numbers(here) > as_numbers(VERSION):
             print("  WARNING: %%s is already installed there - this bundle is OLDER (%%s)." %% (here, VERSION))
             if input("  Install the older version anyway? [y/N] ").strip().lower() != "y":
@@ -144,12 +144,12 @@ def main(argv):
         f.write("".join(n + "\n" for n in sorted(names)))
     if unchanged:
         print("  %%d file(s) unchanged" %% unchanged)
-    print("\nTRee-Li %(version)s is in %%s" %% target)
+    print("\nTRuffle %(version)s is in %%s" %% target)
     if not os.path.exists(os.path.join(target, "data.csv")):
         print("Next:  cd %%s && cp data.example.csv data.csv   (then add your switches)" %% target)
     if os.path.isdir(os.path.join(target, ".git")):
         print("Git:   cd %%s && git status   (then commit + push as usual)" %% target)
-    print("Check: %%s --check" %% os.path.join(target, "tree-li"))
+    print("Check: %%s --check" %% os.path.join(target, "truffle"))
 
 
 if __name__ == "__main__":
@@ -181,7 +181,7 @@ def project_files():
 
 
 def version():
-    with open(os.path.join(ROOT, "tree-li"), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, "truffle"), encoding="utf-8") as f:
         m = re.search(r'^VERSION = "([^"]+)"', f.read(), re.MULTILINE)
     return m.group(1) if m else "dev"
 
@@ -212,7 +212,7 @@ def main():
     raw = buf.getvalue()
     payload = base64.b64encode(raw).decode("ascii")
     ver = version()
-    name = "tree-li-bundle-%s.py" % ver
+    name = "truffle-bundle-%s.py" % ver
     text = EXTRACTOR % {
         "version": ver,
         "name": name,
@@ -230,7 +230,7 @@ def main():
     if old and not force:
         print("ERROR: dist/%s exists already and has DIFFERENT contents.\n"
               "       Two bundles must never share a file name - someone would install the wrong one.\n"
-              "       Bump VERSION in tree-li (now %s), then build again.  --force overrides."
+              "       Bump VERSION in truffle (now %s), then build again.  --force overrides."
               % (name, ver), file=sys.stderr)
         return 1
     with open(out, "w", encoding="ascii", newline="\n") as f:
