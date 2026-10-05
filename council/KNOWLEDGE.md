@@ -141,6 +141,17 @@ BootP_NextServer,BootP_BootFile,MAC_ADDRESS,RFC_MAC_ADDRESS,ADDRESS
 - Therefore: a parsed round-trip time means up; no time *and* the ping finished on its own means down;
   everything else means "no verdict". See `ping_verdict()` and D32.
 
+### curses repaints only the difference (2026-10-05)
+`refresh()` sends only what changed since the last frame, so a cell curses believes is already correct
+is never rewritten - and if the terminal dropped or mangled that update, the stale content stays.
+`Ctrl-L` (`scr.clear()`, i.e. erase + clearok) is the cure, and the only reliable one: it clears the
+physical screen and repaints every cell.
+- Leaving a full-screen view (ping / details / help) now does that automatically (D37). Returning from
+  an ssh session always did, through `resume_curses` -> `sync_size` -> `scr.clear()`.
+- Seen on **macOS** (ncurses **6.0**, 20150808), not on the RHEL build. RHEL 9 ships a newer 6.x. When
+  comparing behaviour between the two machines, remember the curses libraries are years apart - it is
+  not only the code that differs.
+
 ### Terminal keys that never arrive (2026-10-04)
 `curses.wrapper` puts the terminal in **cbreak**, which clears `ICANON` but **not `IEXTEN`**. So:
 - `^U` (kill), `^W` (werase), `^R` (rprnt) are `ICANON`-only specials and **do** reach the

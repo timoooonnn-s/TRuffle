@@ -43,7 +43,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.6.0-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.6.1-tmux"     # experimental tmux branch; bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
@@ -2899,6 +2899,12 @@ class App(object):
         finally:
             if stream:
                 stream.stop()
+            # Force a full repaint, which is what Ctrl-L does by hand.  curses otherwise
+            # only sends the difference, so anything the terminal dropped or mangled on a
+            # laggy link stays on screen - a ping line left over in the switch list was
+            # reported from the field.  Coming back from an ssh session already clears
+            # (resume_curses -> sync_size), closing a full-screen view did not.
+            self.scr.clear()
 
     def show_details(self, dev):
         th = self.th

@@ -663,3 +663,44 @@ automated coverage below the tmux end-to-end tests. The end-to-end run is the on
 between `execute()` and a traceback over the user's screen.
 
 `VERSION` 1.6.0-tmux. 119 tests.
+
+## D37: A ping line left behind in the switch list (user, 2026-10-05)
+Reported: cancelling a single-switch ping after ~3 replies leaves a line of the ping output stuck in
+the switch list.
+
+**Not reproducible here.** Six variations were tried - reachable and unreachable host, 60x12 / 84x16 /
+200x50, cancelling at 1.2 s and 2.6 s, closing with `ESC` and with `q` - and every screen came back
+clean. Ruled out by reading the code as well: ping's output goes to a pty
+(`stdout=slave, stderr=slave`) and never to the real terminal, so a stray line cannot be the ping
+writing past us.
+
+**What the evidence points at instead.** `tmux capture-pane` shows what *curses believes* the screen
+is, so an artifact that survives there would be a drawing bug - and none did. An artifact only the user
+sees is the terminal and curses disagreeing, which is what happens when an update is dropped or mangled
+on a laggy link: curses sends only the *difference*, so it never rewrites a cell it thinks is already
+correct. `Ctrl-L` is the standing cure, which fits "stuck".
+
+**The asymmetry that makes this specific to popups.** Coming back from an ssh session force-clears
+(`resume_curses` -> `sync_size` -> `scr.clear()`). Closing a full-screen view (ping / details / help)
+did not - it left the next frame to the diff. So the one path with no full repaint is exactly the one
+the user reported. `show_text` now ends with `scr.clear()`, doing automatically what `Ctrl-L` does by
+hand. One repaint when a popup closes; nothing else changes.
+
+**Confirmed by the user (2026-10-05):** `Ctrl-L` does clear it, on **macOS**. And the **RHEL** build -
+older, still has `batch ping` - does **not** show the bug at all. So the mechanism is settled: the
+terminal and curses disagree, and forcing the repaint is the cure. `show_text` now makes exactly the
+call `Ctrl-L` makes, at the moment the problem happens.
+
+**The one thing this does NOT prove.** The RHEL build differs from the current one in *two* ways at
+once - older code **and** a different platform - so "RHEL is fine" does not clear the newer code. What
+tips it towards the platform: almost nothing changed in the popup drawing path between those versions
+(the mouse wheel branch went, that is all), while the curses libraries differ by five years -
+macOS here is **ncurses 6.0 (20150808)**, RHEL 9 ships a newer 6.x.
+The test that would disentangle it is free: when RHEL is finally updated, watch whether the line ever
+appears there. If it does, the cause is in our code after all and the repaint is only hiding it.
+
+**Stakes, so nobody over-invests later:** R2 - RHEL is the target, macOS is the test bench. This bug
+lives only on the bench. The fix is one call and makes popup-close consistent with ssh-return, which
+already cleared, so it is worth having either way.
+
+`VERSION` 1.6.1-tmux.
