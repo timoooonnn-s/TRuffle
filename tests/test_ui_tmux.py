@@ -134,6 +134,22 @@ class UiSmokeTest(unittest.TestCase):
         for line in ours:                      # only the one-time ticket may be visible
             self.assertNotIn("secret", line, "the password reached a command line: %s" % line)
 
+    def test_marks_connect_even_when_the_search_shows_nothing(self):
+        """With 2+ marks the selected row does not matter - not even when there is none.
+        This used to say "No switch selected" while ping in the same state worked."""
+        self.keys("fake", literal=True)
+        self.keys("Tab")
+        self.keys("Tab")
+        self.wait_for("2 marked")
+        self.keys("C-u")
+        self.keys("zzzz", literal=True)
+        self.wait_for("No switch matches")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_in_panes(self.wait_for_session(), "FAKE-SW:1>")
+
     def test_a_pane_login_failure_makes_truffle_forget_the_password(self):
         """A pane cannot answer over the socket (it is closed by then), so it reports a
         wrong password through the status directory - TRuffle must drop that password

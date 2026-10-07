@@ -72,6 +72,12 @@
       `~/.local/state/tree-li` → `~/.local/state/truffle` (or let it start empty)
 - [ ] `command -v truffle` on the target box - an npm tool of that name exists
 
+## Milestone 1j: cut-down review. DONE (2026-10-07)
+- [x] Dead code and doubled logic removed, no feature or security fix lost (D38): `truffle` 3,536 -> 3,469 lines
+- [x] One behaviour fix: 2+ marks connect even when the search shows nothing, with an end-to-end test
+- [x] The pane's "forget the password" line now actually drops every copy
+- [x] README only describes what exists; 119 tests, VERSION 1.6.2-tmux
+
 ## Milestone 2: field test (needs the user)
 - [x] `./truffle --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu

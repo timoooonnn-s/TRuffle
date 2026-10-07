@@ -704,3 +704,65 @@ lives only on the bench. The fix is one call and makes popup-close consistent wi
 already cleared, so it is worth having either way.
 
 `VERSION` 1.6.1-tmux.
+
+## D38: Cut-down review - dead code and doubled logic out (user, 2026-10-07)
+The user asked whether lines could go without losing a feature, a security fix or anything still
+needed, and approved every item per category. `truffle` 3,536 -> 3,469 lines (about 2.5% of the
+code), tests -18 lines. The comments were left alone on purpose (they carry the D-numbers and the
+"why"); only comments that were wrong were fixed. Each cut was first applied alone to a fresh copy
+and run against the whole suite.
+
+### Dead code (removing it changes nothing)
+- the `coding: utf-8` line (Python 3 reads source as UTF-8); `App.headers` / `App.delimiter`, only
+  ever read by the CSV export that D35 removed; `except InterruptedError` in `_write_all`, which
+  Python has not raised since 3.5 (PEP 475 retries `os.write` itself - checked with a signal);
+  `tmux_run`'s `**kw`, which no caller passed; the "is now newer than the stamp" test in
+  `note_auth_failure`, always true unless the clock runs backwards; a second `select-layout tiled`
+  right after the loop that already tiles.
+- *Researcher:* `bracketed_paste(False)` at the end of `run()` is gone. D29 put it there **and** in a
+  `finally` around `curses.wrapper`; the `finally` already covers every way out, including the normal one.
+
+### Doubled logic, now in one place
+- `App.sessions` was a copy of `App.my_sessions`, pruned in the same two places. Only `my_sessions` is left.
+- `run_session` re-implemented `clean_output()` to find the last line (equal on 200,000 random outputs).
+- `filter_devices` built the same `exact_term(...)` call three times; the known-field and excluded-word
+  branches did the same thing and are merged, branch order unchanged.
+- the login dialog had four copies of `if field == 0: user ... else: pw ...`; it edits `entry[field]` now.
+- `main()` hardened the process and set the locale twice (pane and normal path); once now, after `--check`.
+- smaller: `show_help`'s two single-use inner helpers, the batch dedup loop (`dict.fromkeys`), the
+  `kept` counter in `read_paste` (always `len(out)`), `BatchPing.done` (always the sum of `counts`),
+  `ping_verdict`'s two-step "down" test, and `connect()` building the host-key reason by hand although
+  `ssh_failure_reason()` returns exactly that string.
+- *Warden:* `Handover.close` uses `shutil.rmtree` on its private 0700 directory instead of removing
+  the socket and the directory one by one. Only our uid can write there, so the two are the same.
+  The D29 paste drain and the paste reset in the login dialog are untouched.
+
+### One behaviour change (*Critic*, accepted)
+`execute()` checked the marks twice, for ping before "is a row selected?" and for ssh after it. So:
+mark two switches, type a search that matches nothing, press Enter on ssh -> "No switch selected",
+while ping in the same state worked. Both now use one check before the selected row is looked at,
+which is what D26 meant ("the selected row only has to be usable when it is the one being connected
+to"). *Tester:* new end-to-end test, checked to FAIL on the old code.
+
+### A security line that did nothing (*Warden*)
+`pane_main` set `password = None` after the login, but the same password stayed in `login` (the parsed
+reply) and `answer` (the raw one). A pane waiting at "Press any key to close this pane" held it the whole
+time. All three are dropped now. Same honest limit as before: Python cannot wipe the bytes.
+
+### Same length, cleaner
+`str()` conversions and a comment left over from the MS column (D36); `refilter()` / `start_batch()` use
+`App.results()` and `draw()` uses `known_field()` instead of repeating them; stale comments (the "ping
+rate" setting, the footer sketch, the `*-l1*` docstring form D34 found misleading); `default_user()`'s
+`$USER` fallback, which `getpass.getuser()` had already tried.
+
+### Looked at and kept
+macOS paths (R2), the 4-or-5-field status lines (D29), the latin-1 CSV fallback (cp1252 cannot decode
+five byte values - checked), the paste reset in the login dialog (else a pasted password outlives a
+forgotten one), `attach_session`'s existence check (D24), `device_key()` (the seam between identity and
+display name - D30 was an identity bug), the attribute list in `__init__`.
+
+### Tests, tool, docs
+Duplicated helpers and one duplicated session test merged, `contextlib.redirect_stdout` instead of
+swapping stdout by hand, stale test names and docstrings fixed; `make-bundle.py` hashes once. README:
+four lines that described removed things (mouse, ping rate, ignored old options, a garbled sentence)
+now match the code. `VERSION` 1.6.2-tmux. 119 tests.

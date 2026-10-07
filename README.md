@@ -138,8 +138,8 @@ From top to bottom:
   - `▲`/`▼` shows the sorted column.
   - **PING** shows the last ping result.
   - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
-    TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details** and the
-    also tells you *why* — `Connection timed out` is a different job from `Permission denied`.
+    TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details**
+    tells you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
 - **Footer:** key hints, or a message for a few seconds.
 
@@ -289,7 +289,7 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 Changes apply to **this TRuffle only** and take effect on the next connection — put them in
 [`truffle.conf`](#configuration) to make them permanent.
 
-Everything else (columns, ping rate, paths, password lifetime) is set once in the configuration
+Everything else (columns, paths, password lifetime) is set once in the configuration
 file; nothing else is worth flipping mid-day.
 
 ## Favourites and recent switches
@@ -314,7 +314,7 @@ each one was taken. Several TRuffle windows merge their results, and the newest 
 
 TRuffle also says so at startup when the list has warnings.
 
-It reports obsolete options from an older `truffle.conf` too (they are ignored, not applied).
+An unknown or retired option in `truffle.conf` stops TRuffle at startup and names the option, so `--check` reports it too.
 
 **Exit codes**, so you can run it from cron or a pipeline:
 
@@ -510,7 +510,7 @@ The password and the session itself are never in it.
 | Old switch: `no matching key exchange method` / `host key type` | e.g. `ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`. On RHEL 9 the system crypto policy may also need to allow SHA-1 |
 | Lines or symbols look like `â”€` or `?` | `--ascii` / `charset = ascii`, or PuTTY *Window → Translation* → UTF-8 |
 | Only a few colours in PuTTY | PuTTY *Connection → Data → Terminal-type string* → `xterm-256color` |
-| F-keys don't sort | Click the column header |
+| F-keys don't sort | PuTTY *Terminal → Keyboard → Function keys* → `ESC[n~` (default) or `Xterm R6`. `ESC` with an empty search clears a sort |
 | TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled | `Ctrl-L` |

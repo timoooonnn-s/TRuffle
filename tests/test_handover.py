@@ -11,7 +11,7 @@ import threading
 import time
 import unittest
 
-from test_truffle import tl
+from test_truffle import args, tl
 
 
 class HandoverTest(unittest.TestCase):
@@ -40,7 +40,7 @@ class HandoverTest(unittest.TestCase):
         answer = self.ask(h, ticket)
         self.assertTrue(answer.startswith("OK "), answer)
         self.assertIn('"password": "secret"', answer)
-        self.assertTrue(answer.startswith("OK ") and '"user": "timmy"' in answer)
+        self.assertIn('"user": "timmy"', answer)
 
     def test_a_ticket_cannot_be_used_twice(self):
         h = self.make()
@@ -114,7 +114,7 @@ class HandoverTest(unittest.TestCase):
     # -- the password never reaches a command line --------------------------
 
     def test_the_pane_command_line_carries_no_password(self):
-        cfg = tl.load_config(_args())
+        cfg = tl.load_config(args())
         cfg.config_file, cfg.debug, cfg.session_log = None, False, False
         command = tl.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.1", "sw1")
         self.assertNotIn("secret", command)
@@ -132,12 +132,6 @@ class HandoverTest(unittest.TestCase):
             b.close()
         self.assertEqual(uid, os.getuid(), "peer uid unavailable - the handover would refuse everything")
         self.assertEqual(pid, os.getpid())
-
-
-def _args():
-    import types
-    return types.SimpleNamespace(config=None, data=None, log=False, debug=False, check=False,
-                                 ascii=False, pane=None)
 
 
 @unittest.skipUnless(tl.which("tmux"), "tmux not installed")

@@ -2,6 +2,7 @@
 
 Run from the repository root:  python3 -m unittest discover -s tests -v
 """
+import contextlib
 import importlib.machinery
 import importlib.util
 import io
@@ -318,7 +319,7 @@ class TestHelpPage(TempDir):
             self.assertIn(command, keys, "help page does not document the '%s' command" % command)
 
     def test_the_esc_chain_names_every_step_it_does(self):
-        """The ESC key walks search -> marks -> batch ping -> sort.  The help page used
+        """The ESC key walks search -> running ping -> marks -> sort.  The help page used
         to skip the marks step, which is exactly the kind of drift this page is data for."""
         items = [e for e in self.sections() if e[0] == "item"]
         index = next(i for i, e in enumerate(items) if e[1] == "ESC")
@@ -377,16 +378,13 @@ class TestTheme(unittest.TestCase):
 
 
 class TestCheck(TempDir):
-    def run_check(self, csv_body, conf=""):
+    def run_check(self, csv_body):
         data = self.write("sw.csv", csv_body)
-        path = self.write("c.conf", "[truffle]\ndata = %s\n%s" % (data, conf))
-        cfg = tl.load_config(args(config=path))
-        out = io.StringIO()
-        stdout, sys.stdout = sys.stdout, out
-        try:
-            code = tl.check(cfg)
-        finally:
-            sys.stdout = stdout
+        return self.check(self.write("c.conf", "[truffle]\ndata = %s\n" % data))
+
+    def check(self, conf):
+        with contextlib.redirect_stdout(io.StringIO()) as out:
+            code = tl.check(tl.load_config(args(config=conf)))
         return code, out.getvalue()
 
     COLUMNS = "Name;IP;subnet;aliases;comment\n"
@@ -403,13 +401,7 @@ class TestCheck(TempDir):
 
     def test_missing_list_exits_two(self):
         path = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)
-        cfg = tl.load_config(args(config=path))
-        out = io.StringIO()
-        stdout, sys.stdout = sys.stdout, out
-        try:
-            self.assertEqual(tl.check(cfg), 2)
-        finally:
-            sys.stdout = stdout
+        self.assertEqual(self.check(path)[0], 2)
 
     def test_a_retired_option_is_a_hard_error_not_a_silent_note(self):
         """Back-compat for old config files was dropped on purpose: a stale option now
@@ -622,7 +614,7 @@ class TestUserState(TempDir):
         self.assertEqual(m, {("ssh", "h"): "why"})
 
     def test_the_detail_field_round_trips_and_stays_backward_compatible(self):
-        """The 5th field carries the ping's ms and the reason a ssh attempt failed.
+        """The 5th field carries a detail - today the reason a ssh attempt failed.
         Rows without it must keep working - an older TRuffle writes only 4 fields,
         and a row with no detail is still written with 4 so an older one can read it."""
         d = os.path.join(self.tmp, "state")
@@ -697,9 +689,8 @@ class TestUserState(TempDir):
         self.assertEqual(st.favorites, {"sw1"})               # still works in memory
 
 
-class TestIdleAndMarks(unittest.TestCase):
-    """The top bar must promise what ssh / batch ping actually do, and the password
-    must not outlive an idle window while tmux panes hold switch logins open."""
+class TestPasswordLifetime(unittest.TestCase):
+    """The password must not outlive a window left open for days."""
 
     def test_the_password_expires_a_fixed_time_after_it_was_typed(self):
         """Absolute, not idle: touching the window must not keep a live credential
