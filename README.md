@@ -184,19 +184,21 @@ normally — no Shift needed.
 Case doesn't matter, and **every term separated by a space must match** — that's what narrows a long list
 down (`ab-* s34 -ping:down`). For "either/or", put the alternatives in **one** term with `|` (`w3|w4`).
 
-Plain words are **fuzzy**, like fzf: the letters only have to appear in this order within one visible
-column. The best matches come first, and the matched letters are underlined. When fuzzy is too loose —
-telling `-l1` from `-l11`, say — use a **pattern** with `*` and `?`.
+A plain word is found **anywhere in a column when you write it together**. It may be split **only at the
+separators** `-` `.` `_`, so `bc01` still finds `ber-core-01` (**b**er-**c**ore-**01**) while `w4` finds
+`xx-xx-sxx-w4` and **not** `wx-x4-sxx-xx`, where the `4` is buried inside a segment. The best matches come
+first and the matched letters are underlined. To tell `-l1` from `-l11`, use a **pattern** with `*` and `?`.
 
 | You type | Shows |
 |---|---|
-| `bc01`, `ber core` | fuzzy: `bc01` finds `ber-core-01`; exact hits rank above scattered ones |
-| `'10.1.2` | exactly this text (a leading `'` switches fuzzy off for this word) |
-| `*-l1`, `??-??-s??-w3` | **pattern:** `*` = anything, `?` = one character, matched against a **whole** column. This is how you filter by role: `*-l1` finds `ab-12-s34-l1` and **not** `...-l11`, which fuzzy can't tell apart. A name like `sw1.example.net` also matches on just `sw1`, so you don't have to write `*-l1.*` |
+| `w4`, `ber core` | a word written together, anywhere in a column. `s34` finds `ab-12-s34-w4` |
+| `bc01` | split **only at `-` `.` `_`**: `bc01` finds `ber-core-01`, `ab12` finds `ab-12-s34-w4`. A jump inside a segment never matches, so `w4` does not find `wx-x4-sxx-xx` and `a4` does not find `ab-12-s34-w4` |
+| `'10.1.2` | exactly this text (a leading `'` also switches the splitting off) |
+| `*-l1`, `??-??-s??-w3` | **pattern:** `*` = anything, `?` = one character, matched against a **whole** column. This is how you filter by role: `*-l1` finds `ab-12-s34-l1` and **not** `...-l11`, which a plain word can't tell apart. A name like `sw1.example.net` also matches on just `sw1`, so you don't have to write `*-l1.*` |
 | `w3\|w4` | **either one.** Space stays AND, so OR goes inside one term: `ab-* w3\|w4` = site `ab` **and** (`w3` **or** `w4`). Works with fields too: `ping:up\|wait` |
 | `type:core` | the CSV column `type` contains "core". Works for **every** column, even ones not in the table, and for table labels (`alias:munich`) |
 | `location:` | the column is empty |
-| `-test`, `-type:edge`, `-*-w4` | excludes matches. An excluded word is always exact (a fuzzy exclude would hide far too much), but an excluded pattern stays a pattern. `-w3\|w4` excludes both |
+| `-test`, `-type:edge`, `-*-w4` | excludes matches. An excluded word is always exact (a split exclude would hide far too much), but an excluded pattern stays a pattern. `-w3\|w4` excludes both |
 | `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet; a bare `ping:` means the same) |
 | `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that switch, or `none` (never tried) |
 | `is:fav` | your favourites |

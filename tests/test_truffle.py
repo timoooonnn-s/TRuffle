@@ -256,6 +256,7 @@ class TestSearchSort(unittest.TestCase):
             d = tl.Device()
             d.values, d.host, d.name, d.cells = {}, ip, name, [name, ip]
             d.lcells = [c.lower() for c in d.cells]
+            d.lsegments = [tl.segments_of(c) for c in d.lcells]
             d.search = "\x00".join(d.lcells)
             out.append(d)
         return out
@@ -564,11 +565,29 @@ class TestFuzzyMatch(unittest.TestCase):
 
     def test_scores(self):
         exact = tl.fuzzy_match("core", "ber-core-01")[0]
-        scattered = tl.fuzzy_match("cr01", "ber-core-01")[0]
-        boundary = tl.fuzzy_match("bc", "ber-core-01")[0]
-        middle = tl.fuzzy_match("ro", "ber-core-01")[0]
-        self.assertGreater(exact, scattered)                                   # substring always wins
-        self.assertGreater(boundary, middle)                                   # word starts score higher
+        split = tl.fuzzy_match("bc01", "ber-core-01")[0]                       # b|c|01, all at starts
+        at_start = tl.fuzzy_match("cor", "ber-core-01")[0]                     # 'core' begins here
+        mid_word = tl.fuzzy_match("ore", "ber-core-01")[0]                     # sits inside 'core'
+        self.assertGreater(exact, split)                                       # written together wins
+        self.assertGreater(at_start, mid_word)                                 # segment starts score higher
+
+    def test_a_word_may_only_be_split_at_the_separators(self):
+        """The rule the whole search rests on: inside a segment the letters must be
+        written together; only a separator allows the search to jump ahead."""
+        self.assertIsNotNone(tl.fuzzy_match("w4", "xx-xx-sxx-w4"))             # together in a segment
+        self.assertIsNone(tl.fuzzy_match("w4", "wx-x4-sxx-xx"))                # 4 buried inside 'x4'
+        self.assertIsNone(tl.fuzzy_match("cr01", "ber-core-01"))               # 'o' skipped inside 'core'
+        self.assertIsNone(tl.fuzzy_match("a4", "ab-12-s34-w4"))                # 4 buried inside 'w4'
+        for pattern in ("bc01", "ab12", "s34", "12s", "ab-s34", "x4"):
+            self.assertIsNotNone(tl.fuzzy_match(pattern, {"bc01": "ber-core-01",
+                                                          "x4": "wx-x4-sxx-xx"}.get(pattern, "ab-12-s34-w4")),
+                                 "%r should still be found" % pattern)
+
+    def test_segments_of(self):
+        self.assertEqual(tl.segments_of("ab-12-s34"), [(0, "ab"), (3, "12"), (6, "s34")])
+        self.assertEqual(tl.segments_of("a..b"), [(0, "a"), (3, "b")])         # empty parts dropped
+        self.assertEqual(tl.segments_of(""), [])
+        self.assertEqual(tl.segments_of("plain"), [(0, "plain")])
 
 
 class TestUserState(TempDir):

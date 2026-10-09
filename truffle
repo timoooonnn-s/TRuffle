@@ -325,7 +325,7 @@ def read_table(path, report=None):
 
 
 class Device(object):
-    __slots__ = ("values", "host", "name", "cells", "lcells", "search")
+    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search")
 
 
 def find_header(headers, wanted):
@@ -390,6 +390,7 @@ def build_devices(headers, rows, cfg):
         d.name = row.get(name_h, "") or d.host
         d.cells = [row.get(h, "") for h, _ in columns]
         d.lcells = [c.lower() for c in d.cells]
+        d.lsegments = [segments_of(c) for c in d.lcells]   # once per switch, not per keystroke
         d.search = "\x00".join(d.lcells)          # \x00: a word never matches across two columns
         devices.append(d)
     return devices, columns, warns, picked
@@ -456,50 +457,92 @@ def device_key(d):
 BOUNDARY = " -_./:@"
 
 
-def fuzzy_match(pattern, text):
-    """fzf-like match of pattern (lower case) in text (lower case): the letters must
-    appear in this order.  Returns (score, positions) or None.  A plain substring
-    always beats a scattered match; word starts and adjacent letters score higher."""
-    i = text.find(pattern)
-    if i >= 0:
-        bonus = 30 if i == 0 or text[i - 1] in BOUNDARY else 0
-        return 1000 + 2 * len(pattern) + bonus, tuple(range(i, i + len(pattern)))
-    pi = 0                                       # forward: the earliest end of a match ...
-    for end, ch in enumerate(text):
-        if ch == pattern[pi]:
-            pi += 1
-            if pi == len(pattern):
-                break
-    else:
+def segments_of(text):
+    """The text cut at the separators, as (offset, part) - 'ab-12-s34' becomes
+    (0,'ab') (3,'12') (6,'s34').  A search word may only jump between these."""
+    parts, start = [], 0
+    for i, ch in enumerate(text):
+        if ch in BOUNDARY:
+            if i > start:
+                parts.append((start, text[start:i]))
+            start = i + 1
+    if len(text) > start:
+        parts.append((start, text[start:]))
+    return parts
+
+
+def anchored_positions(pattern, segments):
+    """Cover the pattern with chunks of the text: the first chunk may sit anywhere
+    inside a segment, every later chunk must start AT THE BEGINNING of a later one.
+
+    That is the whole rule.  Searching w4 finds xx-xx-sxx-w4, where 'w4' sits together,
+    but not wx-x4-sxx-xx, where the 4 is buried inside the segment 'x4' - while bc01
+    still finds ber-core-01, because b, c and 01 each start a segment.
+    Returns the matched positions, or None."""
+    failed = set()
+
+    def cover(pi, si, first):
+        if pi == len(pattern):
+            return []
+        if (pi, si, first) in failed:
+            return None
+        for s in range(si, len(segments)):
+            offset, part = segments[s]
+            for o in (range(len(part)) if first else (0,)):
+                longest = min(len(part) - o, len(pattern) - pi)
+                for length in range(longest, 0, -1):     # longest chunk first: tighter match
+                    if part[o:o + length] == pattern[pi:pi + length]:
+                        rest = cover(pi + length, s + 1, False)
+                        if rest is not None:
+                            return list(range(offset + o, offset + o + length)) + rest
+        failed.add((pi, si, first))
         return None
-    pi = len(pattern) - 1                        # ... backward: the tightest start for it
-    for start in range(end, -1, -1):
-        if text[start] == pattern[pi]:
-            pi -= 1
-            if pi < 0:
-                break
-    positions, pi = [], 0
-    for ti in range(start, end + 1):
-        if pi < len(pattern) and text[ti] == pattern[pi]:
-            positions.append(ti)
-            pi += 1
-    score, prev = 0, None
+
+    return cover(0, 0, True)
+
+
+def score_positions(text, positions):
+    """How good a match is: a letter at the start of a segment counts, and so does
+    every letter that follows directly on the one before."""
+    score, previous = 0, None
     for pos in positions:
         score += 1
         if pos == 0 or text[pos - 1] in BOUNDARY:
             score += 8
-        if prev is not None:
-            score += 5 if pos == prev + 1 else -min(3, pos - prev - 1)
-        prev = pos
-    return score, tuple(positions)
+        if previous is not None:
+            score += 5 if pos == previous + 1 else -min(3, pos - previous - 1)
+        previous = pos
+    return score
+
+
+def fuzzy_match(pattern, text, segments=None):
+    """Match pattern (lower case) in text (lower case).  A word written together is
+    found anywhere; otherwise it may only be split at the separators - see
+    anchored_positions.  segments is segments_of(text), passed in on the hot path
+    because it never changes.  Returns (score, positions) or None."""
+    i = text.find(pattern)
+    if i >= 0:                                   # written together: always the best match
+        bonus = 30 if i == 0 or text[i - 1] in BOUNDARY else 0
+        return 1000 + 2 * len(pattern) + bonus, tuple(range(i, i + len(pattern)))
+    squeezed = "".join(c for c in pattern if c not in BOUNDARY)
+    if not squeezed:
+        return None
+    positions = anchored_positions(squeezed, segments_of(text) if segments is None else segments)
+    if positions is None:
+        return None
+    return score_positions(text, positions), tuple(positions)
 
 
 def fuzzy_term(word):
-    """Test for one fuzzy word: the best-matching visible column wins."""
+    """Test for one search word: the best-matching visible column wins."""
+    squeezed = "".join(c for c in word if c not in BOUNDARY)
+
     def test(d):
         best = None
         for i, cell in enumerate(d.lcells):
-            m = fuzzy_match(word, cell)
+            if word not in cell and squeezed and not set(squeezed) <= set(cell):
+                continue                     # a letter is missing outright - skip the search
+            m = fuzzy_match(word, cell, d.lsegments[i])
             if m and (best is None or m[0] > best[0]):
                 best = (m[0], i, m[1])
         return best
@@ -588,7 +631,9 @@ def alternatives(token, fields):
 def filter_devices(devices, query, fields=None, status=None, favorites=(), recent=None, found=None,
                    marked=()):
     """Space separated terms, ALL of which must match (case-insensitive):
-         word          fuzzy: the letters in this order in a visible column (bc01 -> ber-core-01)
+         word          a word written together, found anywhere in a visible column; it may be
+                       split only AT THE SEPARATORS (bc01 -> ber-core-01, but w4 does not
+                       find wx-x4-sxx-xx, where the 4 is buried inside a segment)
          'word         exact: part of a visible column
          *-l1  ??-??-s??-w3     pattern: * and ? over one WHOLE visible column
          field:value   part of that CSV column (header or table label), field: = empty,
@@ -2519,7 +2564,7 @@ class App(object):
                 x += len(text)
         put(scr, y_search, x, " ", th.cursor)
         if not self.query:
-            put(scr, y_search, 7, "type to search (fuzzy) %s 'exact  type:core  -test  ping:down  is:fav" % sym["sep"],
+            put(scr, y_search, 7, "type to search %s 'exact  *-w4  w3|w4  type:core  -test  is:fav" % sym["sep"],
                 th.placeholder)
 
         # table head
@@ -3289,7 +3334,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "Up Down PgUp PgDn Home End", "select a switch"),
         ("item", "Left Right", "select a command"),
         ("item", "Enter", "run the selected command"),
-        ("item", "just type", "search - fuzzy, best matches first (see below)"),
+        ("item", "just type", "search - best matches first (see below)"),
         ("item", "Backspace  Ctrl-W  Ctrl-U", "delete a character / word / the whole search"),
         ("item", "paste", "pasted text goes into the search as text - a newline"),
         ("item", "", "in it no longer runs ssh (needs a terminal that"),
@@ -3306,10 +3351,12 @@ def help_sections(cfg, ncols, switches):
         ("item", "Ctrl-R", "reload the switch list"),
         ("item", "Ctrl-C", "quit"),
         ("section", "Search"),
-        ("item", "bc01  ber core", "fuzzy: letters in this order, best matches first"),
+        ("item", "w4   ber core", "a word written together, anywhere in a column"),
+        ("item", "bc01", "may be split only at - . _  (b|c|01 of ber-core-01),"),
+        ("item", "", "so w4 finds xx-xx-sxx-w4 but not wx-x4-sxx-xx"),
         ("item", "'10.1.2", "exact: this text exactly"),
         ("item", "*-l1   ??-??-s??-w3", "pattern: * and ? over a whole column. Tells -l1"),
-        ("item", "", "from -l11, which fuzzy cannot. A name like"),
+        ("item", "", "from -l11, which a plain word cannot. A name like"),
         ("item", "", "sw1.example.net also matches on just 'sw1'"),
         ("item", "w3|w4", "either one. Space stays AND, so OR goes in"),
         ("item", "", "one term: ab-* w3|w4, ping:up|wait, -*-w4"),

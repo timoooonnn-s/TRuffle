@@ -766,3 +766,19 @@ Duplicated helpers and one duplicated session test merged, `contextlib.redirect_
 swapping stdout by hand, stale test names and docstrings fixed; `make-bundle.py` hashes once. README:
 four lines that described removed things (mouse, ping rate, ignored old options, a garbled sentence)
 now match the code. `VERSION` 1.6.2-tmux. 119 tests.
+
+## D25: Search split only at the separators (user, 2026-10-09)
+Reported from the real 843-switch inventory: searching `w4` returned both `xx-xx-sxx-w4` and
+`wx-x4-sxx-xx`. The old fzf-style matching let a word scatter anywhere, so the `w` at position 0 and
+the `4` inside the segment `x4` counted as a hit - scoring 7 against 1034 for the real one, yet still shown.
+- **New rule (user's choice):** a word written together is found anywhere in a column; otherwise it may be
+  split **only at the separators** `-` `.` `_` `/` `:` `@` and space. Inside a segment the letters must be
+  contiguous. `anchored_positions()` covers the word with chunks: the first may sit anywhere inside a
+  segment, every later one must start at the beginning of a later segment.
+- Keeps what people liked: `bc01` -> `ber-core-01`, `ab12` -> `ab-12-s34-w4`, `12s`, `ab-s34`.
+  Drops what was too loose: `w4` on `wx-x4-sxx-xx`, `a4` on `ab-12-s34-w4`, `cr01` on `ber-core-01`.
+- **No fallback** when nothing matches (user's choice): an empty list is honest, a silent loosening is not.
+- Separators typed in the word are stripped first, so `ab-s34` behaves like `ab` + `s34` across segments.
+- **Speed:** the segments are computed once per switch at load (`Device.lsegments`), plus an early-out when
+  a letter is missing from the cell outright. 843 switches filter in 1-4 ms per keystroke, faster than the
+  old scattered matching (~10 ms once the naive version recomputed segments per keystroke).
