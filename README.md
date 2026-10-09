@@ -187,7 +187,8 @@ down (`ab-* s34 -ping:down`). For "either/or", put the alternatives in **one** t
 A plain word is found **anywhere in a column when you write it together**. It may be split **only at the
 separators** `-` `.` `_`, so `bc01` still finds `ber-core-01` (**b**er-**c**ore-**01**) while `w4` finds
 `xx-xx-sxx-w4` and **not** `wx-x4-sxx-xx`, where the `4` is buried inside a segment. The best matches come
-first and the matched letters are underlined. To tell `-l1` from `-l11`, use a **pattern** with `*` and `?`.
+first and the matched letters are underlined. To match a **whole** name instead — a role, a position in
+your naming scheme — use a **pattern** with `*` and `?`.
 
 | You type | Shows |
 |---|---|
@@ -205,14 +206,62 @@ first and the matched letters are underlined. To tell `-l1` from `-l11`, use a *
 | `is:recent` | switches you connected to, newest first |
 | `is:marked` | everything you've picked with `Tab` so far, from any search |
 
-Examples:
+### Tips & tricks
 
-| Query | Means |
-|---|---|
-| `type:core -ber ping:up ssh:failed` | core switches outside Berlin that answer ping but where your last ssh attempt failed — **details** tells you why each one failed |
-| `ab-* w3\|w4` | with a naming scheme like `xx-xx-sxx-ROLE`: the `w3` and `w4` switches of site `ab` |
-| `*-l1 -ping:down` | every `l1` switch that isn't known to be down |
-| `is:marked` | what you've collected with `Tab`, ready to `ssh` to all at once |
+**Two short words beat one long one.** Every space-separated term has to match, so each word you add
+narrows the list. You rarely need to know the full name:
+
+```
+ab s34          site ab, position s34 — in any order, any column
+ab s34 w4       narrowed again
+```
+
+**Pin a role or a position with a pattern.** A pattern is matched against the **whole** name, which is what
+a plain word cannot do:
+
+```
+*-w4            names ENDING in -w4
+ab-*            names STARTING with ab-
+??-??-s??-w3    w3 switches, wherever they sit in the scheme
+```
+
+**Either/or goes inside one term**, because space stays AND:
+
+```
+w3|w4           the w3 and w4 switches
+ab-* w3|w4      site ab, and (w3 or w4)
+ping:up|wait    answered, or still being checked
+```
+
+**Subtract what's in the way.** A leading `-` removes matches, and it works on words, fields and patterns:
+
+```
+ab-* -test          site ab, without the test boxes
+*-w4 -ping:down     w4 switches that aren't known to be down
+```
+
+**Search columns that aren't on the screen.** Any CSV column works as `field:value`, even one you don't
+display — and a bare `field:` finds the rows where it is *empty*, which is handy for spotting gaps:
+
+```
+responsible:timmy   everything Timmy owns
+location:           rows where location was never filled in
+```
+
+**Collect switches across several searches.** Marks (`Tab`) survive a new search, so you can gather from
+different corners of the list and then act on all of them at once:
+
+```
+ab-*  → Tab Tab      mark two here
+cd-*  → Tab          search again, mark another
+is:marked            see the pile — then ssh opens them all (see below)
+```
+
+**After a batch ping, let the result drive the next search.** `ping:down` is the follow-up list, and
+`ssh:failed` is the "I tried and it didn't work" list — **details** shows the reason for each.
+
+**`'` turns a word back into plain text** (`'10.1.2`), and **ESC steps back one layer at a time**: first the
+search, then a running ping, then the marks, then the sort.
 
 ## Several switches at once (tmux)
 
