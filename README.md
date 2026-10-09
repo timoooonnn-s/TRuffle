@@ -185,7 +185,7 @@ Case doesn't matter, and **every term separated by a space must match** — that
 down (`ab-* s34 -ping:down`). For "either/or", put the alternatives in **one** term with `|` (`w3|w4`).
 
 A plain word is found **anywhere in a column when you write it together**. It may be split **only at the
-separators** `-` `.` `_`, so `bc01` still finds `ber-core-01` (**b**er-**c**ore-**01**) while `w4` finds
+separators** `-` `.` `_` (also `/` `:` `@`), so `bc01` still finds `ber-core-01` (**b**er-**c**ore-**01**) while `w4` finds
 `xx-xx-sxx-w4` and **not** `wx-x4-sxx-xx`, where the `4` is buried inside a segment. The best matches come
 first and the matched letters are underlined. To match a **whole** name instead — a role, a position in
 your naming scheme — use a **pattern** with `*` and `?`.
@@ -193,7 +193,7 @@ your naming scheme — use a **pattern** with `*` and `?`.
 | You type | Shows |
 |---|---|
 | `w4`, `ber core` | a word written together, anywhere in a column. `s34` finds `ab-12-s34-w4` |
-| `bc01` | split **only at `-` `.` `_`**: `bc01` finds `ber-core-01`, `ab12` finds `ab-12-s34-w4`. A jump inside a segment never matches, so `w4` does not find `wx-x4-sxx-xx` and `a4` does not find `ab-12-s34-w4` |
+| `bc01` | split **only at `-` `.` `_` `/` `:` `@`**: `bc01` finds `ber-core-01`, `ab12` finds `ab-12-s34-w4`. A jump inside a segment never matches, so `w4` does not find `wx-x4-sxx-xx` and `a4` does not find `ab-12-s34-w4` |
 | `'10.1.2` | exactly this text (a leading `'` also switches the splitting off) |
 | `*-l1`, `??-??-s??-w3` | **pattern:** `*` = anything, `?` = one character, matched against a **whole** column. This is how you filter by role: `*-l1` finds `ab-12-s34-l1` and **not** `...-l11`, which a plain word can't tell apart. A name like `sw1.example.net` also matches on just `sw1`, so you don't have to write `*-l1.*` |
 | `w3\|w4` | **either one.** Space stays AND, so OR goes inside one term: `ab-* w3\|w4` = site `ab` **and** (`w3` **or** `w4`). Works with fields too: `ping:up\|wait` |
@@ -257,7 +257,7 @@ cd-*  → Tab          search again, mark another
 is:marked            see the pile — then ssh opens them all (see below)
 ```
 
-**After a batch ping, let the result drive the next search.** `ping:down` is the follow-up list, and
+**After pinging marked switches, let the result drive the next search.** `ping:down` is the follow-up list, and
 `ssh:failed` is the "I tried and it didn't work" list — **details** shows the reason for each.
 
 **`'` turns a word back into plain text** (`'10.1.2`), and **ESC steps back one layer at a time**: first the
@@ -265,7 +265,7 @@ search, then a running ping, then the marks, then the sort.
 
 ## Several switches at once (tmux)
 
-> **Experimental**, on the `tmux-version` branch. Needs `tmux` on the server. Turn it off with `tmux = no`.
+> Needs `tmux` on the server. Turn it off with `tmux = no`.
 
 **Marks survive a new search.** Search, mark a couple, search for something else, mark a couple
 more — then run **ssh** and you connect to all of them. `is:marked` shows the collection so far,

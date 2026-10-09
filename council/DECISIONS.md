@@ -767,7 +767,7 @@ swapping stdout by hand, stale test names and docstrings fixed; `make-bundle.py`
 four lines that described removed things (mouse, ping rate, ignored old options, a garbled sentence)
 now match the code. `VERSION` 1.6.2-tmux. 119 tests.
 
-## D25: Search split only at the separators (user, 2026-10-09)
+## D39: Search split only at the separators (user, 2026-10-09)
 Reported from the real 843-switch inventory: searching `w4` returned both `xx-xx-sxx-w4` and
 `wx-x4-sxx-xx`. The old fzf-style matching let a word scatter anywhere, so the `w` at position 0 and
 the `4` inside the segment `x4` counted as a hit - scoring 7 against 1034 for the real one, yet still shown.
@@ -782,3 +782,32 @@ the `4` inside the segment `x4` counted as a hit - scoring 7 against 1034 for th
 - **Speed:** the segments are computed once per switch at load (`Device.lsegments`), plus an early-out when
   a letter is missing from the cell outright. 843 switches filter in 1-4 ms per keystroke, faster than the
   old scattered matching (~10 ms once the naive version recomputed segments per keystroke).
+
+## D40: tmux panes go live, plus review round 9 (user, 2026-10-09)
+**The several-switches-at-once feature (D23) is no longer experimental.** The user tried it, and it
+goes live. `VERSION` drops the `-tmux` suffix that marked the experimental branch: **1.7.0**, a minor
+release because the search rule changed (D39) since 1.6.2-tmux. The README, `TMUX-SECURITY.md` and
+the idea notes no longer call it experimental or unmerged. *Warden:* `TMUX-SECURITY.md` still says
+honestly that the ~80 handover lines have had one reviewer - going live does not make that review
+happen - and that `tmux = no` turns the handover off.
+
+The entry about the search rule was first numbered D25, a number already taken by the standing
+rules; it is D39 now.
+
+### Review round 9 (cut-down, approved by the user)
+- The search stripped the separators from a word twice and ran its "a letter is missing" early-out
+  outside `fuzzy_match`, which then searched the cell again. One place now, with a `str.translate`
+  table: same results and underlines, same speed (0.91 vs 0.96 ms per keystroke on 843 switches).
+- `check_sessions()` repeated the alive-and-prune lines of `live_sessions()`; it calls it now.
+- With `tmux = no` and 2+ marks, ssh said "ssh takes the selected one" and connected to nothing.
+  The message now says what is true: ESC (empty search) clears the marks to ssh to one switch.
+  *Operator:* fixing the text, not the behaviour - silently ignoring marks would surprise more.
+- `check()` named a local `clean`, shadowing the module's `clean()`; renamed.
+- `TestSearchSort` built devices by hand, a copy of `build_devices()` the search change already had to
+  patch once; it uses `build_devices()` now.
+- Docs: "batch ping" (gone since D35) in the README tips; the separators listed as `- . _` in the README
+  and help screen, while the code also splits at `/ : @`.
+- Still open, offered: `TMUX-SECURITY.md` says the caller may be the pane process "or its parent" (the
+  code accepts a direct *child*), promises the socket folder is always in RAM under `/run/user/<uid>`
+  (without `XDG_RUNTIME_DIR` it falls back to `/tmp`), and counts 14 tests; the idea notes still mention
+  right-click marking and `Ctrl-b l`.

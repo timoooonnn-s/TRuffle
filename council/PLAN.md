@@ -78,6 +78,11 @@
 - [x] The pane's "forget the password" line now actually drops every copy
 - [x] README only describes what exists; 119 tests, VERSION 1.6.2-tmux
 
+## Milestone 1k: segment search, tmux goes live. DONE (2026-10-09)
+- [x] Search splits a word only at the separators (D39)
+- [x] tmux panes are no longer experimental (D40); VERSION 1.7.0
+- [x] Review round 9: one search early-out, one session check, an honest tmux-off message
+
 ## Milestone 2: field test (needs the user)
 - [x] `./truffle --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu

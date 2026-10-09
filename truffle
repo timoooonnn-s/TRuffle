@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.6.2-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.7.0"          # bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
@@ -455,6 +455,7 @@ def device_key(d):
 
 
 BOUNDARY = " -_./:@"
+NO_BOUNDARY = str.maketrans("", "", BOUNDARY)
 
 
 def segments_of(text):
@@ -524,9 +525,9 @@ def fuzzy_match(pattern, text, segments=None):
     if i >= 0:                                   # written together: always the best match
         bonus = 30 if i == 0 or text[i - 1] in BOUNDARY else 0
         return 1000 + 2 * len(pattern) + bonus, tuple(range(i, i + len(pattern)))
-    squeezed = "".join(c for c in pattern if c not in BOUNDARY)
-    if not squeezed:
-        return None
+    squeezed = pattern.translate(NO_BOUNDARY)
+    if not squeezed or not set(squeezed) <= set(text):
+        return None                              # nothing to search for, or a letter is missing
     positions = anchored_positions(squeezed, segments_of(text) if segments is None else segments)
     if positions is None:
         return None
@@ -535,13 +536,9 @@ def fuzzy_match(pattern, text, segments=None):
 
 def fuzzy_term(word):
     """Test for one search word: the best-matching visible column wins."""
-    squeezed = "".join(c for c in word if c not in BOUNDARY)
-
     def test(d):
         best = None
         for i, cell in enumerate(d.lcells):
-            if word not in cell and squeezed and not set(squeezed) <= set(cell):
-                continue                     # a letter is missing outright - skip the search
             m = fuzzy_match(word, cell, d.lsegments[i])
             if m and (best is None or m[0] > best[0]):
                 best = (m[0], i, m[1])
@@ -2427,13 +2424,12 @@ class App(object):
         When one ends, its panes have written their results, so pick them up."""
         if not self.my_sessions or time.time() - self._sessions_checked < 3:
             return
-        self._sessions_checked = time.time()
         # Do not wait for the session to end: a pane that could not log in has already
         # said so, and the password it used must go now, not in an hour.
         self.check_pane_auth_failure()
-        alive = set(truffle_sessions())
-        ended = [s for s in self.my_sessions if s not in alive]
-        self.my_sessions = [s for s in self.my_sessions if s in alive]
+        before = self.my_sessions
+        self.live_sessions()
+        ended = [s for s in before if s not in self.my_sessions]
         if ended:
             self.reload_status()
             self.message("tmux session %s ended" % ", ".join(ended))
@@ -3249,7 +3245,7 @@ class App(object):
         Ctrl-b d brings you back here; the sessions keep running until you log out."""
         if not self.cfg.tmux or not which("tmux"):
             self.message("%s - connecting to several switches at once needs it. "
-                         "Marks still decide which switches ping checks; ssh takes the selected one."
+                         "Marks still decide what ping checks; ESC (empty search) clears them to ssh one."
                          % ("tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux
                             else "tmux is not installed"), error=True, seconds=12)
             return
@@ -3352,7 +3348,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "Ctrl-C", "quit"),
         ("section", "Search"),
         ("item", "w4   ber core", "a word written together, anywhere in a column"),
-        ("item", "bc01", "may be split only at - . _  (b|c|01 of ber-core-01),"),
+        ("item", "bc01", "may be split only at - . _ / : @ (b|c|01 of ber-core-01),"),
         ("item", "", "so w4 finds xx-xx-sxx-w4 but not wx-x4-sxx-xx"),
         ("item", "'10.1.2", "exact: this text exactly"),
         ("item", "*-l1   ??-??-s??-w3", "pattern: * and ? over a whole column. Tells -l1"),
@@ -3417,7 +3413,7 @@ def help_sections(cfg, ncols, switches):
 
 def check(cfg):
     """--check: validate config and switch list without starting the UI."""
-    ok, clean = True, True
+    ok, no_warnings = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
     print("switch list  : %s" % cfg.data)
@@ -3436,8 +3432,8 @@ def check(cfg):
             print("first switch : name %r  ssh to %r"
                   % (first.values.get(picked["name"], ""), first.host))
         issues = warns + data_issues(devices, report["lines"], report["issues"], picked["name"])
-        clean = not issues
-        print("data check   : %s" % ("ok" if clean else "%d warning(s)" % len(issues)))
+        no_warnings = not issues
+        print("data check   : %s" % ("ok" if no_warnings else "%d warning(s)" % len(issues)))
         for w in issues[:50]:
             print("  warning: %s" % w)
         if len(issues) > 50:
@@ -3455,7 +3451,7 @@ def check(cfg):
                                  else "kept until TRuffle exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
-    return 0 if clean else 1          # 1 = warnings only, so a cron check can gate on it
+    return 0 if no_warnings else 1          # 1 = warnings only, so a cron check can gate on it
 
 
 def main(argv=None):

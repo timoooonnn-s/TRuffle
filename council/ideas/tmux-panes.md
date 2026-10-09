@@ -1,6 +1,6 @@
 # Several switches at once in tmux panes
 
-**Status: BUILT on the `tmux-version` branch (2026-10-03), experimental, not merged.**
+**Status: BUILT (2026-10-03), live since 2026-10-09 (D40).**
 The user wanted to try it before deciding. Option 1 (one login via a handover) was chosen and implemented,
 including every piece of hardening listed below. Tests: `tests/test_handover.py`.
 

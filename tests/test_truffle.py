@@ -251,15 +251,8 @@ class TestConfig(TempDir):
 
 class TestSearchSort(unittest.TestCase):
     def devices(self, rows):
-        out = []
-        for name, ip in rows:
-            d = tl.Device()
-            d.values, d.host, d.name, d.cells = {}, ip, name, [name, ip]
-            d.lcells = [c.lower() for c in d.cells]
-            d.lsegments = [tl.segments_of(c) for c in d.lcells]
-            d.search = "\x00".join(d.lcells)
-            out.append(d)
-        return out
+        cfg = types.SimpleNamespace(columns=[("Name", "Name"), ("IP", "IP")])
+        return tl.build_devices(["Name", "IP"], [{"Name": n, "IP": ip} for n, ip in rows], cfg)[0]
 
     def test_filter_tokens_all_must_match(self):
         ds = self.devices([("ber-core-01", "10.0.0.1"), ("ber-acc-01", "10.0.0.2"), ("muc-core-01", "10.0.1.1")])
@@ -271,8 +264,8 @@ class TestSearchSort(unittest.TestCase):
 
     def test_natural_sort_and_empty_last(self):
         ds = self.devices([("sw10", "10.0.0.10"), ("", "10.0.0.9"), ("sw2", "10.0.0.2")])
-        self.assertEqual([d.name for d in tl.sort_devices(ds, 0, False, {})], ["sw2", "sw10", ""])
-        self.assertEqual([d.name for d in tl.sort_devices(ds, 0, True, {})], ["sw10", "sw2", ""])
+        self.assertEqual([d.cells[0] for d in tl.sort_devices(ds, 0, False, {})], ["sw2", "sw10", ""])
+        self.assertEqual([d.cells[0] for d in tl.sort_devices(ds, 0, True, {})], ["sw10", "sw2", ""])
         self.assertEqual([d.host for d in tl.sort_devices(ds, 1, False, {})],
                          ["10.0.0.2", "10.0.0.9", "10.0.0.10"])
 

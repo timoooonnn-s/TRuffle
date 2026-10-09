@@ -38,8 +38,8 @@ concept it relies on is explained where it is first used. Nothing here asks you 
 > makes the handover irrelevant.
 
 There is one real risk in this feature, and it is not cryptographic — it is that about 80
-lines of security-relevant code were written in-house. That is why it has not been merged into
-`main` and why a second engineer reviews it before anyone else uses it. See
+lines of security-relevant code were written in-house. That is why a second engineer's review
+matters more than anything else on this page, and why it can be switched off with `tmux = no`. See
 [What has been tested](#what-has-been-tested-and-what-has-not).
 
 ---
@@ -298,8 +298,8 @@ command line contains the password**, and that a pane which cannot log in makes 
 
 1. **In-house code.** About 80 lines of this are security-relevant and were written for this
    tool. The *pattern* is proven; this *implementation* has only had one reviewer. A second
-   engineer reviews it before anyone beyond the author uses it. This is the real reason the
-   feature sits on an unmerged branch rather than in `main`.
+   engineer's review is the most useful thing anyone can add to it, and until then
+   `tmux = no` turns the whole handover off.
 2. **Company policy.** Whether passing credentials between processes is permitted at all is a
    policy question, not a technical one, and it can rule this out no matter how sound the code
    is. Worth confirming with whoever owns that policy before a wider rollout.
