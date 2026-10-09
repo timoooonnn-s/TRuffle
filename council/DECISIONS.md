@@ -448,3 +448,366 @@ documentation addresses (`192.0.2.x`, `198.51.100.x`), so the tests still prove 
 (the Ethereum/Solidity development framework, installed via npm). It is very unlikely to be on a
 RHEL switch-management server, but `command -v truffle` on the target box is a five-second check that
 D1 explicitly did for `tree`, and is worth repeating here.
+
+## D32: Two field bugs: cancelled ping, and a list whose columns don't fit (user, 2026-10-05)
+
+### A cancelled ping reported the switch as DOWN
+Reported from the field: pressing `ESC` while a ping ran recorded **down** although replies were
+on the screen. Reproduced in one run (two replies received, verdict `down`).
+Cause: `ESC` makes `show_text` call `ProcStream.stop()`, which SIGTERMs ping, so `returncode` is
+`-15` and `stream.done` becomes true. The `stream.done` branch then decided by exit code and the
+"a reply already came back" rule from **D15** - which sat in the `elif` below it - was never reached.
+
+While reproducing it, a **second, older bug** in the same test surfaced: a router answering
+*Destination Net Unreachable* makes ping print `76 bytes from <router>: ...`, so the `" bytes from "`
+test used since D17 read an ICMP **error** as a successful reply. On macOS that ping even exits **0**,
+so neither the text nor the exit code is proof. An unreachable host was reported **up**.
+
+**Decision: the parsed round-trip time is the only proof of a reply.** Only a real echo reply carries
+`time=`, which `parse_rtt` already reads (and `LC_ALL=C` already guarantees). New pure function
+`ping_verdict(ms, done, killed, started)`:
+- a time -> **up**, whatever the exit code says (so a cancelled-but-answered ping is up, and `0.0 ms`
+  counts - it is a measurement, not a missing value);
+- no time, and the ping **ran to the end by itself** -> **down**;
+- anything else - cancelled before a reply, or ping could not start at all -> **no verdict**, and the
+  previous result is left untouched. "ping is not installed" is not a statement about a switch.
+- `ProcStream` gained `killed` (we signalled it) and `started` (it never ran), because the exit code
+  alone cannot distinguish those.
+- `ping_once` now returns **the ms or None** instead of `(bool, ms)` - the two were redundant, and the
+  bool was the thing that was wrong. Batch ping follows the same rule, which also fixes the
+  unreachable-host-reported-up case there.
+- *Tester:* all four single-ping outcomes plus the ICMP-error text are tested, and the tests were
+  checked to fail against the old logic.
+
+### A list whose columns don't fit showed only subnets
+Also reported: with the real Infoblox export the table showed **only** network addresses, and in
+another attempt the NAME column was recognised but **empty**. Two different causes, both now handled
+rather than guessed at:
+- **Only one configured column existed.** The default `columns` line matched just `subnet` in that
+  export, so the table was one column of *network* addresses. Fewer than two resolved columns now
+  falls back to the switch **name and its address** with a warning, because a table that cannot show
+  what you connect to is not worth drawing. *Critic:* this does override an explicit one-column
+  `columns` line; accepted, because the warning says so and a deliberate single-column table is not a
+  real use case.
+- **Rows with an empty name column.** `d.name` falls back to the IP, but the NAME *cell* comes from
+  `columns`, so the row looked half-broken with nothing explaining it. `data_issues` now reports
+  "N row(s) have nothing in the name column 'X' (lines ...)".
+- **`--check` now prints `headers found` and the first switch's resolved name and ssh target.** The
+  whole confusion existed because that mapping was invisible; one command now answers it.
+- Deliberately **not** done: adding `primary_dn_code` to the header auto-detection. It would make this
+  one vendor's export work with no config, but the cause of the user's report is not yet confirmed and
+  a vendor field name in a generic tool is a poor trade on a guess. Offered if they want it.
+
+`VERSION` 1.3.2-tmux. 120 tests.
+
+## D33: The empty NAME column was a renamed header (user's server, 2026-10-05)
+`truffle --check` on the real 843-switch export answered D32's open question in one command:
+
+```
+headers found: SUBNET, MASK, VLAN_ID, PRIMARY_DN_CODE, CREATION_DATE, Default-GW, Name,
+               WINS-Server, BootP_NextServer, BootP_BootFile, MAC_ADDRESS, RFC_MAC_ADDRESS, IP
+first switch : name ''  ssh to '...'
+```
+
+Two headers had been renamed in the CSV: `ADDRESS` -> `IP` (correct, and it worked) and
+**`Name-Server` -> `Name`** (wrong). `Name-Server` is Infoblox's DNS-name-server field and is empty in
+this export; the hostname only ever lives in `PRIMARY_DN_CODE`. So `Name` resolved perfectly and was
+empty for all 843 rows, and every switch fell back to its IP. Nothing was broken in TRuffle.
+
+- **The diagnostics from D32 did their job** - `headers found`, `first switch : name ''` and the
+  nameless-rows warning together made it obvious. Worth noting as evidence that spending code on
+  *making a failure legible* beats spending it on guessing.
+- **But "it is empty" was not enough.** The warning now names the likely column: *"Columns that do have
+  a value here: PRIMARY_DN_CODE. Point 'Name' at the right one: columns = PRIMARY_DN_CODE:Name"*.
+  Candidates are the headers that are filled in, contain no space and are not IP-like, so the mask, the
+  VLAN and the creation date are not offered. That turns a round trip into a copy-paste.
+- **Standing rule (*Operator*, now in [KNOWLEDGE.md](KNOWLEDGE.md)): do not rename headers in the
+  export.** It is regenerated from Infoblox each time, so every rename is manual work that must be
+  repeated and can be got wrong - as it was. The mapping belongs in `columns`, in one place, where
+  `--check` prints it.
+- **The default `columns` line was left alone.** Pointing it at Infoblox headers would make
+  `data.example.csv` - a hand-written example in the generic shape - stop matching its own tool, so the
+  site-specific mapping stays a config file (D7's design). Offered to the user as an alternative, with
+  the example file updated to match, if they would rather have zero config per machine.
+
+`VERSION` 1.3.3-tmux. 121 tests.
+
+## D34: Patterns, OR in the search, and marks that survive a search (user, 2026-10-05)
+Three things asked for while working the real 843-switch list. All three built.
+
+### Patterns: `*` and `?`
+A word containing `*` or `?` is a shell-style pattern matched against a **whole** visible column.
+Whole-value matching is the point: the site scheme is `xx-xx-sxx-ROLE`, and `*-l1` finds
+`ab-12-s34-l1` while **not** matching `ab-12-s34-l11` - something neither fuzzy nor substring
+matching can do. `??-??-s??-w3` checks the whole pattern. Patterns work in `field:value` too
+(`name:*-l1`).
+- **Names are FQDNs, so the part before the first dot is tried as well.** Without that, every role
+  filter would have to be written `*-l1.*`. Addresses are deliberately *not* split that way, or
+  `19?` would match `192.0.2.98` through its leading octet - tested.
+- *Honest correction:* the first prototype shown to the user claimed `*-l1*` excludes `l11`. It does
+  not - the trailing `*` swallows `1.example.net`. The annotation was wrong, the output in the same
+  message already showed `l11` in the result, and it was only caught when the test was written.
+  Patterns are documented with the short form `*-l1`, and a test asserts that `*-l1*` *does* catch
+  `l11` so the documentation cannot drift back into the wrong claim.
+- No highlighting for pattern matches (the underline stays a fuzzy-match feature); a pattern match
+  is all-or-nothing, so there is nothing partial to point at.
+
+### OR inside one term: `a|b`
+The user would have written `w3 w4` and expected "either". **Space has to stay AND** - it is what
+makes narrowing an 843-row list work (`ab-* s34 -ping:down`) - so OR is written inside a single
+term: `w3|w4`, `*-w3|*-w4`, `ping:up|wait`.
+- An alternative with no `field:` prefix **inherits the first one's**, so `ping:up|wait` means
+  up-or-wait and not "ping:up, or the word wait somewhere". Same for `name:*-w4|*-l1`.
+- A negated group excludes every alternative: `-*-w3|*-w4` = NOT (w3 OR w4).
+- Excluded plain words stay exact (D16 still holds); a *pattern* stays a pattern even when negated,
+  because it is already precise.
+- With several fuzzy alternatives the best-scoring one supplies the ranking and the underline.
+- Half-typed terms (`|`, `w3|`, `|w3`, `'`, `-`) filter nothing, so the list does not flash empty
+  while typing.
+
+### Marks survive a new search (*reverses part of D26*)
+"Search, select two, search again, select two more - I want to connect to four."
+`marked_devices()` filtered by the current view, so only the visible marks were used. It now returns
+**every** marked switch, in the order you marked them, and `self.marked` became an ordered dict
+because that order decides the pane order.
+- **This supersedes D26's "N marked (+N hidden)" counter.** That fix made the *counter* honest about
+  the behaviour; the user's report says the *behaviour* was wrong. With nothing excluded any more the
+  counter is just "4 marked", and `marked_label()` is deleted along with its test. Worth recording:
+  the review finding was right that the two disagreed, and wrong about which one to change.
+- **`is:marked`** added, because a selection you cannot see is a selection you cannot trust - it is
+  the way to review what you have collected across several searches.
+- `ESC` (empty search) still clears the marks; `batch ping` still prefers the marks when there are
+  any, and now means all of them.
+
+`VERSION` 1.4.0-tmux (new search syntax and a changed selection behaviour). 127 tests.
+
+## D35: ping and batch ping merged, CSV export removed (user, 2026-10-05)
+
+### One ping command
+`batch ping` is gone from the command bar. **`ping`** now does the obvious thing:
+- **nothing marked** -> `ping -c 4` on the selected switch, live output, as before;
+- **2 or more marked** -> all of them at once, no live output, straight into the PING / MS columns.
+
+The user's framing, which settled the design: *"It's just to check if the connection to one or
+multiple devices fails, to check if they actually still are reachable."* So the sweep follows the
+**marks**, and the old "ping every switch in the current filtered list" is gone with it - watching the
+whole fleet is a different tool's job and never was TRuffle's.
+- *Rejected after the user corrected me:* a `Ctrl-A` "mark everything in this search" key. I added it
+  on the assumption that a 843-switch sweep still had to be reachable in two keystrokes. It does not,
+  so the key was removed again. Noted because it is the second time an assumption about scale, not a
+  request, drove a feature.
+- **ESC order changed: search -> running ping -> marks -> sort.** With marks now required for a sweep,
+  the marks are *always* set while one runs, so clearing them first made the footer's "ESC cancels"
+  a promise that took two presses to keep - reproduced live, the sweep sat at 0% while the message
+  said "Marks cleared". The cancel branch also tests `not cancelled`, matching the footer: workers can
+  sit in an in-flight ping for `ping_timeout + 5` seconds after a cancel, and ESC must not be stuck on
+  that branch meanwhile.
+
+### CSV export removed
+`Ctrl-E`, `export_csv()`, `free_path()`, `App.export()`, the `export_dir` option, the README section
+and the tests are gone. Not needed.
+- The help page test now refuses to let "batch ping", "ctrl-e" or "export" reappear in the help, the
+  same guard D22 added after a stale "ping + SSH check" line survived a removal.
+- *Consequence worth recording:* the persisted ssh failure reason (D32) was justified largely by
+  "search `ssh:failed`, press `Ctrl-E`, hand someone the list with reasons". It now only shows one
+  switch at a time in **details**. Still useful, but narrower than what it was built for - raised with
+  the user rather than silently kept.
+
+`VERSION` 1.5.0-tmux (a command removed and another's behaviour changed). 124 tests.
+
+## D36: MS column, rate limiting and other leftovers removed (user, 2026-10-05)
+Review round 7, after D35 narrowed ping to "do these switches still answer".
+
+### The MS column is gone
+With ping defined as a reachability check and fleet watching handed to another tool, a latency column
+had no job left. Removed: the column, `App.rtt`, `format_rtt()`, `parse_float()`, the round-trip detail
+in the status file, `App.save_detail()`, and the numeric branches in `draw()` and `sort_devices()`.
+- **`parse_rtt` was NOT removed** - it is load-bearing. The `time=` field is still the only proof that a
+  real echo reply came back (D32: a router's *Destination Net Unreachable* also prints "bytes from" and
+  on macOS exits 0). It is now `ping_replied(text) -> bool`, which is all anyone needed, and
+  `ping_verdict` takes that bool instead of a number.
+- `ping_once` returns a plain bool again. It returned the ms and every caller only tested
+  `is None` - the exact "value nobody reads" that round 6 flagged elsewhere.
+- With no numeric column, `STATUS_COLUMNS` loses its `numeric` flag, `STATE_KINDS` collapses into
+  `STATUS_KINDS`, and `word_results()` collapses into `results()`.
+
+### Rate limiting removed (finding 3)
+`ping_rate`, the rate-limit sleep loop and the worker-pool sizing derived from it existed to keep a
+700-switch sweep quiet (D20). The sweep is now the handful you marked, so there was nothing to spread
+out - 9 hosts at 20/s was 0.45 s of pointless spacing, and the "about N s" estimate was always 1.
+One thread per host (capped at 16), and the estimate is gone from the message.
+- The cancel check moved to **after** the ping and under the lock, so a ping already in flight restores
+  the previous result instead of overwriting it. The test now uses a slow fake ping so it actually
+  exercises that, which the old timing-based test no longer could.
+
+### Fixes
+- **ping decided on raw marks, ssh on resolved ones** (finding 2). Both now use the marks that resolve
+  to a switch with a usable address, so a mark left over from a switch that has left the list cannot
+  send a single ping down the several-at-once path. `start_batch(devices)` takes the resolved list
+  instead of re-deriving it.
+- **`Tab` now refilters when the query contains `is:marked`** (finding 5). The list *is* the marks
+  there, so an unmarked row has to leave it; the next row slides up under the cursor, which is what you
+  want when pruning a selection. Outside such a search nothing changes.
+- **The ssh failure reason stays persisted** (finding 6). The export it was partly built for is gone,
+  but surviving a restart is the whole point of the passive SSH column, and tmux panes still report
+  their reason that way. What *was* removed is the ms half of the detail plumbing, so the 5th status
+  field now carries one thing only.
+
+### Process note, worth more than the code
+The crash this round was mine and the **119 tests did not catch it**. My edit helper is all-or-nothing:
+one batch aborted on its last block, so two fixes were silently never written while a third was - and
+`execute()` called `start_batch()` with the wrong arity. Nothing failed, because no test can reach
+`execute()` without curses. Only driving the real UI found it.
+Two lessons: a "FAIL: 0 occurrences" line means *the whole batch was discarded*, and the UI path has no
+automated coverage below the tmux end-to-end tests. The end-to-end run is the only thing standing
+between `execute()` and a traceback over the user's screen.
+
+`VERSION` 1.6.0-tmux. 119 tests.
+
+## D37: A ping line left behind in the switch list (user, 2026-10-05)
+Reported: cancelling a single-switch ping after ~3 replies leaves a line of the ping output stuck in
+the switch list.
+
+**Not reproducible here.** Six variations were tried - reachable and unreachable host, 60x12 / 84x16 /
+200x50, cancelling at 1.2 s and 2.6 s, closing with `ESC` and with `q` - and every screen came back
+clean. Ruled out by reading the code as well: ping's output goes to a pty
+(`stdout=slave, stderr=slave`) and never to the real terminal, so a stray line cannot be the ping
+writing past us.
+
+**What the evidence points at instead.** `tmux capture-pane` shows what *curses believes* the screen
+is, so an artifact that survives there would be a drawing bug - and none did. An artifact only the user
+sees is the terminal and curses disagreeing, which is what happens when an update is dropped or mangled
+on a laggy link: curses sends only the *difference*, so it never rewrites a cell it thinks is already
+correct. `Ctrl-L` is the standing cure, which fits "stuck".
+
+**The asymmetry that makes this specific to popups.** Coming back from an ssh session force-clears
+(`resume_curses` -> `sync_size` -> `scr.clear()`). Closing a full-screen view (ping / details / help)
+did not - it left the next frame to the diff. So the one path with no full repaint is exactly the one
+the user reported. `show_text` now ends with `scr.clear()`, doing automatically what `Ctrl-L` does by
+hand. One repaint when a popup closes; nothing else changes.
+
+**Confirmed by the user (2026-10-05):** `Ctrl-L` does clear it, on **macOS**. And the **RHEL** build -
+older, still has `batch ping` - does **not** show the bug at all. So the mechanism is settled: the
+terminal and curses disagree, and forcing the repaint is the cure. `show_text` now makes exactly the
+call `Ctrl-L` makes, at the moment the problem happens.
+
+**The one thing this does NOT prove.** The RHEL build differs from the current one in *two* ways at
+once - older code **and** a different platform - so "RHEL is fine" does not clear the newer code. What
+tips it towards the platform: almost nothing changed in the popup drawing path between those versions
+(the mouse wheel branch went, that is all), while the curses libraries differ by five years -
+macOS here is **ncurses 6.0 (20150808)**, RHEL 9 ships a newer 6.x.
+The test that would disentangle it is free: when RHEL is finally updated, watch whether the line ever
+appears there. If it does, the cause is in our code after all and the repaint is only hiding it.
+
+**Stakes, so nobody over-invests later:** R2 - RHEL is the target, macOS is the test bench. This bug
+lives only on the bench. The fix is one call and makes popup-close consistent with ssh-return, which
+already cleared, so it is worth having either way.
+
+`VERSION` 1.6.1-tmux.
+
+## D38: Cut-down review - dead code and doubled logic out (user, 2026-10-07)
+The user asked whether lines could go without losing a feature, a security fix or anything still
+needed, and approved every item per category. `truffle` 3,536 -> 3,469 lines (about 2.5% of the
+code), tests -18 lines. The comments were left alone on purpose (they carry the D-numbers and the
+"why"); only comments that were wrong were fixed. Each cut was first applied alone to a fresh copy
+and run against the whole suite.
+
+### Dead code (removing it changes nothing)
+- the `coding: utf-8` line (Python 3 reads source as UTF-8); `App.headers` / `App.delimiter`, only
+  ever read by the CSV export that D35 removed; `except InterruptedError` in `_write_all`, which
+  Python has not raised since 3.5 (PEP 475 retries `os.write` itself - checked with a signal);
+  `tmux_run`'s `**kw`, which no caller passed; the "is now newer than the stamp" test in
+  `note_auth_failure`, always true unless the clock runs backwards; a second `select-layout tiled`
+  right after the loop that already tiles.
+- *Researcher:* `bracketed_paste(False)` at the end of `run()` is gone. D29 put it there **and** in a
+  `finally` around `curses.wrapper`; the `finally` already covers every way out, including the normal one.
+
+### Doubled logic, now in one place
+- `App.sessions` was a copy of `App.my_sessions`, pruned in the same two places. Only `my_sessions` is left.
+- `run_session` re-implemented `clean_output()` to find the last line (equal on 200,000 random outputs).
+- `filter_devices` built the same `exact_term(...)` call three times; the known-field and excluded-word
+  branches did the same thing and are merged, branch order unchanged.
+- the login dialog had four copies of `if field == 0: user ... else: pw ...`; it edits `entry[field]` now.
+- `main()` hardened the process and set the locale twice (pane and normal path); once now, after `--check`.
+- smaller: `show_help`'s two single-use inner helpers, the batch dedup loop (`dict.fromkeys`), the
+  `kept` counter in `read_paste` (always `len(out)`), `BatchPing.done` (always the sum of `counts`),
+  `ping_verdict`'s two-step "down" test, and `connect()` building the host-key reason by hand although
+  `ssh_failure_reason()` returns exactly that string.
+- *Warden:* `Handover.close` uses `shutil.rmtree` on its private 0700 directory instead of removing
+  the socket and the directory one by one. Only our uid can write there, so the two are the same.
+  The D29 paste drain and the paste reset in the login dialog are untouched.
+
+### One behaviour change (*Critic*, accepted)
+`execute()` checked the marks twice, for ping before "is a row selected?" and for ssh after it. So:
+mark two switches, type a search that matches nothing, press Enter on ssh -> "No switch selected",
+while ping in the same state worked. Both now use one check before the selected row is looked at,
+which is what D26 meant ("the selected row only has to be usable when it is the one being connected
+to"). *Tester:* new end-to-end test, checked to FAIL on the old code.
+
+### A security line that did nothing (*Warden*)
+`pane_main` set `password = None` after the login, but the same password stayed in `login` (the parsed
+reply) and `answer` (the raw one). A pane waiting at "Press any key to close this pane" held it the whole
+time. All three are dropped now. Same honest limit as before: Python cannot wipe the bytes.
+
+### Same length, cleaner
+`str()` conversions and a comment left over from the MS column (D36); `refilter()` / `start_batch()` use
+`App.results()` and `draw()` uses `known_field()` instead of repeating them; stale comments (the "ping
+rate" setting, the footer sketch, the `*-l1*` docstring form D34 found misleading); `default_user()`'s
+`$USER` fallback, which `getpass.getuser()` had already tried.
+
+### Looked at and kept
+macOS paths (R2), the 4-or-5-field status lines (D29), the latin-1 CSV fallback (cp1252 cannot decode
+five byte values - checked), the paste reset in the login dialog (else a pasted password outlives a
+forgotten one), `attach_session`'s existence check (D24), `device_key()` (the seam between identity and
+display name - D30 was an identity bug), the attribute list in `__init__`.
+
+### Tests, tool, docs
+Duplicated helpers and one duplicated session test merged, `contextlib.redirect_stdout` instead of
+swapping stdout by hand, stale test names and docstrings fixed; `make-bundle.py` hashes once. README:
+four lines that described removed things (mouse, ping rate, ignored old options, a garbled sentence)
+now match the code. `VERSION` 1.6.2-tmux. 119 tests.
+
+## D39: Search split only at the separators (user, 2026-10-09)
+Reported from the real 843-switch inventory: searching `w4` returned both `xx-xx-sxx-w4` and
+`wx-x4-sxx-xx`. The old fzf-style matching let a word scatter anywhere, so the `w` at position 0 and
+the `4` inside the segment `x4` counted as a hit - scoring 7 against 1034 for the real one, yet still shown.
+- **New rule (user's choice):** a word written together is found anywhere in a column; otherwise it may be
+  split **only at the separators** `-` `.` `_` `/` `:` `@` and space. Inside a segment the letters must be
+  contiguous. `anchored_positions()` covers the word with chunks: the first may sit anywhere inside a
+  segment, every later one must start at the beginning of a later segment.
+- Keeps what people liked: `bc01` -> `ber-core-01`, `ab12` -> `ab-12-s34-w4`, `12s`, `ab-s34`.
+  Drops what was too loose: `w4` on `wx-x4-sxx-xx`, `a4` on `ab-12-s34-w4`, `cr01` on `ber-core-01`.
+- **No fallback** when nothing matches (user's choice): an empty list is honest, a silent loosening is not.
+- Separators typed in the word are stripped first, so `ab-s34` behaves like `ab` + `s34` across segments.
+- **Speed:** the segments are computed once per switch at load (`Device.lsegments`), plus an early-out when
+  a letter is missing from the cell outright. 843 switches filter in 1-4 ms per keystroke, faster than the
+  old scattered matching (~10 ms once the naive version recomputed segments per keystroke).
+
+## D40: tmux panes go live, plus review round 9 (user, 2026-10-09)
+**The several-switches-at-once feature (D23) is no longer experimental.** The user tried it, and it
+goes live. `VERSION` drops the `-tmux` suffix that marked the experimental branch: **1.7.0**, a minor
+release because the search rule changed (D39) since 1.6.2-tmux. The README, `TMUX-SECURITY.md` and
+the idea notes no longer call it experimental or unmerged. *Warden:* `TMUX-SECURITY.md` still says
+honestly that the ~80 handover lines have had one reviewer - going live does not make that review
+happen - and that `tmux = no` turns the handover off.
+
+The entry about the search rule was first numbered D25, a number already taken by the standing
+rules; it is D39 now.
+
+### Review round 9 (cut-down, approved by the user)
+- The search stripped the separators from a word twice and ran its "a letter is missing" early-out
+  outside `fuzzy_match`, which then searched the cell again. One place now, with a `str.translate`
+  table: same results and underlines, same speed (0.91 vs 0.96 ms per keystroke on 843 switches).
+- `check_sessions()` repeated the alive-and-prune lines of `live_sessions()`; it calls it now.
+- With `tmux = no` and 2+ marks, ssh said "ssh takes the selected one" and connected to nothing.
+  The message now says what is true: ESC (empty search) clears the marks to ssh to one switch.
+  *Operator:* fixing the text, not the behaviour - silently ignoring marks would surprise more.
+- `check()` named a local `clean`, shadowing the module's `clean()`; renamed.
+- `TestSearchSort` built devices by hand, a copy of `build_devices()` the search change already had to
+  patch once; it uses `build_devices()` now.
+- Docs: "batch ping" (gone since D35) in the README tips; the separators listed as `- . _` in the README
+  and help screen, while the code also splits at `/ : @`.
+- Still open, offered: `TMUX-SECURITY.md` says the caller may be the pane process "or its parent" (the
+  code accepts a direct *child*), promises the socket folder is always in RAM under `/run/user/<uid>`
+  (without `XDG_RUNTIME_DIR` it falls back to `/tmp`), and counts 14 tests; the idea notes still mention
+  right-click marking and `Ctrl-b l`.

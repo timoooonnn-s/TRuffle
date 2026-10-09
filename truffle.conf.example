@@ -48,9 +48,7 @@
 # Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle
 #state_dir =
 
-# Batch ping: at most ping_rate pings are started per second (quiet on purpose:
-# 700 switches take about 35 s), and seconds to wait for each reply.
-#ping_rate = 20
+# Seconds to wait for a ping reply.
 #ping_timeout = 1
 
 # Forget the stored password this many minutes after you TYPED it (not after your last
@@ -64,9 +62,6 @@
 # Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
 # and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
 #tmux = yes
-
-# Where Ctrl-E writes the exported list.
-#export_dir = ~
 
 
 # Screen symbols: auto (Unicode on UTF-8 terminals), unicode, or ascii

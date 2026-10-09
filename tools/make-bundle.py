@@ -212,17 +212,17 @@ def main():
     raw = buf.getvalue()
     payload = base64.b64encode(raw).decode("ascii")
     ver = version()
+    digest = hashlib.sha256(raw).hexdigest()
     name = "truffle-bundle-%s.py" % ver
     text = EXTRACTOR % {
         "version": ver,
         "name": name,
         "created": time.strftime("%Y-%m-%d %H:%M"),
-        "sha256": hashlib.sha256(raw).hexdigest(),
+        "sha256": digest,
         "payload": "\n".join(payload[i:i + 76] for i in range(0, len(payload), 76)),
     }
     os.makedirs(os.path.join(ROOT, "dist"), exist_ok=True)
     out = os.path.join(ROOT, "dist", name)
-    digest = hashlib.sha256(raw).hexdigest()
     old = existing_sha(out)
     if old == digest:
         print("%s is already up to date (same contents)." % os.path.relpath(out, ROOT))

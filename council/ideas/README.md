@@ -7,7 +7,7 @@ Every idea is measured against the standing rules in [COUNCIL.md](../COUNCIL.md#
 
 | Idea | Status | Details |
 |---|---|---|
-| **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **built on the `tmux-version` branch**, experimental, not merged - the user is trying it out | [tmux-panes.md](tmux-panes.md) |
+| **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **BUILT and live** (D40, 2026-10-09) | [tmux-panes.md](tmux-panes.md) |
 | **Serial multi-connect** (mark N switches, connect one after another, no tmux) | **under discussion with the user** (2026-10-04) | [serial-connect.md](serial-connect.md) |
 | ~~Bracketed paste~~ | **BUILT** (D28) | was [bracketed-paste.md](bracketed-paste.md); PuTTY support still to confirm with Ruffy |
 | Quick connect from the shell: `truffle bc01` | idea | fuzzy-find and connect directly (one match) or open with that search (several) |

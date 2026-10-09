@@ -138,17 +138,14 @@ class SessionTest(unittest.TestCase):
         self.assertFalse(result.prompt_missed)                 # dead host: no prompt could appear
 
     def test_manual_login_logout_is_not_a_failure(self):
-        """Prompt missed, user types the password by hand, switch exits 255 on logout."""
+        """No stored password (or the prompt was missed): the user types it by hand, and
+        the switch exits 255 on logout."""
         r, _ = self.session("10.99.0.1", None, [("password: ", "secret\r"), ("FAKE-SW:1>", "exit\r")],
                             one_try=False)
+        self.assertFalse(r.password_sent)
         self.assertTrue(r.user_typed)
         self.assertEqual(r.exit_code, 255)
         self.assertFalse(r.failed)                         # a normal logout, not an error
-
-    def test_without_stored_password_user_types_it(self):
-        r, _ = self.session("10.99.0.1", None, [("password: ", "secret\r"), ("FAKE-SW:1>", "exit\r")], one_try=False)
-        self.assertFalse(r.password_sent)
-        self.assertFalse(r.failed)
 
     def test_manual_wrong_password_is_a_failure(self):
         r, _ = self.session("10.99.0.1", None, [("password: ", "nope\r")])

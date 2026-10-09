@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 TRuffle: Switch Manager
 
@@ -16,6 +15,7 @@ import csv
 import curses
 import errno
 import fcntl
+import fnmatch
 import functools
 import getpass
 import io
@@ -42,24 +42,21 @@ import time
 import tty
 import warnings
 
-VERSION = "1.3.1-tmux"     # experimental tmux branch; bump before building a bundle
+VERSION = "1.7.0"          # bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
 CONFIG_NAME = "truffle.conf"
 CONFIG_SECTION = "truffle"
-COMMANDS = ["ssh", "ping", "batch ping", "details", "help", "exit"]
+COMMANDS = ["ssh", "ping", "details", "help", "exit"]
 
 # Status words are stored, shown and searched as they are (ping:down, ssh:failed).
 PING_UP, PING_DOWN, WAIT = "up", "down", "wait"
 SSH_OK, SSH_FAILED = "ok", "failed"     # outcome of your last real ssh attempt (no probing)
-# The columns after the CSV columns: (label, width, kind, numeric).
-#   ping -> up / down / wait      rtt -> round-trip time in ms      ssh -> ok / failed
-# A numeric column shows the plain number and sorts worst (slowest) first, like the
-# state columns sort problems first.
-STATUS_COLUMNS = [("Ping", 6, "ping", False), ("ms", 6, "rtt", True), ("SSH", 8, "ssh", False)]
-STATUS_KINDS = [kind for _, _, kind, _ in STATUS_COLUMNS]
-STATE_KINDS = [kind for _, _, kind, numeric in STATUS_COLUMNS if not numeric]   # saved as words
+# The columns after the CSV columns: (label, width, kind).  Both hold a word, both sort
+# problems first.  "* down", "* failed".
+STATUS_COLUMNS = [("Ping", 6, "ping"), ("SSH", 8, "ssh")]
+STATUS_KINDS = [kind for _, _, kind in STATUS_COLUMNS]
 CHECKED_STATES = (PING_UP, PING_DOWN, SSH_OK, SSH_FAILED)          # results worth keeping
 STATUS_RANK = {PING_DOWN: 0, SSH_FAILED: 0, PING_UP: 2, SSH_OK: 2, WAIT: 3}
 STATUS_STYLE = {PING_UP: "up", SSH_OK: "up", PING_DOWN: "down", SSH_FAILED: "down", WAIT: "wait"}
@@ -93,8 +90,10 @@ PASTE = {"text": ""}                  # the last pasted block, read by read_key'
 MAX_PASTE = 512
 HUGE_PASTE = 1 << 20                  # hard stop: a terminal that never sends the end marker
 
-# "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"  (ping runs with LC_ALL=C)
-RTT_RE = re.compile(r"\btime[=<]\s*([0-9]+(?:\.[0-9]+)?)\s*ms", re.IGNORECASE)
+# "64 bytes from 10.0.0.1: icmp_seq=1 ttl=63 time=1.23 ms"  (ping runs with LC_ALL=C).
+# The "time=" is what proves a real echo reply: a router's "Destination Net Unreachable"
+# also prints a "bytes from" line and on macOS even exits 0.  See ping_verdict.
+REPLY_RE = re.compile(r"\btime[=<]\s*[0-9]", re.IGNORECASE)
 
 # fork() while batch-ping threads run raises a DeprecationWarning on Python 3.12+.
 # The child execs immediately, so it is safe; the warning would only garble the screen.
@@ -115,12 +114,10 @@ DEFAULTS = {
     "session_log": "no",
     "log_dir": "~/.local/state/truffle/logs",
     "state_dir": "",
-    "ping_rate": "20",
     "ping_timeout": "1",
     "password_lifetime": str(PASSWORD_LIFETIME_MINUTES),
     "charset": "auto",
     "tmux": "yes",
-    "export_dir": "~",
 }
 
 class ConfigError(Exception):
@@ -173,9 +170,9 @@ def valid_user(user):
 
 def default_user():
     try:
-        return getpass.getuser()
+        return getpass.getuser()          # already looks at $LOGNAME, $USER, ... first
     except Exception:
-        return os.environ.get("USER", "")
+        return ""
 
 
 def user_config_path():
@@ -235,7 +232,6 @@ def load_config(args):
     cfg.log_dir = os.path.abspath(os.path.expanduser(raw["log_dir"]))
     state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
     cfg.state_dir = os.path.abspath(os.path.expanduser(raw["state_dir"] or os.path.join(state_home, "truffle")))
-    cfg.ping_rate = parse_int(raw["ping_rate"], "ping_rate", 1, 100)
     cfg.ping_timeout = parse_int(raw["ping_timeout"], "ping_timeout", 1, 30)
     cfg.password_lifetime = parse_int(raw["password_lifetime"], "password_lifetime", 0, 1440)
     charset = "ascii" if args.ascii else (raw["charset"] or "auto").lower()
@@ -245,7 +241,6 @@ def load_config(args):
     cfg.tmux = parse_bool(raw["tmux"], "tmux")
     cfg.debug = args.debug
     cfg.config_file = args.config
-    cfg.export_dir = os.path.abspath(os.path.expanduser(raw["export_dir"] or "~"))
     return cfg
 
 
@@ -330,7 +325,7 @@ def read_table(path, report=None):
 
 
 class Device(object):
-    __slots__ = ("values", "host", "name", "cells", "lcells", "search")
+    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search")
 
 
 def find_header(headers, wanted):
@@ -375,8 +370,16 @@ def build_devices(headers, rows, cfg):
         name_h = headers[0]
         warns.append("no 'Name' column: using '%s' as the switch name"
                      " - set it with  columns = <header>:Name" % name_h)
-    if not columns:
-        columns = [(name_h, name_h), (host_h, host_h)]
+    # Fewer than two columns resolved means the configured `columns` line is for a
+    # different list, and the table would show one near-useless column - which is exactly
+    # what happened with an Infoblox export, where only "subnet" matched and the table
+    # showed nothing but network addresses.  Show the name and the address instead.
+    if len(columns) < 2:
+        if columns:
+            warns.append("only %d of the configured columns exist in this list, so the table "
+                         "falls back to the switch name and its address - set 'columns' to "
+                         "match your list" % len(columns))
+        columns = [(name_h, "Name"), (host_h, "IP")]
     picked = {"name": name_h, "host": host_h}
 
     devices = []
@@ -387,6 +390,7 @@ def build_devices(headers, rows, cfg):
         d.name = row.get(name_h, "") or d.host
         d.cells = [row.get(h, "") for h, _ in columns]
         d.lcells = [c.lower() for c in d.cells]
+        d.lsegments = [segments_of(c) for c in d.lcells]   # once per switch, not per keystroke
         d.search = "\x00".join(d.lcells)          # \x00: a word never matches across two columns
         devices.append(d)
     return devices, columns, warns, picked
@@ -395,11 +399,27 @@ def build_devices(headers, rows, cfg):
 IPV4_LIKE = re.compile(r"^[0-9.]+$")
 
 
-def data_issues(devices, lines, issues=()):
+def name_hint(devices, name_header):
+    """Which other column could be the hostname?  Guessing wrong once cost a round trip,
+    so the warning names the candidates: filled in, not an address, not a date."""
+    for d in devices[:20]:
+        found = [h for h, v in d.values.items()
+                 if v and h != name_header and " " not in v and not IPV4_LIKE.match(v)]
+        if found:
+            return (" Columns that do have a value here: %s. Point 'Name' at the right one:"
+                    "  columns = %s:Name" % (", ".join(found[:4]), found[0]))
+    return " Point 'Name' at the column that holds the hostname:  columns = <header>:Name"
+
+
+def data_issues(devices, lines, issues=(), name_header=None):
     """Plausibility checks for the switch list -> warnings with CSV line numbers."""
     out = list(issues)
-    names, hosts = {}, {}
+    names, hosts, nameless = {}, {}, []
     for d, line in zip(devices, lines):
+        # An empty name column shows an empty NAME cell while the switch itself falls back
+        # to its IP, so the row looks half-broken without anything saying why.
+        if name_header and not d.values.get(name_header, ""):
+            nameless.append(line)
         if not d.host:
             out.append("line %d: '%s' has no IP" % (line, d.name))
         elif not valid_host(d.host):
@@ -414,6 +434,12 @@ def data_issues(devices, lines, issues=()):
         names.setdefault(d.name.lower(), []).append(line)
         if d.host:
             hosts.setdefault(d.host, []).append("%s (line %d)" % (d.name, line))
+    if nameless:
+        out.append("%d row(s) have nothing in the name column '%s' (line%s %s%s) - their NAME "
+                   "column stays empty and they fall back to the IP.%s"
+                   % (len(nameless), name_header, "" if len(nameless) == 1 else "s",
+                      ", ".join(str(n) for n in nameless[:8]), ", ..." if len(nameless) > 8 else "",
+                      name_hint(devices, name_header)))
     for name, where in names.items():
         if len(where) > 1:
             out.append("name '%s' appears %d times: lines %s" % (name, len(where), ", ".join(map(str, where))))
@@ -423,91 +449,97 @@ def data_issues(devices, lines, issues=()):
     return out
 
 
-def free_path(path, limit=100):
-    """path, or path with -2, -3 ... in front of the extension when it exists already,
-    so two exports in the same second do not fail on each other."""
-    base, ext = os.path.splitext(path)
-    for n in range(1, limit):
-        candidate = path if n == 1 else "%s-%d%s" % (base, n, ext)
-        if not os.path.exists(candidate):
-            return candidate
-    raise OSError(errno.EEXIST, "too many files named like %s" % os.path.basename(path))
-
-
-def export_csv(path, devices, headers, delimiter, status, checked, detail=None):
-    """Write devices (all CSV columns + ping/SSH result, time, round-trip time and the
-    reason a ssh attempt failed) to a new file, mode 0600, never over an existing one.
-    Returns the path actually written."""
-    detail = detail or {}
-
-    def when(kind, host):
-        stamp = checked.get((kind, host))
-        return time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else ""
-    path = free_path(path)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8-sig", newline="") as f:     # BOM: Excel opens it right
-        writer = csv.writer(f, delimiter=delimiter)
-        writer.writerow(list(headers) + ["Ping", "Ping ms", "Ping checked",
-                                         "SSH last try", "SSH reason", "SSH tried"])
-        for d in devices:
-            writer.writerow([d.values.get(h, "") for h in headers] + [
-                status["ping"].get(d.host, ""), detail.get(("ping", d.host), ""), when("ping", d.host),
-                status["ssh"].get(d.host, ""), detail.get(("ssh", d.host), ""), when("ssh", d.host)])
-    return path
-
-
 def device_key(d):
     """Identity used for favourites and history: the name, or the host without one."""
     return d.name or d.host
 
 
 BOUNDARY = " -_./:@"
+NO_BOUNDARY = str.maketrans("", "", BOUNDARY)
 
 
-def fuzzy_match(pattern, text):
-    """fzf-like match of pattern (lower case) in text (lower case): the letters must
-    appear in this order.  Returns (score, positions) or None.  A plain substring
-    always beats a scattered match; word starts and adjacent letters score higher."""
-    i = text.find(pattern)
-    if i >= 0:
-        bonus = 30 if i == 0 or text[i - 1] in BOUNDARY else 0
-        return 1000 + 2 * len(pattern) + bonus, tuple(range(i, i + len(pattern)))
-    pi = 0                                       # forward: the earliest end of a match ...
-    for end, ch in enumerate(text):
-        if ch == pattern[pi]:
-            pi += 1
-            if pi == len(pattern):
-                break
-    else:
+def segments_of(text):
+    """The text cut at the separators, as (offset, part) - 'ab-12-s34' becomes
+    (0,'ab') (3,'12') (6,'s34').  A search word may only jump between these."""
+    parts, start = [], 0
+    for i, ch in enumerate(text):
+        if ch in BOUNDARY:
+            if i > start:
+                parts.append((start, text[start:i]))
+            start = i + 1
+    if len(text) > start:
+        parts.append((start, text[start:]))
+    return parts
+
+
+def anchored_positions(pattern, segments):
+    """Cover the pattern with chunks of the text: the first chunk may sit anywhere
+    inside a segment, every later chunk must start AT THE BEGINNING of a later one.
+
+    That is the whole rule.  Searching w4 finds xx-xx-sxx-w4, where 'w4' sits together,
+    but not wx-x4-sxx-xx, where the 4 is buried inside the segment 'x4' - while bc01
+    still finds ber-core-01, because b, c and 01 each start a segment.
+    Returns the matched positions, or None."""
+    failed = set()
+
+    def cover(pi, si, first):
+        if pi == len(pattern):
+            return []
+        if (pi, si, first) in failed:
+            return None
+        for s in range(si, len(segments)):
+            offset, part = segments[s]
+            for o in (range(len(part)) if first else (0,)):
+                longest = min(len(part) - o, len(pattern) - pi)
+                for length in range(longest, 0, -1):     # longest chunk first: tighter match
+                    if part[o:o + length] == pattern[pi:pi + length]:
+                        rest = cover(pi + length, s + 1, False)
+                        if rest is not None:
+                            return list(range(offset + o, offset + o + length)) + rest
+        failed.add((pi, si, first))
         return None
-    pi = len(pattern) - 1                        # ... backward: the tightest start for it
-    for start in range(end, -1, -1):
-        if text[start] == pattern[pi]:
-            pi -= 1
-            if pi < 0:
-                break
-    positions, pi = [], 0
-    for ti in range(start, end + 1):
-        if pi < len(pattern) and text[ti] == pattern[pi]:
-            positions.append(ti)
-            pi += 1
-    score, prev = 0, None
+
+    return cover(0, 0, True)
+
+
+def score_positions(text, positions):
+    """How good a match is: a letter at the start of a segment counts, and so does
+    every letter that follows directly on the one before."""
+    score, previous = 0, None
     for pos in positions:
         score += 1
         if pos == 0 or text[pos - 1] in BOUNDARY:
             score += 8
-        if prev is not None:
-            score += 5 if pos == prev + 1 else -min(3, pos - prev - 1)
-        prev = pos
-    return score, tuple(positions)
+        if previous is not None:
+            score += 5 if pos == previous + 1 else -min(3, pos - previous - 1)
+        previous = pos
+    return score
+
+
+def fuzzy_match(pattern, text, segments=None):
+    """Match pattern (lower case) in text (lower case).  A word written together is
+    found anywhere; otherwise it may only be split at the separators - see
+    anchored_positions.  segments is segments_of(text), passed in on the hot path
+    because it never changes.  Returns (score, positions) or None."""
+    i = text.find(pattern)
+    if i >= 0:                                   # written together: always the best match
+        bonus = 30 if i == 0 or text[i - 1] in BOUNDARY else 0
+        return 1000 + 2 * len(pattern) + bonus, tuple(range(i, i + len(pattern)))
+    squeezed = pattern.translate(NO_BOUNDARY)
+    if not squeezed or not set(squeezed) <= set(text):
+        return None                              # nothing to search for, or a letter is missing
+    positions = anchored_positions(squeezed, segments_of(text) if segments is None else segments)
+    if positions is None:
+        return None
+    return score_positions(text, positions), tuple(positions)
 
 
 def fuzzy_term(word):
-    """Test for one fuzzy word: the best-matching visible column wins."""
+    """Test for one search word: the best-matching visible column wins."""
     def test(d):
         best = None
         for i, cell in enumerate(d.lcells):
-            m = fuzzy_match(word, cell)
+            m = fuzzy_match(word, cell, d.lsegments[i])
             if m and (best is None or m[0] > best[0]):
                 best = (m[0], i, m[1])
         return best
@@ -522,63 +554,136 @@ def status_term(states, value):
     return lambda d: d.host in states and states[d.host].startswith(value)
 
 
-def exact_term(token, fields, status, favorites, recent):
+WILDCARD = "*?"
+
+
+def has_wildcard(text):
+    return any(c in text for c in WILDCARD)
+
+
+def glob_match(value, pattern):
+    """Does one cell match a shell-style pattern?
+
+    The pattern has to match the WHOLE value, which is what makes it precise: *-l1 finds
+    ab-12-s34-l1 and not ab-12-s34-l11, which neither fuzzy nor substring matching can
+    tell apart.  Because names are usually FQDNs, the part before the first dot is tried
+    too, so *-l1 works on ab-12-s34-l1.example.net without writing *-l1.* every time.
+    Addresses are not split that way, so 19? cannot match 192.0.2.98 through its "192"."""
+    if fnmatch.fnmatchcase(value, pattern):
+        return True
+    head = value.split(".", 1)[0]
+    return head != value and not IPV4_LIKE.match(value) and fnmatch.fnmatchcase(head, pattern)
+
+
+def glob_term(pattern):
+    """A word containing * or ? is a pattern over one whole visible column."""
+    def test(d):
+        return any(glob_match(cell, pattern) for cell in d.lcells)
+    return test
+
+
+def exact_term(token, fields, status, favorites, recent, marked=()):
     """Every non-fuzzy term -> test function returning True / False."""
     name, sep, value = token.partition(":")
     if sep:
-        if token == "is:fav":
-            return lambda d: device_key(d) in favorites
-        if token == "is:recent":
-            return lambda d: device_key(d) in recent
+        if name == "is":
+            if value == "fav":
+                return lambda d: device_key(d) in favorites
+            if value == "recent":
+                return lambda d: device_key(d) in recent
+            if value == "marked":
+                return lambda d: device_key(d) in marked
         if name in ("ping", "ssh"):
             return status_term(status.get(name, {}), value)
         header = fields.get(name)
         if header is not None:
             if not value:
                 return lambda d: not d.values.get(header)
+            if has_wildcard(value):      # name:*-l1 is a pattern over that column
+                return lambda d: glob_match(d.values.get(header, "").lower(), value)
             return lambda d: value in d.values.get(header, "").lower()
     # plain text - also unknown "x:y" such as IPv6 addresses
     return lambda d: token in d.search
 
 
-def filter_devices(devices, query, fields=None, status=None, favorites=(), recent=None, found=None):
-    """Space separated terms, all must match, case-insensitive:
-         word          fuzzy: the letters in this order in a visible column (bc01 -> ber-core-01)
+def known_field(text, fields):
+    """True when text starts with a field: prefix TRuffle knows about."""
+    name, sep, _ = text.partition(":")
+    return bool(sep) and (name in ("is", "ping", "ssh") or name in (fields or {}))
+
+
+def alternatives(token, fields):
+    """Split one term on '|' into its alternatives.  An alternative with no field: prefix
+    of its own inherits the first one's, so ping:up|wait means "up or wait" rather than
+    "ping:up, or the word wait somewhere"."""
+    parts = [p for p in token.split("|") if p]
+    if not parts:
+        return []
+    prefix = ""
+    if known_field(parts[0], fields):
+        prefix = parts[0].partition(":")[0] + ":"
+    return [parts[0]] + [p if known_field(p, fields) else prefix + p for p in parts[1:]]
+
+
+def filter_devices(devices, query, fields=None, status=None, favorites=(), recent=None, found=None,
+                   marked=()):
+    """Space separated terms, ALL of which must match (case-insensitive):
+         word          a word written together, found anywhere in a visible column; it may be
+                       split only AT THE SEPARATORS (bc01 -> ber-core-01, but w4 does not
+                       find wx-x4-sxx-xx, where the 4 is buried inside a segment)
          'word         exact: part of a visible column
-         field:value   part of that CSV column (header or table label), field: = empty
+         *-l1  ??-??-s??-w3     pattern: * and ? over one WHOLE visible column
+         field:value   part of that CSV column (header or table label), field: = empty,
+                       and a pattern when it contains * or ?
          ping:down     ping state: up, down, wait, none     ssh:failed  last ssh try: ok, failed, none
-         is:fav        favourites         is:recent   switches you connected to
-         -term         excludes (exact), e.g. -test  -type:edge  -ping:up
+         is:fav        favourites    is:recent  connected to    is:marked  picked with Tab
+         -term         excludes, e.g. -test  -type:edge  -ping:up  -*-w4
+         a|b           ONE term, either alternative: w3|w4, ping:up|wait, *-w3|*-w4
+    Space stays AND on purpose - it is what makes narrowing a 843-switch list work - so OR
+    is written inside a term with '|'.
     If found is a dict, it receives device -> (score, {column: positions}) for fuzzy words."""
+    fields, status, recent = fields or {}, status or {}, recent or {}
     tests = []
     for token in query.lower().split():
-        if token in ("'", "-", "-'"):                # just started typing a term: no filter yet
+        if token.strip("'-|") == "":                 # just started typing a term: no filter yet
             continue
         negate = len(token) > 1 and token.startswith("-")
         if negate:
             token = token[1:]
-        name, sep, _ = token.partition(":")
-        plain = not sep or (name not in ("is", "ping", "ssh") and name not in (fields or {}))
-        if plain and not negate and not token.startswith("'"):
-            tests.append((False, True, fuzzy_term(token)))
-        else:
-            if token.startswith("'") and len(token) > 1:
-                token = token[1:]
-            tests.append((negate, False, exact_term(token, fields or {}, status or {}, favorites, recent or {})))
+        alts = []
+        for alt in alternatives(token, fields):
+            if alt.startswith("'") and len(alt) > 1:
+                alts.append((False, exact_term(alt[1:], fields, status, favorites, recent, marked)))
+            elif known_field(alt, fields) or (negate and not has_wildcard(alt)):
+                # an excluded word stays exact: a fuzzy exclude hides far too much (D16)
+                alts.append((False, exact_term(alt, fields, status, favorites, recent, marked)))
+            elif has_wildcard(alt):
+                alts.append((False, glob_term(alt)))
+            else:
+                alts.append((True, fuzzy_term(alt)))
+        if alts:
+            tests.append((negate, alts))
     if not tests:
         return list(devices)
     out = []
     for d in devices:
         score, marks = 0, {}
-        for negate, fuzzy, test in tests:
-            result = test(d)
-            if fuzzy:
-                if result is None:
-                    break
-                score += result[0]
-                marks.setdefault(result[1], set()).update(result[2])
-            elif bool(result) == negate:
+        for negate, alts in tests:
+            hit, best = False, None
+            for fuzzy, test in alts:
+                result = test(d)
+                if fuzzy:
+                    if result is not None:
+                        hit = True
+                        if best is None or result[0] > best[0]:
+                            best = result       # the best-scoring alternative is highlighted
+                elif result:
+                    hit = True
+            if hit == negate:
                 break
+            if best is not None:
+                score += best[0]
+                marks.setdefault(best[1], set()).update(best[2])
         else:
             out.append(d)
             if found is not None and marks:
@@ -608,17 +713,6 @@ def paste_text(raw, multiline=True):
     if not multiline:
         return lines[0][:MAX_PASTE] if lines else ""
     return " ".join(lines)[:MAX_PASTE]
-
-
-def marked_label(total, shown):
-    """Top bar text for marks.  ssh and batch ping act on the marked switches that are
-    in the current view, so that is the number shown - a mark hidden by the search is
-    named separately instead of being counted in silently."""
-    if total <= 0:
-        return ""
-    if shown >= total:
-        return "%d marked" % total
-    return "%d marked (+%d hidden)" % (shown, total - shown)
 
 
 def set_or_clear(mapping, key, text):
@@ -713,13 +807,12 @@ class UserState(object):
     def load_status(self):
         """Saved ping / SSH results: (states, times, details) where states is
         {"ping": {host: word}, "ssh": {...}}, times is {(kind, host): time} and details
-        is {(kind, host): text} - the round-trip time for a ping, the reason for a
-        failed ssh.
+        is {(kind, host): text} - today only the reason a ssh attempt failed.
 
         A line is `host TAB kind TAB state TAB time` with an optional 5th detail field.
         Both lengths are accepted on purpose: a TRuffle without the detail field keeps
         reading every line that has none, instead of dropping the whole file."""
-        status = dict((kind, {}) for kind in STATE_KINDS)
+        status = dict((kind, {}) for kind in STATUS_KINDS)
         checked, detail = {}, {}
         for line in self._read("status"):
             parts = line.rstrip("\n").split("\t")
@@ -747,9 +840,9 @@ class UserState(object):
                 stamp = checked.get((kind, host), 0)
                 if state in CHECKED_STATES and stamp >= saved_checked.get((kind, host), 0):
                     saved[kind][host], saved_checked[(kind, host)] = state, stamp
-                    set_or_clear(saved_detail, (kind, host), clean(str(detail.get((kind, host), ""))))
+                    set_or_clear(saved_detail, (kind, host), clean(detail.get((kind, host), "")))
         lines = []
-        for kind in STATE_KINDS:
+        for kind in STATUS_KINDS:
             for host, state in sorted(saved[kind].items()):
                 row = [host, kind, state, "%d" % saved_checked.get((kind, host), 0)]
                 text = saved_detail.get((kind, host), "")
@@ -768,12 +861,10 @@ class UserState(object):
     # the same way results are.  TRuffle then wipes the password it holds, instead of
     # spending it on switch after switch (a central TACACS+/RADIUS account would lock).
     def note_auth_failure(self, host):
-        stamp, _ = self.load_auth_failure()
-        if time.time() >= stamp:
-            # Sub-second precision on purpose: a pane can fail within the same second as
-            # the password was entered, and a whole-second stamp would then look older
-            # than the password it belongs to - so the wipe would be skipped.
-            self._write("authfail", ["%.3f\t%s" % (time.time(), host)])
+        # Sub-second precision on purpose: a pane can fail within the same second as
+        # the password was entered, and a whole-second stamp would then look older
+        # than the password it belongs to - so the wipe would be skipped.
+        self._write("authfail", ["%.3f\t%s" % (time.time(), host)])
 
     def load_auth_failure(self):
         """(time, host) of the last login failure reported by a pane, or (0, "")."""
@@ -808,26 +899,19 @@ def next_sort(sort_col, sort_desc, col):
 
 def sort_devices(devices, col, desc, status=()):
     """col indexes the visible columns, then the status columns (status holds one dict
-    per STATUS_COLUMNS entry).  Problems sort first, and for the numeric ms column that
-    means slowest first.  Empty values always go last."""
+    per STATUS_COLUMNS entry; problems sort first).  Empty values always go last."""
     if col is None or not devices:
         return list(devices)
     if col >= len(devices[0].cells):
-        index = col - len(devices[0].cells)
-        states = status[index]
+        states = status[col - len(devices[0].cells)]
 
         def value(d):
             return states.get(d.host, "")
-        if STATUS_COLUMNS[index][3]:               # ms: ascending = slowest first
-            key = lambda d: -(value(d) or 0)
-        else:
-            key = lambda d: STATUS_RANK.get(value(d), 9)
+        key = lambda d: STATUS_RANK.get(value(d), 9)
     else:
         def value(d):
             return d.cells[col]
         key = lambda d: natural_key(value(d))
-    # "" means "no value".  Not falsiness: a round-trip time of 0.0 is a real
-    # measurement and must sort with the others, not with the never-measured hosts.
     filled = [d for d in devices if value(d) != ""]
     empty = [d for d in devices if value(d) == ""]
     return sorted(filled, key=key, reverse=desc) + empty
@@ -857,101 +941,82 @@ def ping_argv(host, count, timeout):
 
 
 def ping_once(host, timeout):
-    """One ping.  Returns (answered, round-trip time in ms or None).
+    """One ping.  True when a real echo reply came back.
 
-    LC_ALL=C because the reply line is parsed: on a German server the translated output
+    LC_ALL=C because the reply line is parsed - on a German server the translated output
     broke the old " bytes from " test and every switch showed "down" (D17)."""
     try:
         proc = subprocess.run(ping_argv(host, 1, timeout), stdin=subprocess.DEVNULL,
                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                               timeout=timeout + 5, env=dict(os.environ, LC_ALL="C"))
     except (OSError, subprocess.SubprocessError):
-        return False, None
-    return proc.returncode == 0, parse_rtt(proc.stdout.decode("utf-8", "replace"))
+        return False
+    return ping_replied(proc.stdout.decode("utf-8", "replace"))
 
 
-def parse_rtt(text):
-    """Round-trip time in ms from ping's output, or None.  One packet is one number:
-    it is not packet loss and not jitter, and the help page says so."""
-    m = RTT_RE.search(text or "")
-    try:
-        return float(m.group(1)) if m else None
-    except (ValueError, AttributeError):
-        return None
+def ping_verdict(replied, done, killed, started=True):
+    """What a ping proved: PING_UP, PING_DOWN, or None for "no verdict, keep what we had".
+
+    A parsed round-trip time is the ONLY proof of "up" - and it is proof whatever the exit
+    code says.  Two things broke here, both of them reported from the field:
+      - ESC makes TRuffle kill the ping, and a killed ping exits non-zero.  Reading that
+        as "down" marked a switch unreachable with its own replies still on the screen.
+      - a router answering "Destination Net Unreachable" prints a "76 bytes from ..." line
+        and on macOS even exits 0, so neither that text nor the exit code means a reply
+        arrived.  Only a real echo reply carries "time=", which is what ping_replied reads.
+    "down" therefore needs a ping that ran to the end on its own and heard nothing.
+    Anything else - cancelled early, or ping could not start - proves nothing."""
+    if replied:
+        return PING_UP
+    if done and started and not killed:
+        return PING_DOWN
+    return None
 
 
-def parse_float(text):
-    try:
-        return float(text)
-    except (TypeError, ValueError):
-        return None
-
-
-def format_rtt(ms):
-    """Short enough for a 6-wide column: 0.84 / 12.4 / 180 / 1204."""
-    if ms is None:
-        return ""
-    if ms < 10:
-        return "%.2f" % ms
-    if ms < 100:
-        return "%.1f" % ms
-    return "%.0f" % ms
+def ping_replied(text):
+    """True when ping's output contains a real echo reply."""
+    return REPLY_RE.search(text or "") is not None
 
 
 class BatchPing(object):
-    """Pings many hosts, quietly: at most cfg.ping_rate pings are started per second."""
+    """Pings the marked switches at once, one thread each.
+
+    There is no rate limiting any more: that existed to keep a 700-switch sweep quiet
+    enough for the monitoring (D20), and ping now only ever covers the handful of switches
+    you marked (D35), so there is nothing left to spread out."""
 
     def __init__(self, hosts, cfg, status, checked):
         self.cfg, self.states, self.checked = cfg, status["ping"], checked
-        self.rtt = status["rtt"]                 # host -> ms of the last reply, updated live
         self.hosts = hosts
-        self.done = 0
         self.counts = {}
-        self.times = []                          # the ms values THIS batch measured
         self.cancelled = self.reported = False
         self.previous = {}                       # results from before, restored on cancel
         self._next = 0
-        self._next_start = time.time()
         self._lock = threading.Lock()
         for host in hosts:
             if self.states.get(host) in CHECKED_STATES:
                 self.previous[host] = self.states[host]
             self.states[host] = WAIT
-        # enough threads to keep the rate while each ping waits up to ping_timeout
-        workers = min(len(hosts), 64, cfg.ping_rate * (cfg.ping_timeout + 1))
-        self.threads = [threading.Thread(target=self._work) for _ in range(workers)]
+        self.threads = [threading.Thread(target=self._work) for _ in range(min(len(hosts), 16))]
         for t in self.threads:
             t.daemon = True
             t.start()
 
     def _work(self):
-        cfg = self.cfg
         while True:
             with self._lock:
                 if self.cancelled or self._next >= len(self.hosts):
                     return
                 host = self.hosts[self._next]
                 self._next += 1
-                start = max(time.time(), self._next_start)      # the rate limit
-                self._next_start = start + 1.0 / cfg.ping_rate
-            while time.time() < start and not self.cancelled:
-                time.sleep(max(0.0, min(0.1, start - time.time())))   # never negative (race)
-            if self.cancelled:
-                with self._lock:
-                    self._restore(host)
-                return
-            answered, ms = ping_once(host, cfg.ping_timeout)
-            result = PING_UP if answered else PING_DOWN
+            result = PING_UP if ping_once(host, self.cfg.ping_timeout) else PING_DOWN
             with self._lock:
+                if self.cancelled:               # do not record a result nobody asked for
+                    self._restore(host)
+                    return
                 self.states[host] = result
                 self.checked[("ping", host)] = time.time()
-                if ms is None:
-                    self.rtt.pop(host, None)         # no reply: no stale time left behind
-                else:
-                    self.rtt[host] = ms
-                    self.times.append(ms)
                 self.counts[result] = self.counts.get(result, 0) + 1
-                self.done += 1
 
     @property
     def running(self):
@@ -959,13 +1024,10 @@ class BatchPing(object):
 
     @property
     def percent(self):
-        return 100 * self.done // max(1, len(self.hosts))
+        return 100 * sum(self.counts.values()) // max(1, len(self.hosts))
 
     def summary(self):
-        text = "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
-        if self.times:
-            text += ", %s-%s ms" % (format_rtt(min(self.times)), format_rtt(max(self.times)))
-        return text
+        return "%d up, %d down" % (self.counts.get(PING_UP, 0), self.counts.get(PING_DOWN, 0))
 
     def _restore(self, host):
         if self.states.get(host) == WAIT:
@@ -990,6 +1052,8 @@ class ProcStream(object):
         self.partial = ""
         self.done = False
         self.returncode = None
+        self.killed = False          # WE stopped it (ESC), so its exit code means nothing
+        self.started = True          # False when the command could not be run at all
         self.proc = None
         self._lock = threading.Lock()
         master = slave = None
@@ -1002,7 +1066,7 @@ class ProcStream(object):
                 if fd is not None:
                     os.close(fd)
             self.lines.append("cannot run %s: %s" % (argv[0], e.strerror or e))
-            self.returncode, self.done = 127, True
+            self.returncode, self.done, self.started = 127, True, False
             return
         os.close(slave)
         self._master = master
@@ -1044,6 +1108,7 @@ class ProcStream(object):
 
     def stop(self):
         if self.proc is not None and self.proc.poll() is None:
+            self.killed = True
             for sig in (signal.SIGTERM, signal.SIGKILL):
                 try:
                     os.killpg(self.proc.pid, sig)
@@ -1122,8 +1187,6 @@ def _write_all(fd, data):
     while data:
         try:
             n = os.write(fd, data)
-        except InterruptedError:
-            continue
         except OSError as e:
             if e.errno == errno.EAGAIN:
                 select.select([], [fd], [], 1.0)
@@ -1295,10 +1358,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
     m = OFFENDING_KEY.search(before_input.replace("\r", ""))
     if m:
         result.known_hosts = m.group(1).strip()
-    lines = [clean(l) for l in ANSI_ESCAPES.sub(b"", captured.encode("utf-8", "replace"))
-             .decode("utf-8", "replace").split("\n")]
-    lines = [l for l in lines if l]
-    result.last_line = lines[-1] if lines else ""
+    result.last_line = clean_output(captured).strip().split("\n")[-1].strip()
     result.pre_login = clean_output(before_input)
     return result
 
@@ -1375,7 +1435,7 @@ def ssh_failure_reason(result):
         return "host key changed - not connected"
     if result.auth_failed:
         return "login refused (wrong password?)"
-    line = clean(result.last_line)
+    line = result.last_line                      # already cleaned by run_session
     m = SSH_FAILURE.search(line)
     if m:
         return "%s (exit %s)" % (line[max(0, m.start() - 40):][:120].strip(), result.exit_code)
@@ -1454,10 +1514,10 @@ SESSION_PREFIX = "truffle-"
 TICKET_LIFETIME = 15                     # seconds: a pane fetches its login immediately
 
 
-def tmux_run(*args, **kw):
+def tmux_run(*args):
     """Run a tmux command.  Returns its stripped output; raises RuntimeError on failure."""
     proc = subprocess.run(["tmux"] + list(args), stdin=subprocess.DEVNULL,
-                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kw.get("timeout", 10))
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10)
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.decode("utf-8", "replace").strip() or "tmux failed")
     return proc.stdout.decode("utf-8", "replace").strip()
@@ -1631,11 +1691,7 @@ class Handover(object):
             self.server.close()
         except OSError:
             pass
-        for path in (self.path, self.dir):
-            try:
-                os.remove(path) if path == self.path else os.rmdir(path)
-            except OSError:
-                pass
+        shutil.rmtree(self.dir, ignore_errors=True)      # the socket and its 0700 directory
 
 
 def handover_request(path, line):
@@ -1678,7 +1734,7 @@ def pane_main(cfg, socket_path, ticket, host, name):
             "Could not get the login from TRuffle (%s)." % e,
             "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
     result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
-    password = None
+    password = login = answer = None          # every copy of the login this pane holds
     failed = result.failed or result.hostkey_changed
     state = SSH_FAILED if failed else SSH_OK
     # The status file is shared and merges by time, so the pane records its own result
@@ -1746,7 +1802,6 @@ def open_panes(cfg, devices, handover):
     except BaseException:
         tmux_try("kill-session", "-t", "=" + session)       # never leave half a session behind
         raise
-    tmux_try("select-layout", "-t", session, "tiled")
     tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
     tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
@@ -1929,7 +1984,7 @@ def read_paste(win, timeout_ms):
     running ssh on whatever switch happened to be selected.  The whole paste is always
     DRAINED, even when it is longer than we keep - stopping early would leave the rest
     of it in the input queue, where the newlines become Enter again."""
-    out, kept, seen = [], 0, 0
+    out, seen = [], 0
     win.timeout(200)                     # the terminal sends a paste in one burst
     try:
         while seen < HUGE_PASTE:         # a terminal that never ends the paste cannot hang us
@@ -1944,9 +1999,8 @@ def read_paste(win, timeout_ms):
                 if read_escape(win, 200) == "PASTE_END":
                     break
                 continue                 # any other sequence inside a paste is dropped
-            if kept < MAX_PASTE * 2:     # keep draining past the cap, just stop collecting
+            if len(out) < MAX_PASTE * 2:     # keep draining past the cap, just stop collecting
                 out.append(c)
-                kept += 1
     finally:
         win.timeout(timeout_ms)
     return "".join(out)
@@ -2180,14 +2234,14 @@ class App(object):
         self.sort_col, self.sort_desc = None, False
         self.ping = {}                 # host -> PING_UP / PING_DOWN / WAIT
         self.ssh = {}                  # host -> SSH_OK / SSH_FAILED: your last real ssh attempt
-        self.rtt = {}                  # host -> ms of the last ping reply
         self.checked = {}              # (kind, host) -> time of that ping / SSH result
-        self.detail = {}               # (kind, host) -> ms for a ping, the reason for a failed ssh
-        self.headers, self.delimiter, self.issues = [], ";", []
+        self.detail = {}               # (kind, host) -> the reason a ssh attempt failed
+        self.issues = []
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
-        self.marked = set()            # device keys picked for a multi-switch ssh (tmux panes)
-        self.my_sessions = []          # tmux sessions this TRuffle started
-        self.sessions = []             # ... the ones still running (checked every few seconds)
+        self.marked = {}               # device key -> True, in the order you marked them.
+                                       # A dict, not a set: the order decides the pane order,
+                                       # and marks survive a new search (see marked_devices)
+        self.my_sessions = []          # tmux sessions this TRuffle started and still running
         self.sessions_foreign = False  # ... and whether those belong to another TRuffle window
         self._sessions_checked = 0.0
         self.batch = None
@@ -2202,17 +2256,13 @@ class App(object):
         self.set_cursor(False)
         saved, self.checked, self.detail = self.state.load_status()      # the last check's results
         self.ping, self.ssh = saved["ping"], saved["ssh"]
-        for host in self.ping:                                  # the saved round-trip times
-            ms = parse_float(self.detail.get(("ping", host)))
-            if ms is not None:
-                self.rtt[host] = ms
         bracketed_paste(True)
         self.load()
         if self.state.error:
             self.message(self.state.error, error=True, seconds=15)
         elif self.checked and not self.load_error and not self.issues:
             last = max(self.checked.values())
-            self.message("Ping / SSH results from the last check (%s) - batch ping refreshes them"
+            self.message("Ping / SSH results from the last check (%s) - ping refreshes them"
                          % time.strftime("%Y-%m-%d %H:%M", time.localtime(last)), seconds=8)
 
     # -- helpers ------------------------------------------------------------
@@ -2236,43 +2286,39 @@ class App(object):
 
     def results(self):
         """The one place that maps a status kind to the dict holding it."""
-        return {"ping": self.ping, "rtt": self.rtt, "ssh": self.ssh}
+        return {"ping": self.ping, "ssh": self.ssh}
 
     def column_results(self):
         """One dict per status column, in STATUS_COLUMNS order (for drawing / sorting)."""
         data = self.results()
         return [data[kind] for kind in STATUS_KINDS]
 
-    def word_results(self):
-        """Only the kinds stored as words - what the status file saves and loads."""
-        data = self.results()
-        return dict((kind, data[kind]) for kind in STATE_KINDS)
-
-    def save_detail(self):
-        """The details to save: ping details are rebuilt from self.rtt, so a host that
-        no longer has a round-trip time (it stopped answering) cannot keep the old one."""
-        detail = dict((key, text) for key, text in self.detail.items() if key[0] != "ping")
-        for host, ms in list(self.rtt.items()):
-            detail[("ping", host)] = format_rtt(ms)
-        return detail
-
     def marked_devices(self):
-        """The marked switches, in the order they appear on screen."""
-        return [d for d in self.view if device_key(d) in self.marked]
+        """Every marked switch, in the order you marked them - deliberately NOT filtered by
+        the current search.  Marking builds a selection up: search, mark a couple, search
+        for something else, mark a couple more, then ssh to all of them.  'is:marked' shows
+        what you have collected so far."""
+        first = {}
+        for d in self.devices:
+            first.setdefault(device_key(d), d)
+        return [first[key] for key in self.marked if key in first]
 
     def toggle_mark(self, dev):
         key = device_key(dev)
-        self.marked.discard(key) if key in self.marked else self.marked.add(key)
+        if key in self.marked:
+            del self.marked[key]
+        else:
+            self.marked[key] = True
 
     def set_status(self, kind, host, state, detail=None):
-        """One result.  detail is the round-trip time for a ping and the reason for a
-        failed ssh; it is saved with the result and shows up in details and the export."""
+        """One result.  detail is the reason a ssh attempt failed; it is saved with the
+        result, so it survives a restart and details can still show it."""
         self.results()[kind][host] = state
         self.checked[(kind, host)] = time.time()
-        set_or_clear(self.detail, (kind, host), str(detail) if detail else "")
+        set_or_clear(self.detail, (kind, host), detail)
 
     def save_status(self):
-        self.state.save_status(self.word_results(), self.checked, self.save_detail())
+        self.state.save_status(self.results(), self.checked, self.detail)
         if self.state.error:
             self.message(self.state.error, error=True, seconds=10)
 
@@ -2293,21 +2339,13 @@ class App(object):
     def reload_status(self):
         """Pick up results another TRuffle - or one of our tmux panes - has written."""
         saved, checked, detail = self.state.load_status()
-        mine_by_kind = self.word_results()
+        mine_by_kind = self.results()
         for kind, states in saved.items():
             mine = mine_by_kind[kind]
             for host, state in states.items():
                 if checked.get((kind, host), 0) >= self.checked.get((kind, host), 0):
                     mine[host], self.checked[(kind, host)] = state, checked[(kind, host)]
-                    text = detail.get((kind, host), "")
-                    set_or_clear(self.detail, (kind, host), text)
-                    if kind == "ping":
-                        # not set_or_clear: 0.0 ms is a real reading, only None clears
-                        ms = parse_float(text)       # a newer result with no ms clears the old one
-                        if ms is None:
-                            self.rtt.pop(host, None)
-                        else:
-                            self.rtt[host] = ms
+                    set_or_clear(self.detail, (kind, host), detail.get((kind, host), ""))
         self.state.load()                   # favourites and the recent list too
         self.check_pane_auth_failure()
         self.status_changed(force=True)
@@ -2317,7 +2355,7 @@ class App(object):
         try:
             report = {}
             headers, rows = read_table(self.cfg.data, report)
-            devices, columns, warns, _ = build_devices(headers, rows, self.cfg)
+            devices, columns, warns, picked = build_devices(headers, rows, self.cfg)
         except DataError as e:
             self.load_error = str(e)
             self.devices = self.loaded = []
@@ -2329,8 +2367,7 @@ class App(object):
             self.loaded = devices          # CSV order, used when sorting is switched off
             self.fields = dict((h.lower(), h) for h in headers)
             self.fields.update((label.lower(), h) for h, label in columns)
-            self.headers, self.delimiter = headers, report["delimiter"]
-            self.issues = data_issues(devices, report["lines"], report["issues"])
+            self.issues = data_issues(devices, report["lines"], report["issues"], picked["name"])
             if warns:
                 self.message("; ".join(warns), error=True, seconds=15)
             elif self.issues:
@@ -2338,7 +2375,7 @@ class App(object):
                              % (len(self.issues), "" if len(self.issues) == 1 else "s"), error=True, seconds=15)
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.devices]))
                        for i, (_, label) in enumerate(self.columns)]
-        self.widths += [width for _, width, _, _ in STATUS_COLUMNS]
+        self.widths += [width for _, width, _ in STATUS_COLUMNS]
         if keep is not None:
             keep = next((d for d in self.devices if d.host == keep.host and d.name == keep.name), None)
         self.apply_sort(keep)
@@ -2351,8 +2388,8 @@ class App(object):
         keep = keep or self.selected()
         state = self.state
         self.found = {}
-        view = filter_devices(self.devices, self.query, self.fields, {"ping": self.ping, "ssh": self.ssh},
-                              state.favorites, state.recent, self.found)
+        view = filter_devices(self.devices, self.query, self.fields, self.results(),
+                              state.favorites, state.recent, self.found, marked=self.marked)
         if self.sort_col is None:
             view = default_order(view, self.query, state.favorites, state.recent, self.found)
         self.view = view
@@ -2387,14 +2424,12 @@ class App(object):
         When one ends, its panes have written their results, so pick them up."""
         if not self.my_sessions or time.time() - self._sessions_checked < 3:
             return
-        self._sessions_checked = time.time()
         # Do not wait for the session to end: a pane that could not log in has already
         # said so, and the password it used must go now, not in an hour.
         self.check_pane_auth_failure()
-        alive = set(truffle_sessions())
-        ended = [s for s in self.my_sessions if s not in alive]
-        self.my_sessions = [s for s in self.my_sessions if s in alive]
-        self.sessions = list(self.my_sessions)
+        before = self.my_sessions
+        self.live_sessions()
+        ended = [s for s in before if s not in self.my_sessions]
         if ended:
             self.reload_status()
             self.message("tmux session %s ended" % ", ".join(ended))
@@ -2412,13 +2447,13 @@ class App(object):
     #
     #  TRuffle  Switch Manager                          timmy · 2/29 switches   top bar
     # ───────────────────────────────────────────────────────────────────────  rule
-    #   ssh   ping   batch ping   details   help   exit                         tabs
+    #   ssh   ping   details   help   exit                                      tabs
     #   ›  ber core                                                              search
     #    NAME          IP           ...                              PING        table head
     #    ────────────────────────────────────────────────────────────────        rule
     #  ▌* ber-core-01  192.0.2.1    ...                              ● up        rows
     # ───────────────────────────────────────────────────────────────────────  rule
-    #  Enter run  ←→ command  ^F favourite  F1-F6 sort  ^R reload  ^C quit       footer
+    #  Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  ... footer
 
     TABLE_X = 5          # column 1: selection marker, 2: favourite star, 3: multi-ssh mark
 
@@ -2477,20 +2512,18 @@ class App(object):
         if self.creds:
             right = "%s %s %s" % (self.creds[0], sym["sep"], right)
         if self.marked:
-            right = "%s %s %s" % (marked_label(len(self.marked), len(self.marked_devices())),
-                                  sym["sep"], right)
-        sessions = self.sessions
-        if sessions:
-            right = "%d tmux %s %s" % (len(sessions), sym["sep"], right)
+            right = "%d marked %s %s" % (len(self.marked), sym["sep"], right)
+        if self.my_sessions:
+            right = "%d tmux %s %s" % (len(self.my_sessions), sym["sep"], right)
         batch = ""
         if self.batch and self.batch.running and not self.batch.cancelled:
-            batch = "batch ping %d%%" % self.batch.percent
+            batch = "ping %d%%" % self.batch.percent
             if not self.query:
                 batch += " %s ESC cancels" % sym["sep"]
         hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^F", "favourite"),
-                 ("F1-F%d" % self.ncols(), "sort"), ("^G", "settings"), ("^E", "export"),
+                 ("F1-F%d" % self.ncols(), "sort"), ("^G", "settings"),
                  ("^R", "reload"), ("^C", "quit")]
-        if self.sessions:
+        if self.my_sessions:
             hints.insert(3, ("^T", "back to tmux"))
             hints.insert(4, ("^K", "close tmux"))
         if batch:
@@ -2518,7 +2551,7 @@ class App(object):
             neg = part[:1] if len(part) > 1 and part[0] in "-'" else ""
             name, sep, value = part[len(neg):].partition(":")
             neg_attr = th.err if neg == "-" else th.key
-            if sep and (name.lower() in self.fields or name.lower() in ("is", "ping", "ssh")):
+            if known_field(part[len(neg):].lower(), self.fields):
                 pieces = [(neg, neg_attr), (name + sep, th.key), (value, th.text)]
             else:
                 pieces = [(neg, neg_attr), (part[len(neg):], th.text)]
@@ -2527,24 +2560,19 @@ class App(object):
                 x += len(text)
         put(scr, y_search, x, " ", th.cursor)
         if not self.query:
-            put(scr, y_search, 7, "type to search (fuzzy) %s 'exact  type:core  -test  ping:down  is:fav" % sym["sep"],
+            put(scr, y_search, 7, "type to search %s 'exact  *-w4  w3|w4  type:core  -test  is:fav" % sym["sep"],
                 th.placeholder)
 
         # table head
         x0 = self.TABLE_X
         widths = fit_widths(self.widths, w - x0 - 3 - 2 * (len(self.widths) - 1))
         table_w = sum(widths) + 2 * (len(widths) - 1)
-        labels = [label for _, label in self.columns] + [label for label, _, _, _ in STATUS_COLUMNS]
-        numeric = [False] * len(self.columns) + [flag for _, _, _, flag in STATUS_COLUMNS]
+        labels = [label for _, label in self.columns] + [label for label, _, _ in STATUS_COLUMNS]
         x = x0
         for i, label in enumerate(labels):
             label = label.upper()
-            # a numeric column is right-aligned, so its header sits over the digits
-            put(scr, y_head, x, label.rjust(widths[i])[:widths[i]] if numeric[i]
-                else fit(label, widths[i], sym["more"]), th.head)
-            if i == self.sort_col and numeric[i]:
-                put(scr, y_head, x, sym["down"] if self.sort_desc else sym["up"], th.sort)
-            elif i == self.sort_col and len(label) + 2 <= widths[i]:
+            put(scr, y_head, x, fit(label, widths[i], sym["more"]), th.head)
+            if i == self.sort_col and len(label) + 2 <= widths[i]:
                 put(scr, y_head, x + len(label) + 1, sym["down"] if self.sort_desc else sym["up"], th.sort)
             x += widths[i] + 2
         put(scr, y_head + 1, x0, sym["hline"] * table_w, th.rule)
@@ -2595,16 +2623,12 @@ class App(object):
                     if pos < visible:
                         put(scr, y, x + pos, value[pos], th.match_sel if sel else th.match)
                 x += widths[i] + 2
-            for k, values in enumerate(self.column_results()):
-                value = values.get(d.host)
+            for k, states in enumerate(self.column_results()):
+                state = states.get(d.host)
                 width = widths[len(d.cells) + k]
-                if value is not None and value != "":
-                    if STATUS_COLUMNS[k][3]:               # numeric: right-aligned, no dot,
-                        text = format_rtt(value)[:width]   # so magnitudes line up by eye
-                        put(scr, y, x, text.rjust(width), th.sel if sel else th.text)
-                    else:
-                        style = STATUS_STYLE.get(value, "wait") + ("_sel" if sel else "")
-                        put(scr, y, x, fit("%s %s" % (sym["dot"], value), width), getattr(th, style))
+                if state:
+                    style = STATUS_STYLE.get(state, "wait") + ("_sel" if sel else "")
+                    put(scr, y, x, fit("%s %s" % (sym["dot"], state), width), getattr(th, style))
                 x += width + 2
 
         # scrollbar when the list is longer than the screen
@@ -2628,7 +2652,7 @@ class App(object):
                 if self.batch and not self.batch.running and not self.batch.reported:
                     self.batch.reported = True
                     if not self.batch.cancelled:
-                        self.message("Batch ping done: %s" % self.batch.summary(), seconds=20)
+                        self.message("Ping done: %s" % self.batch.summary(), seconds=20)
                     self.save_status()
                     self.status_changed()
                 self.draw()
@@ -2642,7 +2666,6 @@ class App(object):
         if self.batch:
             self.batch.cancel()
             self.save_status()                        # finished pings are not thrown away
-        bracketed_paste(False)       # never leave the terminal in a mode we switched on
 
     def check_password_lifetime(self):
         """Forget the password password_lifetime minutes after it was typed.
@@ -2687,13 +2710,21 @@ class App(object):
             self.cmd = (self.cmd + 1) % len(COMMANDS)
         elif key == "ENTER":
             return self.execute()
-        elif key in ("TAB", "BTAB"):            # mark switches for a multi-switch ssh
+        elif key in ("TAB", "BTAB"):            # mark switches for ssh / ping
             if key == "BTAB":
                 self.cursor = max(0, self.cursor - 1)
             dev = self.selected()
             if dev is not None:
+                at = self.cursor
                 self.toggle_mark(dev)
-                if key == "TAB":
+                if "is:marked" in self.query.lower():
+                    # the list IS the marks here, so an unmarked row has to leave it -
+                    # otherwise the + disappears while the row stays and the screen
+                    # contradicts the count.  The next row slides up under the cursor,
+                    # which is what you want when pruning a selection.
+                    self.refilter()
+                    self.cursor = max(0, min(at, len(self.view) - 1))
+                elif key == "TAB":
                     self.cursor = min(max(0, n - 1), self.cursor + 1)
         elif key.startswith("F") and key[1:].isdigit():
             self.set_sort(int(key[1:]) - 1)
@@ -2708,16 +2739,21 @@ class App(object):
             words = self.query.split()
             self.query = " ".join(words[:-1]) + (" " if len(words) > 1 else "")
             self.refilter()
-        elif key == "ESC":                   # one step: search, marks, batch ping, sort
+        elif key == "ESC":                   # one step: search, running ping, marks, sort
             if self.query:
                 self.query = ""
                 self.refilter()
+            elif self.batch and self.batch.running and not self.batch.cancelled:
+                # Before the marks: a ping needs 2+ marks, so the marks are ALWAYS set
+                # while one runs - clearing them first made the footer's "ESC cancels"
+                # a lie that took two presses to honour.  "not cancelled" matches what the
+                # footer shows: workers can sit in an in-flight ping for seconds after a
+                # cancel, and ESC must not stay stuck on this branch meanwhile.
+                self.batch.cancel()
+                self.message("Ping cancelled")
             elif self.marked:
                 self.marked.clear()
                 self.message("Marks cleared")
-            elif self.batch and self.batch.running:
-                self.batch.cancel()
-                self.message("Batch ping cancelled")
             elif self.sort_col is not None:
                 self.set_sort(None, desc=False)
         elif key == "CTRL_F":
@@ -2729,8 +2765,6 @@ class App(object):
                 else:
                     self.message("%s %s favourites" % (dev.name, "added to" if added else "removed from"))
                 self.refilter(dev)
-        elif key == "CTRL_E":
-            self.export()
         elif key == "CTRL_T":
             self.reattach()
         elif key == "CTRL_K":
@@ -2748,41 +2782,25 @@ class App(object):
             self.refilter()
         return None
 
-    def export(self):
-        """Ctrl-E: the current list (filter + order) with all CSV columns and the
-        ping / SSH results to a new CSV file."""
-        if not self.view:
-            self.message("Nothing to export", error=True)
-            return
-        path = os.path.join(self.cfg.export_dir, "truffle-export-%s.csv" % time.strftime("%Y%m%d-%H%M%S"))
-        try:
-            path = export_csv(path, self.view, self.headers, self.delimiter,
-                              self.word_results(), self.checked, self.save_detail())
-        except OSError as e:
-            self.message("Export failed: %s" % (e.strerror or e), error=True, seconds=10)
-            return
-        self.message("Exported %d switches to %s" % (len(self.view), path), seconds=15)
-
     def execute(self):
         command = COMMANDS[self.cmd]
         if command == "exit":
             return False
         if command == "help":
             return self.show_help()
-        if command == "batch ping":
-            return self.start_batch()
+        if command in ("ssh", "ping"):
+            # Several marked switches: decided on the marks that resolve to a switch with a
+            # usable address (a mark left over from a switch that has left the list does not
+            # count).  Only otherwise does the selected row matter, so it cannot block them.
+            marked = [d for d in self.marked_devices() if valid_host(d.host)]
+            if len(marked) > 1:
+                return self.connect_many(marked) if command == "ssh" else self.start_batch(marked)
         dev = self.selected()
         if dev is None:
             self.message("No switch selected", error=True)
             return None
         if command == "details":
             return self.show_details(dev)
-        if command == "ssh":
-            # Several marked switches go to tmux panes; only then does the selected
-            # row matter, so a bad IP on it must not block the marked ones.
-            marked = [d for d in self.marked_devices() if valid_host(d.host)]
-            if len(marked) > 1:
-                return self.connect_many(marked)
         if not valid_host(dev.host):
             self.message("'%s' has no usable IP/host ('%s')" % (dev.name, dev.host), error=True)
             return None
@@ -2792,41 +2810,30 @@ class App(object):
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
                                 env=dict(os.environ, LC_ALL="C"))      # predictable English output
             self.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
-            ms = parse_rtt("\n".join(stream.snapshot()))
-            if stream.done:
-                self.set_status("ping", dev.host, PING_UP if stream.returncode == 0 else PING_DOWN)
-            elif any(" bytes from " in line for line in stream.snapshot()):
-                self.set_status("ping", dev.host, PING_UP)   # closed early, but a reply came back
-            else:
-                return None
-            if ms is None:
-                self.rtt.pop(dev.host, None)
-            else:
-                self.rtt[dev.host] = ms
+            replied = ping_replied("\n".join(stream.snapshot()))
+            state = ping_verdict(replied, stream.done, stream.killed, stream.started)
+            if state is None:
+                return None                      # cancelled before any reply: no verdict
+            self.set_status("ping", dev.host, state)
             self.save_status()
             self.status_changed(dev)
         return None
 
-    # -- batch ping ---------------------------------------------------------
+    # -- ping, several at once -----------------------------------------------
 
-    def start_batch(self):
+    def start_batch(self, devices):
+        """ping with 2+ switches marked: check the ones you are working with, without the
+        live output.  This is a reachability check on a handful of devices, not a sweep -
+        watching the fleet is another tool's job."""
         if self.batch and self.batch.running and not self.batch.cancelled:
-            self.message("Batch ping is already running (ESC with an empty search cancels it)")
+            self.message("A ping is already running (ESC with an empty search cancels it)")
             return
         if not which("ping"):
             self.message("'ping' is not installed", error=True)
             return
-        hosts, seen = [], set()
-        for d in self.marked_devices() or self.view:
-            if valid_host(d.host) and d.host not in seen:
-                seen.add(d.host)
-                hosts.append(d.host)
-        if not hosts:
-            self.message("No switches to ping", error=True)
-            return
-        self.batch = BatchPing(hosts, self.cfg, {"ping": self.ping, "rtt": self.rtt}, self.checked)
-        self.message("Batch ping started: %d %sswitches, about %d s"
-                     % (len(hosts), "marked " if self.marked_devices() else "", len(hosts) // self.cfg.ping_rate + 1))
+        hosts = list(dict.fromkeys(d.host for d in devices))     # each address once, in order
+        self.batch = BatchPing(hosts, self.cfg, self.results(), self.checked)
+        self.message("Pinging %d marked switches - ESC cancels" % len(hosts))
 
     # -- popups -------------------------------------------------------------
 
@@ -2896,6 +2903,12 @@ class App(object):
         finally:
             if stream:
                 stream.stop()
+            # Force a full repaint, which is what Ctrl-L does by hand.  curses otherwise
+            # only sends the difference, so anything the terminal dropped or mangled on a
+            # laggy link stays on screen - a ping line left over in the switch list was
+            # reported from the field.  Coming back from an ssh session already clears
+            # (resume_curses -> sync_size), closing a full-screen view did not.
+            self.scr.clear()
 
     def show_details(self, dev):
         th = self.th
@@ -2905,12 +2918,9 @@ class App(object):
             stamp = self.checked.get((kind, dev.host))
             text = states.get(dev.host, "not checked")
             return text + ("   (%s)" % time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp)) if stamp else "")
-        ms = self.rtt.get(dev.host)
         reason = self.detail.get(("ssh", dev.host), "")
         values = list(dev.values.items()) + [
             ("Ping", result("ping", self.ping)),
-            ("Ping time", "%s ms   (one packet: not loss, not jitter)" % format_rtt(ms)
-                          if ms is not None else "not measured"),
             ("SSH (last try)", result("ssh", self.ssh)),
         ]
         if reason:
@@ -2931,19 +2941,11 @@ class App(object):
         th = self.th
         lines = [[(b, getattr(th, "banner%d" % (i + 1)))] for i, b in enumerate(BANNER)]
         lines += [[], [(TITLE, th.brand), ("   v" + VERSION, th.hint)], []]
-
-        def section(name):
-            lines.append([])
-            lines.append([(name.upper(), th.head)])
-
-        def item(key, text):
-            lines.append([("  " + key.ljust(30), th.key), (text, th.text)])
-
         for entry in help_sections(self.cfg, self.ncols(), len(self.devices)):
             if entry[0] == "section":
-                section(entry[1])
+                lines += [[], [(entry[1].upper(), th.head)]]
             else:
-                item(entry[1], entry[2])
+                lines.append([("  " + entry[1].ljust(30), th.key), (entry[2], th.text)])
         lines += [[], [(CREDIT, th.brand_sub), ("  %s  Inspired by V-Li: Switch Manager (Franz, 2025)."
                                                    % self.th.sym["sep"], th.hint)]]
         self.show_text("help", lines=lines)
@@ -2974,7 +2976,7 @@ class App(object):
         return y0, x0
 
     # Settings you may want to flip in the middle of a day.  Everything else
-    # (columns, ping rate, paths) is set once in truffle.conf and left alone.
+    # (columns, paths, the password lifetime) is set once in truffle.conf and left alone.
     #   key, label, what it changes
     TOGGLES = [("l", "Session log", "session_log"),
                ("d", "Debug log", "debug"),
@@ -3059,15 +3061,15 @@ class App(object):
 
     def credential_dialog(self, error=None):
         """Ask user + password.  Returns (user, password or None) or None on ESC."""
-        user, pw = self.last_user or "", ""
-        field = 1 if user else 0
+        entry = [self.last_user or "", ""]           # what is typed: username, password
+        field = 1 if entry[0] else 0
         scr, th, sym = self.scr, self.th, self.th.sym
         while True:
             bw, bh = min(62, scr.getmaxyx()[1] - 6), 13
             y0, x0 = self.draw_window("Login", "asked once per session", bh, bw)
             fw = max(6, bw - 18)
 
-            values = [user, sym["mask"] * len(pw)]
+            values = [entry[0], sym["mask"] * len(entry[1])]
             for i, label in enumerate(("Username", "Password")):
                 y = y0 + 2 + i * 2
                 active = field == i
@@ -3100,35 +3102,22 @@ class App(object):
                 if field == 0:
                     field = 1
                     continue
-                if not valid_user(user):
+                if not valid_user(entry[0]):
                     error, field = "Please enter a valid username.", 0
                     continue
-                self.last_user = user
-                return user, (pw or None)
+                self.last_user = entry[0]
+                return entry[0], (entry[1] or None)
             elif key == "BACKSPACE":
-                if field == 0:
-                    user = user[:-1]
-                else:
-                    pw = pw[:-1]
+                entry[field] = entry[field][:-1]
             elif key == "CTRL_U":
-                if field == 0:
-                    user = ""
-                else:
-                    pw = ""
+                entry[field] = ""
             elif key == "RESIZE":
                 self.sync_size()
             elif key == "PASTE":            # first line only: a password gets no newline
-                text = paste_text(PASTE["text"], multiline=False)
+                entry[field] += paste_text(PASTE["text"], multiline=False)
                 PASTE["text"] = ""
-                if field == 0:
-                    user += text
-                else:
-                    pw += text
             elif len(key) == 1:
-                if field == 0:
-                    user += key
-                else:
-                    pw += key
+                entry[field] += key
 
     # -- ssh ----------------------------------------------------------------
 
@@ -3147,15 +3136,13 @@ class App(object):
                 self.creds = None             # wipe the wrong password, ask again
                 error = "Login failed for '%s' on %s - please re-enter." % (user, dev.name)
                 continue
-            reason = ""
+            reason = ssh_failure_reason(result) if result.failed or result.hostkey_changed else ""
             if result.hostkey_changed:
-                reason = "host key changed - not connected"
-                self.message("%s: host key changed - not connected" % dev.name, error=True, seconds=15)
+                self.message("%s: %s" % (dev.name, reason), error=True, seconds=15)
             elif not result.failed:
                 self.state.touch(device_key(dev))
                 self.message("Disconnected from %s" % dev.name)
             else:
-                reason = ssh_failure_reason(result)
                 text = "%s: ssh exit code %d" % (dev.name, result.exit_code)
                 if result.last_line:
                     text += " - " + result.last_line
@@ -3165,9 +3152,8 @@ class App(object):
                              "Run 'truffle --debug' and connect again to see what the switch sent."
                              % dev.name, error=True, seconds=20)
             # the SSH column remembers how your last real attempt went - no extra connections.
-            # The reason is saved with it, so it survives a restart and reaches the export.
-            self.set_status("ssh", dev.host,
-                            SSH_FAILED if result.failed or result.hostkey_changed else SSH_OK, reason)
+            # The reason is saved with it, so it survives a restart and details can show it.
+            self.set_status("ssh", dev.host, SSH_FAILED if reason else SSH_OK, reason)
             self.save_status()
             self.status_changed(dev, force=True)        # is:recent, ssh: searches, status sorts
             return
@@ -3184,7 +3170,6 @@ class App(object):
             return []
         alive = set(truffle_sessions())
         self.my_sessions = [s for s in self.my_sessions if s in alive]
-        self.sessions = list(self.my_sessions)
         self._sessions_checked = time.time()
         self.sessions_foreign = not self.my_sessions and bool(alive)
         return self.my_sessions or sorted(alive)
@@ -3260,7 +3245,7 @@ class App(object):
         Ctrl-b d brings you back here; the sessions keep running until you log out."""
         if not self.cfg.tmux or not which("tmux"):
             self.message("%s - connecting to several switches at once needs it. "
-                         "Marks still limit batch ping; ssh connects to the selected switch."
+                         "Marks still decide what ping checks; ESC (empty search) clears them to ssh one."
                          % ("tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux
                             else "tmux is not installed"), error=True, seconds=12)
             return
@@ -3345,30 +3330,41 @@ def help_sections(cfg, ncols, switches):
         ("item", "Up Down PgUp PgDn Home End", "select a switch"),
         ("item", "Left Right", "select a command"),
         ("item", "Enter", "run the selected command"),
-        ("item", "just type", "search - fuzzy, best matches first (see below)"),
+        ("item", "just type", "search - best matches first (see below)"),
         ("item", "Backspace  Ctrl-W  Ctrl-U", "delete a character / word / the whole search"),
         ("item", "paste", "pasted text goes into the search as text - a newline"),
         ("item", "", "in it no longer runs ssh (needs a terminal that"),
         ("item", "", "supports bracketed paste; others are unchanged)"),
-        ("item", "ESC", "step by step: clear the search, clear the marks,"),
-        ("item", "", "cancel batch ping, clear the sort"),
-        ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)"),
+        ("item", "ESC", "step by step: clear the search, cancel a running"),
+        ("item", "", "ping, clear the marks, clear the sort"),
+        ("item", "Tab  Shift-Tab", "mark / unmark a switch for several at once (+)."),
+        ("item", "", "Marks SURVIVE a new search: mark a few, search"),
+        ("item", "", "again, mark more, then ssh to all of them."),
+        ("item", "", "is:marked lists them, ESC clears them"),
         ("item", "Ctrl-F", "mark / unmark the switch as favourite (*)"),
-        ("item", "Ctrl-E", "export the current list to CSV (%s)" % cfg.export_dir),
         ("item", "Ctrl-G", "settings for this session (logging, tmux, symbols)"),
         ("item", "F1..F%d" % ncols, "sort by column: press again for reverse, a third time for off"),
         ("item", "Ctrl-R", "reload the switch list"),
         ("item", "Ctrl-C", "quit"),
         ("section", "Search"),
-        ("item", "bc01  ber core", "fuzzy: letters in this order, best matches first"),
+        ("item", "w4   ber core", "a word written together, anywhere in a column"),
+        ("item", "bc01", "may be split only at - . _ / : @ (b|c|01 of ber-core-01),"),
+        ("item", "", "so w4 finds xx-xx-sxx-w4 but not wx-x4-sxx-xx"),
         ("item", "'10.1.2", "exact: this text exactly"),
+        ("item", "*-l1   ??-??-s??-w3", "pattern: * and ? over a whole column. Tells -l1"),
+        ("item", "", "from -l11, which a plain word cannot. A name like"),
+        ("item", "", "sw1.example.net also matches on just 'sw1'"),
+        ("item", "w3|w4", "either one. Space stays AND, so OR goes in"),
+        ("item", "", "one term: ab-* w3|w4, ping:up|wait, -*-w4"),
         ("item", "type:core  responsible:timmy", "a CSV column, also ones not shown in the table"),
         ("item", "location:", "column is empty"),
-        ("item", "-test  -type:edge", "exclude (exact)"),
+        ("item", "-test  -type:edge  -*-w4", "exclude. A word is always exact, a pattern stays"),
+        ("item", "", "a pattern. -w3|w4 excludes both"),
         ("item", "ping:down", "ping result: up, down, wait, none"),
         ("item", "ssh:failed", "how your last ssh attempt went: ok, failed, none"),
         ("item", "is:fav", "your favourites"),
         ("item", "is:recent", "switches you connected to, newest first"),
+        ("item", "is:marked", "everything you have picked with Tab so far"),
         ("section", "Commands"),
         ("item", "ssh", "connect - user/password are asked once and kept in memory"),
         ("item", "", "only. Log out of the switch to come back."),
@@ -3380,20 +3376,19 @@ def help_sections(cfg, ncols, switches):
         ("item", "", "at most %d. Ctrl-b d comes back here, the switches stay" % MAX_PANES),
         ("item", "", "logged in until you log out or close them."),
         ("item", "ping", "ping the selected switch (4 packets, live output)"),
-        ("item", "batch ping", "ping the marked switches, or the whole current list"),
-        ("item", "", "-> PING column. ICMP only, at most %d per second." % cfg.ping_rate),
+        ("item", "", "With 2+ marked: all of them at once, no live output,"),
+        ("item", "", "straight into the PING column. ESC cancels."),
         ("item", "details", "all fields of the selected switch"),
         ("item", "help", "this screen"),
         ("item", "exit", "quit TRuffle and forget the credentials"),
         ("section", "Columns"),
-        ("item", "PING", "result of the last ping / batch ping"),
-        ("item", "MS", "round-trip time of that ping. One packet, so it is one"),
-        ("item", "", "number - not packet loss and not jitter. Sorting it"),
-        ("item", "", "puts the slowest switches first"),
+        ("item", "PING", "result of the last ping"),
         ("item", "SSH", "how your last real ssh attempt went - TRuffle never"),
         ("item", "", "probes SSH on its own, so it makes no extra traffic"),
         ("section", "Several switches at once (tmux)"),
-        ("item", "Tab", "mark switches, then run ssh with 2 or more marked"),
+        ("item", "Tab", "mark switches, then run ssh with 2 or more marked."),
+        ("item", "", "Marks are kept across searches, so you can collect"),
+        ("item", "", "them from several different searches first"),
         ("item", "Ctrl-b d", "back to TRuffle - the switches stay logged in"),
         ("item", "Ctrl-T", "back into the tmux session from TRuffle"),
         ("item", "Ctrl-K", "close the switch sessions (asks first)"),
@@ -3418,7 +3413,7 @@ def help_sections(cfg, ncols, switches):
 
 def check(cfg):
     """--check: validate config and switch list without starting the UI."""
-    ok, clean = True, True
+    ok, no_warnings = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
     print("switch list  : %s" % cfg.data)
@@ -3431,9 +3426,14 @@ def check(cfg):
         # Which column is which is the thing you cannot see from the table, so say it.
         print("switch name  : %s" % picked["name"])
         print("ssh target   : %s" % picked["host"])
-        issues = warns + data_issues(devices, report["lines"], report["issues"])
-        clean = not issues
-        print("data check   : %s" % ("ok" if clean else "%d warning(s)" % len(issues)))
+        print("headers found: %s" % ", ".join(headers))
+        if devices:
+            first = devices[0]
+            print("first switch : name %r  ssh to %r"
+                  % (first.values.get(picked["name"], ""), first.host))
+        issues = warns + data_issues(devices, report["lines"], report["issues"], picked["name"])
+        no_warnings = not issues
+        print("data check   : %s" % ("ok" if no_warnings else "%d warning(s)" % len(issues)))
         for w in issues[:50]:
             print("  warning: %s" % w)
         if len(issues) > 50:
@@ -3451,7 +3451,7 @@ def check(cfg):
                                  else "kept until TRuffle exits (password_lifetime = 0)"))
     if not ok:
         return 2                      # cannot run: no switch list, or ssh / ping missing
-    return 0 if clean else 1          # 1 = warnings only, so a cron check can gate on it
+    return 0 if no_warnings else 1          # 1 = warnings only, so a cron check can gate on it
 
 
 def main(argv=None):
@@ -3476,23 +3476,18 @@ def main(argv=None):
         return 2
     if args.check:
         return check(cfg)
+    harden_process()                              # before the password can ever be in memory
+    try:
+        locale.setlocale(locale.LC_ALL, "")
+    except locale.Error:
+        pass
     if args.pane:                                 # started by TRuffle inside a tmux pane
-        harden_process()
-        try:
-            locale.setlocale(locale.LC_ALL, "")
-        except locale.Error:
-            pass
         return pane_main(cfg, *args.pane)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2
 
-    harden_process()                              # before the password can ever be in memory
     os.environ.setdefault("ESCDELAY", "50")       # before initscr: fast ESC key
-    try:
-        locale.setlocale(locale.LC_ALL, "")
-    except locale.Error:
-        pass
     cfg.charset = detect_charset(cfg.charset_setting)
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
     try:
@@ -3503,8 +3498,8 @@ def main(argv=None):
         print("truffle: terminal error: %s (TERM=%s)" % (e, os.environ.get("TERM", "")), file=sys.stderr)
         return 1
     finally:
-        # Also on the paths where run() never reached its end (a failed startup, a
-        # curses error): the terminal must not keep a mode we switched on.
+        # Every way out - a normal exit, a failed startup, a curses error: the
+        # terminal must not keep a mode we switched on.
         bracketed_paste(False)
     print("TRuffle closed - credentials forgotten.")
     for session in truffle_sessions():
