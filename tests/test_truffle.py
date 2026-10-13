@@ -865,6 +865,76 @@ class TestSecurityHelpers(unittest.TestCase):
         self.assertNotIn("NumberOfPasswordPrompts=1", tl.build_ssh_argv(cfg, "t", "h", inject_password=False))
 
 
+class TestSessionLog(TempDir):
+    """tmux records a running pane through `truffle --log-sink FILE`, so the session log
+    can be switched on while the panes are already logged in."""
+
+    def cfg(self):
+        return types.SimpleNamespace(log_dir=os.path.join(self.tmp, "logs"))
+
+    def sink(self, path, data, header="# head\n"):
+        import subprocess
+        return subprocess.run(tl.shlex.split(tl.pipe_command(path, header)), input=data).returncode
+
+    def test_the_log_file_is_private_and_named_after_the_switch(self):
+        log, error = tl.open_session_log(self.cfg(), "sw 1", "10.0.0.1", "timmy")
+        self.assertIsNone(error)
+        log.close()
+        path = os.path.join(self.cfg().log_dir, os.listdir(self.cfg().log_dir)[0])
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)
+        self.assertEqual(os.stat(os.path.dirname(path)).st_mode & 0o777, 0o700)
+        self.assertTrue(path.endswith("_sw_1.log"), path)
+
+    def test_the_sink_writes_the_header_and_what_the_pane_shows(self):
+        path = tl.session_log_path(self.cfg(), "sw 1", "10.0.0.1")
+        header = tl.log_header("sw 1", "10.0.0.1", "timmy")
+        self.assertEqual(self.sink(path, b"\x1b[1;32mFAKE-SW:1>\x1b[0m show vlan\r\n", header), 0)
+        with open(path, "rb") as f:
+            text = f.read()
+        self.assertTrue(text.startswith(b"# TRuffle session log: sw 1 (10.0.0.1) as timmy"))
+        self.assertIn(b"FAKE-SW:1> show vlan\n", text)
+        self.assertNotIn(b"\x1b", text)
+        self.assertEqual(os.stat(path).st_mode & 0o777, 0o600)      # created private, whatever the umask
+
+    def test_the_sink_never_writes_through_a_symlink(self):
+        target = os.path.join(self.tmp, "elsewhere")
+        link = os.path.join(self.tmp, "x.log")
+        os.symlink(target, link)
+        self.assertEqual(self.sink(link, b"secret output"), 1)
+        self.assertFalse(os.path.exists(target))
+
+    def test_an_escape_sequence_cut_in_two_is_still_removed(self):
+        strip = tl.EscapeStripper()
+        out = strip.feed(b"FAKE \x1b[1;3") + strip.feed(b"2mSW\x1b") + strip.feed(b"[0m>") + strip.flush()
+        self.assertEqual(out, b"FAKE SW>")
+        self.assertEqual(tl.EscapeStripper().feed(b"plain\r\n"), b"plain\n")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
+    def test_a_pipe_that_cannot_start_leaves_no_file(self):
+        error = tl.record_pane(self.cfg(), "%999999", "sw1", "10.0.0.1", "timmy")
+        self.assertIsNotNone(error)
+        self.assertEqual(os.listdir(self.cfg().log_dir), [])
+
+    def test_an_unwritable_log_folder_is_reported(self):
+        os.makedirs(self.cfg().log_dir, mode=0o500)
+        try:
+            error = tl.record_pane(self.cfg(), "%1", "sw1", "10.0.0.1", "timmy")
+        finally:
+            os.chmod(self.cfg().log_dir, 0o700)
+        self.assertIn("cannot write session log", error or "")
+
+    def test_a_path_with_spaces_survives_the_shell(self):
+        """tmux runs the pipe command through a shell, so the path must be quoted."""
+        odd = os.path.join(self.tmp, "a b; echo x", "f.log")
+        self.assertEqual(tl.shlex.split(tl.pipe_command(odd, "# h"))[-3:], ["--log-sink", odd, "# h"])
+
+    def test_a_pane_is_told_to_record_itself(self):
+        """With the log on, a pane starts its tmux recording before it shows anything -
+        TRuffle doing it from outside came too late for a fast switch's banner."""
+        cfg = tl.load_config(args(log=True))
+        self.assertIn("--log", tl.pane_command(cfg, "/x.sock", "a" * 32, "10.0.0.1", "sw1"))
+
+
 class TestCharset(TempDir):
     def test_setting_and_flag(self):
         self.assertEqual(tl.detect_charset("ascii"), "ascii")

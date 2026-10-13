@@ -811,3 +811,48 @@ rules; it is D39 now.
   code accepts a direct *child*), promises the socket folder is always in RAM under `/run/user/<uid>`
   (without `XDG_RUNTIME_DIR` it falls back to `/tmp`), and counts 14 tests; the idea notes still mention
   right-click marking and `Ctrl-b l`.
+
+## D41: The session log reaches tmux panes that are already running (user, 2026-10-13)
+The user's case: panes logged in, then "I want the output of these show commands on file before the
+migration". Until now the session log was decided when a connection started, so that meant closing
+and reopening every pane. Now: `Ctrl-b d`, `Ctrl-G` -> `l`, `Ctrl-T`, and every pane of this TRuffle's
+tmux sessions writes its own log from then on; `l` again stops it.
+- **tmux's own `pipe-pane`**, not our relay: a pane's ssh is never touched or restarted (R1: a tool
+  already on the server). TRuffle asks `list-panes` for `#{pane_pipe}`, so a pane already recorded is
+  never given a second file, and it only touches panes it opened itself (`App.panes`, keyed by pane id -
+  the pane title is not trusted for the name, a switch can set it).
+- **One mechanism.** Panes no longer log through `ssh_flow`; otherwise switching off could not stop them
+  and switching on would write twice. A pane started with the log on calls `pipe-pane` on itself
+  (`$TMUX_PANE`) **before it shows anything**. *Tester:* the first version did that from TRuffle after
+  `open_panes` and the end-to-end test showed empty logs - the fake switch's banner was on screen before
+  the pipe started. A fast real switch could do the same.
+- *Warden:* TRuffle creates every log file 0600 in the 0700 log folder; the recorder (`truffle --log-sink
+  FILE`, hidden, reads no config) only appends and refuses a file that does not exist, so a wrong path
+  cannot produce a readable log. tmux pipes only what a pane SHOWS, never what is typed, so the password
+  (ssh does not echo it) is not in it - checked end to end. The command tmux runs through its shell is
+  built with `shlex.quote`.
+- Recording keeps going after TRuffle quits, until the pane closes - the panes outlive TRuffle too.
+- **Not built:** the same for a single (non-tmux) session. While you are in it, TRuffle's screen cannot
+  be reached; it would need a hotkey inside the session that TRuffle intercepts, which takes that key
+  away from the switch. Offered to the user rather than built.
+
+### Review of the feature, same day: nine findings, all fixed
+- **Ctrl-G "off" lost against truffle.conf.** A pane re-read `truffle.conf`, so with `session_log = yes`
+  there it recorded although the user had just switched the log off. A pane now takes the log and the
+  screen symbols only from what TRuffle passes it.
+- **A failed log hid behind a success message.** "Session log on - recording 0 panes" overwrote the
+  error. `record_panes` returns its error and the message leads with it (cut off at the right edge
+  otherwise - found by the end-to-end test). Stopping counts only panes tmux actually stopped.
+- *Warden:* **the recorder creates the file itself** (0600, `O_NOFOLLOW`), so a `pipe-pane` that fails or
+  is a no-op (`-o`, pane already recorded) leaves no empty log behind. TRuffle checks the folder is
+  writable first, so that error still reaches the screen. This reverses "the sink never creates a file".
+- An escape sequence cut in two by a read reached the log as garbage. `EscapeStripper` holds it back
+  until its end arrives - now used by every session log, the single-session one had the same flaw.
+- Sessions TRuffle cannot reach (another window's, or from before a restart) are named in the message
+  instead of silently skipped. `App.panes` is kept per session and dropped with it, so a tmux pane id
+  reused after a server restart cannot pick up an old switch name.
+- A pane whose handover failed now shows that note after its recording started, so it is in the log.
+- One `SCRIPT` constant instead of three copies of the script path. The test harness's own tmux session
+  is no longer called `truffle-*`, which TRuffle counted as one of its own.
+
+`VERSION` 1.8.0 (new feature). 133 tests.

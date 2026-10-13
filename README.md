@@ -330,14 +330,14 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 
 | Key | Setting | What it does |
 |---|---|---|
-| `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)). Shows the folder while on |
+| `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
 | `t` | Several at once (tmux) | turn the [multi-switch panes](#several-switches-at-once-tmux) on or off |
 | `c` | Screen symbols | `auto` → `unicode` → `ascii`, applied at once if lines look garbled |
 | `p` | Forget the stored password | drops it now, e.g. before you leave your desk. Running sessions and tmux panes are untouched |
 | `ESC` | | close |
 
-Changes apply to **this TRuffle only** and take effect on the next connection — put them in
+Changes apply to **this TRuffle only** and take effect on the next connection (the session log also on running tmux panes) — put them in
 [`truffle.conf`](#configuration) to make them permanent.
 
 Everything else (columns, paths, password lifetime) is set once in the configuration
@@ -505,6 +505,11 @@ you want it just for the next session (a change window, say). Each ssh session i
 `~/.local/state/truffle/logs/<date>-<time>_<switch>.log`, readable only by you.
 The log contains what was on screen, never the password TRuffle typed. Commands like
 `show running-config` can still put secrets into it.
+
+**Recording panes that are already logged in** — say, show commands before a migration: `Ctrl-b d`
+back to TRuffle, `Ctrl-G` → `l`, `Ctrl-T` back in. From then on every pane this TRuffle opened writes
+its own log file, until you switch it off the same way or the pane closes (quitting TRuffle does not
+stop it; sessions from before a restart are named, not recorded). tmux records only what a pane shows.
 
 ## Debug log
 
