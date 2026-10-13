@@ -83,6 +83,9 @@
 - [x] tmux panes are no longer experimental (D40); VERSION 1.7.0
 - [x] Review round 9: one search early-out, one session check, an honest tmux-off message
 
+## Milestone 1l: session log for running tmux panes. DONE (2026-10-13)
+- [x] `Ctrl-G` -> `l` starts/stops recording panes that are already logged in (D41), VERSION 1.8.0
+
 ## Milestone 2: field test (needs the user)
 - [x] `./truffle --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu

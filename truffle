@@ -42,10 +42,11 @@ import time
 import tty
 import warnings
 
-VERSION = "1.7.0"          # bump before building a bundle
+VERSION = "1.8.0"          # bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
-SCRIPT_DIR = os.path.dirname(os.path.realpath(os.path.abspath(__file__)))
+SCRIPT = os.path.realpath(os.path.abspath(__file__))       # what panes and the recorder re-run
+SCRIPT_DIR = os.path.dirname(SCRIPT)
 CONFIG_NAME = "truffle.conf"
 CONFIG_SECTION = "truffle"
 COMMANDS = ["ssh", "ping", "details", "help", "exit"]
@@ -1133,6 +1134,26 @@ SSH_FAILURE = re.compile(r"Permission denied|Connection (timed out|refused|reset
 ANSI_ESCAPES = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]|\x1b[=>78]|\r")
 
 
+class EscapeStripper(object):
+    """Removes terminal escape sequences from output that arrives in pieces.  A sequence
+    cut in two by a read is held back until the rest arrives - stripping each piece on
+    its own let '\x1b[1;3' + '2m' through as garbage in the log."""
+
+    def __init__(self):
+        self.pending = b""
+
+    def feed(self, data):
+        data, self.pending = self.pending + data, b""
+        cut = data.rfind(b"\x1b")
+        if cut >= 0 and len(data) - cut < 64 and not ANSI_ESCAPES.match(data, cut):
+            data, self.pending = data[:cut], data[cut:]
+        return ANSI_ESCAPES.sub(b"", data)
+
+    def flush(self):
+        rest, self.pending = self.pending, b""
+        return ANSI_ESCAPES.sub(b"", rest)
+
+
 def is_password_prompt(line):
     """True for 'Password:' / "user@host's password:", never for key passphrases."""
     return PASSWORD_PROMPT.search(line) is not None and "passphrase" not in line.lower()
@@ -1274,6 +1295,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
         pass
     old_winch = signal.signal(signal.SIGWINCH, lambda signum, frame: _copy_winsize(in_fd, master))
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
+    strip = EscapeStripper()
     armed = bool(password)       # watching for the password prompt
     tail = captured = before_input = ""
     exit_code = None
@@ -1292,7 +1314,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                 _write_all(out_fd, data)
                 if log is not None:
                     try:
-                        log.write(ANSI_ESCAPES.sub(b"", data))
+                        log.write(strip.feed(data))
                         log.flush()
                     except OSError:
                         log = None
@@ -1344,6 +1366,11 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                     exit_code = _exit_code(status)
                     break
     finally:
+        if log is not None:
+            try:
+                log.write(strip.flush())
+            except OSError:
+                pass
         signal.signal(signal.SIGWINCH, old_winch)
         if old_attrs is not None:
             termios.tcsetattr(in_fd, termios.TCSADRAIN, old_attrs)
@@ -1389,18 +1416,73 @@ def note_text(lines, colors=True, gt=">"):
     return "\r\n%s %s %s" % (prefix, gt, ("\r\n" + " " * 10).join(lines))
 
 
+def session_log_path(cfg, name, host):
+    """Where a new session log goes; creates the 0700 log folder.  Raises OSError."""
+    os.makedirs(cfg.log_dir, mode=0o700, exist_ok=True)
+    safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name or host)[:60]
+    return os.path.join(cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), safe))
+
+
+def log_header(name, host, user):
+    return "# TRuffle session log: %s (%s) as %s, %s\n" % (name, host, user, time.strftime("%Y-%m-%d %H:%M:%S"))
+
+
+def open_log_file(path):
+    """Open (or create, 0600) a log file for appending.  O_NOFOLLOW: never through a symlink."""
+    return os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600), "ab")
+
+
 def open_session_log(cfg, name, host, user):
     """--log: a new 0600 log file for one session.  Returns (file or None, error or None)."""
     try:
-        os.makedirs(cfg.log_dir, mode=0o700, exist_ok=True)
-        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", name or host)[:60]
-        path = os.path.join(cfg.log_dir, "%s_%s.log" % (time.strftime("%Y%m%d-%H%M%S"), safe))
-        f = os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600), "ab")
-        f.write(("# TRuffle session log: %s (%s) as %s, %s\n"
-                 % (name, host, user, time.strftime("%Y-%m-%d %H:%M:%S"))).encode("utf-8"))
+        f = open_log_file(session_log_path(cfg, name, host))
+        f.write(log_header(name, host, user).encode("utf-8"))
         return f, None
     except OSError as e:
         return None, "cannot write session log: %s" % e
+
+
+def pipe_command(path, header):
+    """What tmux runs to record a pane that is already running (pipe-pane): TRuffle
+    itself, writing what the pane shows to a session log."""
+    argv = [sys.executable, SCRIPT, "--log-sink", path, header]
+    return " ".join(shlex.quote(a) for a in argv)
+
+
+def record_pane(cfg, pane, name, host, user):
+    """Have tmux record one pane into a new 0600 session log (pipe-pane).  -o: a pane
+    that is already recorded is left alone.  The recorder creates the file itself, so a
+    pipe that never starts leaves no empty log behind.  Returns an error text or None."""
+    try:
+        path = session_log_path(cfg, name, host)
+        if not os.access(cfg.log_dir, os.W_OK):
+            raise OSError(errno.EACCES, "not writable", cfg.log_dir)
+    except OSError as e:
+        return "cannot write session log: %s" % e
+    try:
+        tmux_run("pipe-pane", "-o", "-t", pane, pipe_command(path, log_header(name, host, user)))
+    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+        return "cannot record the tmux pane: %s" % e
+    return None
+
+
+def log_sink(path, header):
+    """`truffle --log-sink FILE HEADER`, started by tmux: write the header, then stdin
+    without the terminal's escape sequences, to FILE (created 0600).  tmux pipes only
+    what the pane SHOWS, never what is typed into it, so a password (ssh never echoes
+    it) is not in it."""
+    try:
+        out = open_log_file(path)
+    except OSError:
+        return 1
+    strip = EscapeStripper()
+    with out:
+        out.write(header.encode("utf-8"))
+        for chunk in iter(lambda: os.read(0, 65536), b""):
+            out.write(strip.feed(chunk))
+            out.flush()
+        out.write(strip.flush())
+    return 0
 
 
 def write_debug_report(cfg, name, host, argv, password, result):
@@ -1722,7 +1804,10 @@ def pane_main(cfg, socket_path, ticket, host, name):
     if not valid_host(host):
         terminal_wait_key(note("'%s' is not a usable host." % host, "Press any key to close this pane ..."))
         return 1
-    user, password = cfg.user, None
+    # A pane is recorded through tmux (pipe-pane), never by ssh_flow, so TRuffle can switch
+    # the log on and off while it runs - and it is never written twice.
+    record, cfg.session_log = cfg.session_log, False
+    user, password, problems = cfg.user, None, []
     try:
         answer = handover_request(socket_path, "GET %s" % ticket)
         if not answer.startswith("OK "):
@@ -1730,9 +1815,13 @@ def pane_main(cfg, socket_path, ticket, host, name):
         login = json.loads(answer[3:])
         user, password = login["user"], login["password"] or None
     except (OSError, ValueError, KeyError) as e:
-        os.write(sys.stdout.fileno(), note(
-            "Could not get the login from TRuffle (%s)." % e,
-            "Connecting anyway - ssh will ask you for the password.").encode("utf-8", "replace"))
+        problems += ["Could not get the login from TRuffle (%s)." % e,
+                     "Connecting anyway - ssh will ask you for the password."]
+    if record:                     # before anything is shown, so nothing is missed
+        error = record_pane(cfg, os.environ.get("TMUX_PANE", ""), name, host, user)
+        problems = ([error] if error else []) + problems
+    if problems:
+        os.write(sys.stdout.fileno(), note(*problems).encode("utf-8", "replace"))
     result = ssh_flow(cfg, name, host, user, password, note, back="close this pane")
     password = login = answer = None          # every copy of the login this pane holds
     failed = result.failed or result.hostkey_changed
@@ -1767,23 +1856,25 @@ PANE_ENV = ("HOME", "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR",
 
 def pane_command(cfg, socket_path, ticket, host, name):
     argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
-    argv += [sys.executable, os.path.realpath(os.path.abspath(__file__))]
+    argv += [sys.executable, SCRIPT]
     if cfg.config_file:
         argv += ["--config", cfg.config_file]
     if cfg.debug:
         argv += ["--debug"]
     if cfg.session_log:
-        argv += ["--log"]
-    if cfg.charset_setting == "ascii":
-        argv += ["--ascii"]              # --ascii was a flag, not a config value: pass it on
+        argv += ["--log"]                # the pane starts its tmux recording itself
+    if detect_charset(cfg.charset_setting) == "ascii":
+        argv += ["--ascii"]              # what TRuffle shows now, Ctrl-G included
     argv += ["--pane", socket_path, ticket, host, name]
     return " ".join(shlex.quote(a) for a in argv)
 
 
 def open_panes(cfg, devices, handover):
-    """Create a tmux session with one pane per switch and return its name."""
+    """Create a tmux session with one pane per switch.  Returns its name and
+    {pane id: device} - the pane title cannot be trusted for that, a switch can set it."""
     session = free_session_name()
     first, rest = devices[0], devices[1:]
+    panes = {}
 
     def start(dev, *extra):
         ticket = handover.issue(dev.host)
@@ -1791,6 +1882,7 @@ def open_panes(cfg, devices, handover):
         out = tmux_run(*(list(extra) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
         pid, _, pane_id = out.strip().partition(" ")
         handover.bind(ticket, int(pid or 0))
+        panes[pane_id] = dev
         tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (dev.name, dev.host))
 
     size = terminal_size() or (24, 80)          # a detached session would default to 80x24
@@ -1809,7 +1901,7 @@ def open_panes(cfg, devices, handover):
     tmux_try("set-option", "-t", session, "status-right",
              " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one switch ")
     tmux_try("set-option", "-t", session, "status-right-length", "80")
-    return session
+    return session, panes
 
 
 def wait_for_logins(handover, deadline=TICKET_LIFETIME):
@@ -2242,6 +2334,7 @@ class App(object):
                                        # A dict, not a set: the order decides the pane order,
                                        # and marks survive a new search (see marked_devices)
         self.my_sessions = []          # tmux sessions this TRuffle started and still running
+        self.panes = {}                # session -> {tmux pane id: (device, user)} of our panes
         self.sessions_foreign = False  # ... and whether those belong to another TRuffle window
         self._sessions_checked = 0.0
         self.batch = None
@@ -3030,8 +3123,21 @@ class App(object):
                 continue
             for k, label, option in self.TOGGLES:
                 if key == k:
-                    setattr(self.cfg, option, not getattr(self.cfg, option))
-                    self.message("%s %s" % (label, "on" if getattr(self.cfg, option) else "off"))
+                    on = not getattr(self.cfg, option)
+                    setattr(self.cfg, option, on)
+                    text = "%s %s" % (label, "on" if on else "off")
+                    error = None
+                    if option == "session_log":
+                        n, error, others = self.record_panes(on)
+                        if n:
+                            text += " - %s %d running tmux pane%s" % (
+                                "recording" if on else "stopped recording", n, "" if n == 1 else "s")
+                        if others:
+                            text += " - NOT %s: %s (another TRuffle window's, or from before a restart)" % (
+                                "recorded" if on else "changed", ", ".join(others))
+                        if error:                # leads: a long message is cut at the right edge
+                            text = "%s - %s" % (error, text)
+                    self.message(text, error=bool(error), seconds=15 if error else 6)
             if key == "c":
                 order = ["auto", "unicode", "ascii"]
                 nxt = order[(order.index(self.cfg.charset_setting) + 1) % len(order)]
@@ -3170,9 +3276,43 @@ class App(object):
             return []
         alive = set(truffle_sessions())
         self.my_sessions = [s for s in self.my_sessions if s in alive]
+        self.panes = dict((s, p) for s, p in self.panes.items() if s in self.my_sessions)
         self._sessions_checked = time.time()
         self.sessions_foreign = not self.my_sessions and bool(alive)
         return self.my_sessions or sorted(alive)
+
+    def record_panes(self, on):
+        """Start or stop the session log on our tmux panes WHILE they run: detach, Ctrl-G,
+        back in, and the show commands you run now are on file.  tmux's own pipe-pane does
+        it, so the ssh inside a pane is never touched.
+        Returns (panes changed, error or None, sessions it could not reach) - the last are
+        tmux sessions of another TRuffle window or from before a restart, whose panes we
+        cannot name."""
+        self.live_sessions()
+        changed, others = 0, [s for s in truffle_sessions() if s not in self.my_sessions]
+        for session in self.my_sessions:
+            ours = self.panes.get(session, {})
+            try:
+                listed = tmux_run("list-panes", "-s", "-t", "=" + session, "-F", "#{pane_id} #{pane_pipe}")
+            except (RuntimeError, OSError, subprocess.SubprocessError):
+                continue
+            for line in listed.splitlines():
+                pane, _, piping = line.partition(" ")
+                if pane not in ours or (piping == "1") == on:
+                    continue                         # not ours, or already as wanted
+                if on:
+                    dev, user = ours[pane]
+                    error = record_pane(self.cfg, pane, dev.name, dev.host, user)
+                else:
+                    try:
+                        tmux_run("pipe-pane", "-t", pane)        # no command: stop recording
+                        error = None
+                    except (RuntimeError, OSError, subprocess.SubprocessError) as e:
+                        error = "cannot stop recording %s: %s" % (ours[pane][0].name, e)
+                if error:
+                    return changed, error, others
+                changed += 1
+        return changed, None, others
 
     def enter_tmux(self, session):
         """Hand the terminal to tmux and come back.  Returns an error text or ''."""
@@ -3259,12 +3399,13 @@ class App(object):
             self.set_creds(creds)
         handover = Handover(lambda: self.creds)
         try:
-            session = open_panes(self.cfg, devices, handover)
+            session, panes = open_panes(self.cfg, devices, handover)
         except (RuntimeError, OSError, ValueError, subprocess.SubprocessError) as e:
             handover.close()
             self.message("tmux failed: %s" % e, error=True, seconds=15)
             return
         self.my_sessions.append(session)
+        self.panes[session] = dict((pane, (dev, self.creds[0])) for pane, dev in panes.items())
         self.marked.clear()
         self.message("Starting %d panes and logging them in ..." % len(devices), seconds=30)
         self.draw()                                  # the wait is short, but never silent
@@ -3392,6 +3533,8 @@ def help_sections(cfg, ncols, switches):
         ("item", "Ctrl-b d", "back to TRuffle - the switches stay logged in"),
         ("item", "Ctrl-T", "back into the tmux session from TRuffle"),
         ("item", "Ctrl-K", "close the switch sessions (asks first)"),
+        ("item", "Ctrl-G  l", "session log on/off - also for panes already running:"),
+        ("item", "", "Ctrl-b d, Ctrl-G l, Ctrl-T, then run your show commands"),
         ("item", "Ctrl-b o", "next pane      Ctrl-b z  zoom one pane in / out"),
         ("item", "exit  or  Ctrl-d", "in a pane: log out of that one switch; when the last"),
         ("item", "", "pane closes, the tmux session ends by itself"),
@@ -3466,9 +3609,12 @@ def main(argv=None):
     parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
     parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
                         help=argparse.SUPPRESS)        # internal: one switch inside a tmux pane
+    parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
+                        help=argparse.SUPPRESS)        # internal: tmux records one pane into FILE
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
     args = parser.parse_args(argv)
-
+    if args.log_sink:                             # started by tmux pipe-pane, needs no config
+        return log_sink(*args.log_sink)
     try:
         cfg = load_config(args)
     except ConfigError as e:
@@ -3482,6 +3628,9 @@ def main(argv=None):
     except locale.Error:
         pass
     if args.pane:                                 # started by TRuffle inside a tmux pane
+        # Only what TRuffle passed counts - not truffle.conf, which a Ctrl-G change in
+        # TRuffle (log off, other symbols) does not touch.
+        cfg.session_log, cfg.charset_setting = args.log, "ascii" if args.ascii else "unicode"
         return pane_main(cfg, *args.pane)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
