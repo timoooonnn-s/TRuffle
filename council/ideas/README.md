@@ -9,6 +9,7 @@ Every idea is measured against the standing rules in [COUNCIL.md](../COUNCIL.md#
 |---|---|---|
 | **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **BUILT and live** (D40, 2026-10-09) | [tmux-panes.md](tmux-panes.md) |
 | **Serial multi-connect** (mark N switches, connect one after another, no tmux) | **under discussion with the user** (2026-10-04) | [serial-connect.md](serial-connect.md) |
+| **Terminal server / console access** (`user:70XX@terminalserver`, XX = line number) | **under discussion with the user** (2026-10-19): open is whether the inventory maps switches to console lines | [terminal-server.md](terminal-server.md) |
 | ~~Bracketed paste~~ | **BUILT** (D28) | was [bracketed-paste.md](bracketed-paste.md); PuTTY support still to confirm with Ruffy |
 | Quick connect from the shell: `truffle bc01` | idea | fuzzy-find and connect directly (one match) or open with that search (several) |
 | ~~Forget the password after N idle minutes~~ | **BUILT** (D26, `password_timeout = 15`) | was the *Warden*'s condition for background tmux sessions |
