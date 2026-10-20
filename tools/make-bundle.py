@@ -4,7 +4,7 @@
     python3 tools/make-bundle.py            ->  dist/truffle-bundle-<version>.py
     python3 tools/make-bundle.py --force    ->  rebuild even if that version exists already
 
-The file name carries VERSION from truffle, so bump VERSION before building a bundle
+The file name carries VERSION from src/truffle/__init__.py, so bump it before building a bundle
 whose contents changed - otherwise two different bundles would share one file name.
 
 On the target machine:
@@ -34,7 +34,8 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 # Without git, only these project files are shipped.
 ALLOW = re.compile(r"^(truffle|[^/]+\.md|data\.example\.csv|truffle\.conf\.example|\.git(ignore|attributes)"
-                   r"|(tests|tools)/[^/]+\.py)$")
+                   r"|(tests|tools)/[^/]+\.py|src/truffle/([^/]+/)?[^/]+\.py)$")
+VERSION_FILE = os.path.join("src", "truffle", "__init__.py")
 # Never shipped, even if tracked: site data, local settings, build output, caches.
 # council/ holds the design notes of this workspace - it is not part of the deliverable.
 EXCLUDE = re.compile(r"^council/|(^|/)(data\.csv|truffle\.conf|dist|\.git|__pycache__|\.DS_Store)(/|$)|\.pyc$|\.log$")
@@ -65,16 +66,20 @@ def safe(name):
 
 
 def installed_version(folder):
-    """VERSION of the truffle already in that folder, or None if there is none."""
-    try:
-        with open(os.path.join(folder, "truffle"), encoding="utf-8", errors="replace") as f:
-            head = f.read(4096)
-    except OSError:
-        return None
-    if "TRuffle" not in head:
-        return None
-    m = re.search(r'^VERSION = "([^"]+)"', head, re.M)
-    return m.group(1) if m else "?"
+    """VERSION of the TRuffle already in that folder, or None if there is none.
+    From 2.0 it is in src/truffle/__init__.py, before that in the truffle script."""
+    for name in (os.path.join("src", "truffle", "__init__.py"), "truffle"):
+        try:
+            with open(os.path.join(folder, name), encoding="utf-8", errors="replace") as f:
+                head = f.read(4096)
+        except OSError:
+            continue
+        m = re.search(r'^VERSION = "([^"]+)"', head, re.M)
+        if m:
+            return m.group(1)
+    if os.path.isfile(os.path.join(folder, "truffle")):
+        return "?"
+    return None
 
 
 def as_numbers(version):
@@ -181,7 +186,7 @@ def project_files():
 
 
 def version():
-    with open(os.path.join(ROOT, "truffle"), encoding="utf-8") as f:
+    with open(os.path.join(ROOT, VERSION_FILE), encoding="utf-8") as f:
         m = re.search(r'^VERSION = "([^"]+)"', f.read(), re.MULTILINE)
     return m.group(1) if m else "dev"
 
@@ -230,8 +235,8 @@ def main():
     if old and not force:
         print("ERROR: dist/%s exists already and has DIFFERENT contents.\n"
               "       Two bundles must never share a file name - someone would install the wrong one.\n"
-              "       Bump VERSION in truffle (now %s), then build again.  --force overrides."
-              % (name, ver), file=sys.stderr)
+              "       Bump VERSION in %s (now %s), then build again.  --force overrides."
+              % (name, VERSION_FILE, ver), file=sys.stderr)
         return 1
     with open(out, "w", encoding="ascii", newline="\n") as f:
         f.write(text)

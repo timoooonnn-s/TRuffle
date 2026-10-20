@@ -112,19 +112,19 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 ## Screen
 
 ```
-  TRuffle  Switch Manager                        2 marked · timmy · 2/29 switches
-───────────────────────────────────────────────────────────────────────────────────
+  TRuffle  Switch Manager                                    2 marked · timmy · 2/29 switches
+───────────────────────────────────────────────────────────────────────────────────────────────
 
    ssh   ping   details   help   exit
 
   ›  ber core
 
-     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  SSH
-     ─────────────────────────────────────────────────────────────────────────────────
- ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down  ● failed
-   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    ● ok
+     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲      SSH
+     ─────────────────────────────────────────────────────────────────────────────────────────
+ ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down now  ● failed 2h
+   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up 5m     ● ok 3d
 
-───────────────────────────────────────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────────────────────────
   Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  ^C quit
 ```
 
@@ -141,8 +141,13 @@ From top to bottom:
   - `+` marks a switch you picked with `Tab` for [several at once](#several-switches-at-once-tmux).
     Marks are kept when you search for something else, so you can collect them from several searches.
   - `▲`/`▼` shows the sorted column.
-  - **PING** shows the last ping result.
-  - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
+  - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
+    changes nothing - TRuffle says so instead of calling the switch `down`.
+  - **SSH** shows how your last real ssh attempt went: `ok` only when ssh actually got you logged in,
+    otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C`, or the password was refused.
+  - **Both say how old they are:** `now`, `5m`, `2h` (up to two days), then `3d`. A result older than
+    a day is **faded** — `down` from three days ago says little about today, ping again. The exact time
+    is in **details**. In a narrow window the age is left out before the word is cut.
     TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details**
     tells you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
@@ -427,7 +432,7 @@ file; nothing else is worth flipping mid-day.
 ## Saved check results
 
 The PING results, and your last ssh attempts with the reason they failed, each with its time, are saved per user in
-`~/.local/state/truffle/status`. After a restart they're shown again until the next check, and **details** shows when
+`~/.local/state/truffle/status`. After a restart they're shown again, with their [age](#screen), until the next check, and **details** shows when
 each one was taken. Several TRuffle windows merge their results, and the newest one wins.
 
 ## Data check
@@ -547,7 +552,7 @@ To move TRuffle without git, e.g. as a mail attachment, pack it into one plain-t
 python3 tools/make-bundle.py          # creates dist/truffle-bundle-<version>.py
 ```
 
-**Bump `VERSION` in `truffle` before building a bundle whose contents changed.** The version is part of
+**Bump `VERSION` in `src/truffle/__init__.py` before building a bundle whose contents changed.** The version is part of
 the file name, so two different bundles must never share one. `make-bundle.py` refuses to overwrite an
 existing bundle that has different contents and tells you to bump; `--force` overrides that.
 
@@ -675,7 +680,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
-| Screen garbled | `Ctrl-L` |
+| Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
 | Not sure what's wrong | `truffle --check` |
 
 ## Development
@@ -684,7 +689,14 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 python3 -m unittest discover -s tests -v
 ```
 
-- `tests/fake_ssh.py` acts as a switch (password `secret`, a changed host key, a timeout) and as a
-  terminal server with four kinds of switch behind it (normal, still logged in, local account only, slow
-  RADIUS). Point `ssh_command` at it in a test config.
+- The `truffle` file is only a launcher; the code is the package in `src/truffle/`, one module per job.
+  Its docstring (`src/truffle/__init__.py`) maps them: the lower modules (config, switch list, search,
+  results, ssh in a pty, tmux, ...) never import the curses screens in `src/truffle/ui/`, so they are
+  tested without a terminal. Python 3.8+ and the standard library only.
+- `tests/fake_ssh.py` acts as a switch (password `secret`, a changed host key, timeouts, a connect that
+  hangs) and as a terminal server with four kinds of switch behind it (normal, still logged in, local
+  account only, slow RADIUS). Like the real ssh it switches the terminal to raw mode once logged in -
+  that is how TRuffle tells a session from a failed connect. Point `ssh_command` at it in a test config.
+- The tmux tests run on a **private tmux server** of their own, so running them never touches the
+  sessions of a TRuffle you have open.
 - Design rules: [STYLE.md](STYLE.md).

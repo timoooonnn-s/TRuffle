@@ -904,3 +904,158 @@ The discussion is in [ideas/terminal-server.md](ideas/terminal-server.md).
   recorder, not by TRuffle) are included. A second TRuffle window logging at the same time shows up too.
 
 `VERSION` 1.9.0 (new feature). 155 tests.
+
+## D43: A 900-device list, result ages, and Ruffy's resize bug (user, 2026-10-20)
+
+### Scrolling a long list
+- *Measured first* (900 devices, 15 columns, 9 shown, 160x45): one redraw costs 0.7 ms of Python and
+  a scroll step ~420 bytes - ncurses already scrolls instead of repainting, and a search keystroke is
+  2-5 ms. Nothing per key grows with the list. The cost was **one frame per key repeat**: holding an
+  arrow over ssh queued a redraw per repeat, and the list kept running after you let go.
+- **Queued keys are handled before the next draw** (`App.run`, up to `KEY_BATCH = 30`): 100 key
+  repeats in one burst went from 42 KB to 14 KB of output, and the list stops where you let go.
+  Capped so the screen still moves while you hold the key.
+
+### The age of a PING / SSH result
+- Two colleagues, independently: a result without a time says little. The cell now carries its age:
+  `● down now`, `● ok 2h`, `● failed 3d` (hours up to two days). Older than a day
+  (`STALE_SECONDS`) the result is **faded** - it is history, not state. The age is dropped before the
+  word when a narrow terminal squeezes the column; the exact time stays in details.
+- Relative age, not a timestamp column: it answers "can I trust this?" at a glance and costs 4
+  characters instead of a column. The columns grew from 6 / 8 to 10 / 12.
+
+### Resize (Ruffy, PuTTY not full-window)
+- *Found:* resizing worked until the **first ssh session**, then never again. `run_session` sets a
+  Python SIGWINCH handler and puts back what Python believes was there (`SIG_DFL`) - ncurses installed
+  its own handler from C, which Python can neither see nor restore. So ncurses never heard of a resize
+  again and never sent `KEY_RESIZE`.
+- *Fix:* `read_key` asks the terminal for its size every `RESIZE_POLL_MS` (one `ioctl`) and applies a
+  change itself (`resizeterm`), so it no longer depends on any signal handler - this covers the
+  dialogs too, which wait with no timeout. `confirm()` redraws on a resize instead of reading it as
+  "no", and `Ctrl-L` re-reads the size as well.
+- *Tester:* an end-to-end test resizes the tmux window after an ssh session; it fails without the fix.
+
+`VERSION` 1.10.0. 159 tests.
+
+## D44: Review round 10 - the SSH column lied, and the tests kill live sessions (user, 2026-10-20)
+A full review of `truffle` and `tests/` (4,256 + 2,114 lines), not just the diff. Each finding was checked
+against D1-D43 first; one that goes against an earlier decision says which. **Status: all 13 fixed the
+same day (user: "fix all the findings"), see D45.**  The tmux UI tests were not run for the review itself
+(see finding 2).
+
+*Council for this round:* the Researcher's seat was replaced by a **Platform** seat (R2: RHEL first,
+Python 3.8, the macOS/Linux split paths) - a review has no open research questions, a broken R2 is the
+bigger risk. The Drafter's seat is held by the review lead.
+
+### Bugs
+1. **The SSH column says `ok` for connections that never happened** (*Critic*, the user's field report:
+   9+ unreachable switches, two showed `ok`). *Reverses D22's "any keystroke counts", tightens D9.*
+   `SessionResult.failed` takes any keystroke as proof of a session. Reproduced with real ssh to
+   192.0.2.1: **Ctrl-C while ssh hangs -> exit 130, last line `^C` -> `ok` on every platform**; Enter
+   while it hangs, then macOS's "Operation timed out" (not in `SSH_FAILURE`) -> `ok`. The same verdict
+   drives `touch()` (is:recent, "Last connected"), "Disconnected from X" and a wrong "no password prompt
+   recognised" note - main screen, panes and terminal servers alike. Fix the cause: only a keystroke
+   *after authentication* makes it a session; a signal exit before that is a failure. Not another regex.
+2. **The tmux UI tests kill the user's real sessions** (*Tester*). They run on the default tmux server and
+   `tearDown` kills every `truffle-*` session - live switch logins included, on the Mac or the RHEL box.
+   Give the tests their own tmux server (`TMUX_TMPDIR` / `-L`).
+3. **A switch name from the shared CSV is tmux-format-expanded** (*Warden*; D41's "built with
+   `shlex.quote`" is incomplete). `pipe-pane` expands `#{...}` / `##` / `#(...)` before the shell runs.
+   Shown on tmux 3.7c: `#{pane_id}` in a name became `%0` in the log header; `#(...)` did not execute
+   there, RHEL's tmux 2.7 / 3.2a is untested. Keep CSV text out of the tmux command line.
+4. **Pane results are lost on Ctrl-K** (*Critic/Operator*). A pane saves its result only at its very end,
+   and a failure first waits at "Press any key" - so closing the session records none of the failures,
+   and the column keeps an older (possibly wrong) `ok`. Save the result as soon as it is known.
+5. **Batch ping says DOWN when ping could not run** (*Critic*, against D32). `ping_once` returns False on an
+   error or timeout and the batch records `down`; the single ping uses `ping_verdict` and would not. Reuse it.
+6. **A wrong password on the main screen is never recorded** (*Operator*). `connect()` re-asks without
+   `set_status`; ESC at the re-prompt leaves the old `ok`. A pane records the same refusal as `failed`.
+7. **The status file has no lock** (*Architect*). Load-merge-replace from several processes loses a writer's
+   results when two overlap. `fcntl.flock` (stdlib, Linux + macOS).
+8. **Relative `log_dir` / `state_dir` follow the CWD** (*Platform*), which D7 rules out for `data`.
+
+### Structure
+9. **The session outcome is derived in three places** (`connect`, `connect_console`, `pane_main`), and the
+   credential retry loop twice - findings 1 and 6 are drift between those copies. One `outcome()`, one
+   `record_ssh()`.
+10. **D43's resize poll works around the cause** (*revises D43*): `run_session` replaces ncurses' SIGWINCH
+    handler. Poll the size inside `run_session` instead and ncurses keeps its own; `read_key`'s poll and the
+    double repaint per resize go away.
+11. **Pasted text travels through a global** (`PASTE`), which every caller must remember to reset.
+12. **`Config` is an attribute bag**; `cfg.charset` only exists after `main()`. A declared dataclass.
+13. **One 4,256-line file, a ~1,350-line `App`** (*reverses D2 as a development format, not as a delivery
+    format*). Develop as a package, ship one file with the stdlib `zipapp` - R1-clean, and `make-bundle.py`
+    already shows a build step is acceptable. The user decides; nothing is built.
+
+## D45: Review round 10 fixed - TRuffle split into a package (user, 2026-10-20)
+The user approved every D44 finding and opened the structure: "split it up, clean, maintainable - how you
+split it is your decision".  `VERSION` **2.0.0** (new layout, and the SSH column means something else now).
+
+### The layout (*Architect*, reverses D2 as a development format - not as a delivery format)
+- `truffle` is a 10-line launcher; the code is the package **`src/truffle/`**, one module per job, and
+  `src/truffle/__init__.py` maps them.  Dependencies only point down: `ui/` -> actions -> session / tmux
+  -> results / inventory.  Nothing below `ui/` imports curses, so all of it is tested without a terminal.
+- Delivery is unchanged: the folder with `./truffle`, and `tools/make-bundle.py` still makes ONE text file
+  of it.  No zipapp: the bundle already is the one-file transport, and a binary zip does not survive the
+  mail/Windows path the bundle was built for (Milestone 1d).  R1 holds: standard library only.
+- The old `App` (about 1,350 lines) is now: `ui/switchlist.py` (the list as data: load, search, sort,
+  marks), `ui/app.py` (drawing and keys), `ui/actions.py` (what ssh does), `ui/screen.py` (frame,
+  messages, windows, viewer), `ui/dialogs.py`, `ui/pages.py`.  Credentials (`credentials.py`), results
+  (`results.Results`, one object instead of three parallel dicts) and tmux sessions (`tmux.PaneSessions`)
+  are their own classes.
+- `Config` is a dataclass: every field is declared; `charset` and `debug_log` are properties (#12).
+- Tests follow the modules (`tests/test_<module>.py`, shared helpers in `tests/support.py`).
+
+### How the findings were fixed
+1. **SSH status (the field report).** A session counts as started only when ssh switches the terminal to
+   **raw mode** - it does exactly that once logged in, never at a password or host-key prompt - read
+   from TRuffle's side of the pty.  No keystroke guessing and no longer an error-text list deciding it.
+   Ctrl-C while connecting = `failed` ("cancelled while connecting", no extra "press a key").  *Platform:*
+   termios on a pty master acts on the slave on Linux (kernel `tty_mode_ioctl`) and macOS (tested); the
+   debug log records "session started" - **to be confirmed on RHEL with `--debug`.**  Tests: Enter + the
+   macOS time-out wording, Ctrl-C on a hanging connect, both end to end too - checked to FAIL on the old code.
+2. **Tests on a private tmux server** (`support.PrivateTmux`: own `TMUX_TMPDIR`, `TMUX` dropped).
+3. **tmux formats:** every `#` in the pipe-pane command is doubled (`##` is tmux's literal `#`).
+4. **Pane results** are written before any "press a key"; end-to-end test with Ctrl-K.
+5. **Ping verdict** uses the exit code too: down only for "ran and heard nothing" (Linux 1, macOS 2, or a
+   macOS 0 without a reply); anything else is no verdict, and the batch summary counts those.
+6. **A refused password** is recorded as `failed` ("login refused") before asking again.
+7. **One lock** (`fcntl.flock`) around every read-change-write of the state files.  Measured: 8 writers in
+   parallel kept 40 of 120 results without it, 120 of 120 with it.
+8. **Relative `log_dir` / `state_dir`** are relative to the config file that set them, like `data`.
+9. **One outcome path:** `connect.attempt_outcome` / `record_attempt`, used by the main screen and panes.
+10. **Resize at the cause:** `run_session` polls the window size and never touches SIGWINCH, so ncurses keeps
+    its own handler; `read_key`'s 200 ms poll and the double repaint are gone (*revises D43*).
+11. **No `PASTE` global:** `read_key` returns a `Paste` key that carries its text.
+12. / 13. see the layout above.
+
+### Also
+- Ctrl-L is on the help page; the SSH column's meaning is in the help page and README.
+- `make-bundle.py` reads `VERSION` from `src/truffle/__init__.py` and recognises 1.x installs.  An OLD
+  bundle run over a 2.0 install cannot read the new version and will not warn about the downgrade.
+- 166 tests (Python 3.8 and 3.14), incl. the tmux end-to-end runs.  The package is 4,873 lines against
+  4,256 before: module headers and docstrings, not repeated code.
+
+## D46: Review of 2.0 fixed, and the package cut down (user, 2026-10-20)
+A second full review of the package found 13 findings; all are fixed, each with a test:
+- **The state lock is best effort**: a filesystem that refuses locks (NFS without a lock manager)
+  saves unlocked instead of crashing TRuffle.
+- **`truffle --check` self-tests the session detection** ("ssh results : ok / NOT RELIABLE"), so the RHEL
+  question of D45 #1 answers itself on the box.
+- **Password prompts are watched only until the session starts**: a banner ending in "password:" after
+  the login no longer kills a good session and wipes the password.  "Permission denied" counts as a
+  refused login only before the session started.
+- Typing before the prompt is no longer reported as "no password prompt recognised"; Ctrl-C at a
+  "Press any key" is a key, not a quit; the host-key question comes after the result is saved;
+  `--data ~/x.csv` expands again; a failing login handover, a failing log header and sessions that
+  ended while another action looked are handled.
+
+### Cut down (user's choice: shorter help page, comments trimmed, cleanups - no other feature cut)
+- **Help page** short: keys, search syntax, commands, the essentials of tmux and terminal servers.
+  The README explains the rest.
+- **Comments and docstrings** trimmed to the why plus the D-number - *reverses D38's "comments are left
+  alone"*: the stories behind them live here, in the decision log.
+- Cleanups without behaviour change: one text-field editor for both dialogs, single-use helpers inlined.
+- `src/truffle` 4,928 -> 4,657 lines (with the fixes of this round).  Against the 4,256 of the single
+  file, the rest is what 29 modules cost (imports, module headers) plus the D44 / D45 fixes.
+- 176 tests, Python 3.8 and 3.14.

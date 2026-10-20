@@ -1,4 +1,5 @@
-"""End-to-end smoke test: the real curses UI in a tmux pane, ssh = tests/fake_ssh.py.
+"""End-to-end: the real curses UI in a tmux pane, ssh = tests/fake_ssh.py.
+Runs on a private tmux server (support.PrivateTmux) - never on yours.
 Skipped when tmux is not installed."""
 import os
 import shlex
@@ -9,8 +10,20 @@ import tempfile
 import time
 import unittest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from support import FAKE_SSH, LAUNCHER, PrivateTmux
+
 SESSION = "uitest-%d" % os.getpid()     # not truffle-*: TRuffle would count it as its own
+TMUX = PrivateTmux()
+
+
+def setUpModule():
+    if shutil.which("tmux"):
+        TMUX.start()
+
+
+def tearDownModule():
+    if shutil.which("tmux"):
+        TMUX.stop()
 
 
 def tmux(*args):
@@ -28,6 +41,8 @@ class UiSmokeTest(unittest.TestCase):
                     "fake-good;10.99.0.1;lab;Good switch;pw secret\n"
                     "fake-two;10.99.0.5;lab;Second good switch;pw secret\n"
                     "fake-dead;10.99.0.3;lab;Dead switch;timeout\n"
+                    "slow-mac;10.99.0.6;lab;Dead, macOS wording;timeout\n"
+                    "hang-sw;10.99.0.4;lab;Hangs while connecting;\n"
                     "sw10;192.0.2.10;ber;Core Berlin;\n")
         self.start()
 
@@ -37,10 +52,10 @@ class UiSmokeTest(unittest.TestCase):
         conf = os.path.join(self.tmp, "test.conf")
         with open(conf, "w") as f:
             f.write("[truffle]\ndata = data.csv\nuser = timmy\nssh_command = %s %s\n%s"
-                    % (sys.executable, os.path.join(ROOT, "tests", "fake_ssh.py"), extra_conf))
+                    % (sys.executable, FAKE_SSH, extra_conf))
         cmd = "env HOME=%s XDG_CONFIG_HOME=%s TERM=xterm %s %s --config %s; echo EXITED; sleep 30" % (
             shlex.quote(self.tmp), shlex.quote(self.tmp), shlex.quote(sys.executable),
-            shlex.quote(os.path.join(ROOT, "truffle")), shlex.quote(conf))
+            shlex.quote(LAUNCHER), shlex.quote(conf))
         tmux("new-session", "-d", "-s", SESSION, "-x", "110", "-y", "30", cmd)
         self.wait_for("TRuffle")
 
@@ -161,6 +176,27 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Left", "Enter")
         self.wait_for("Log files written while TRuffle was open")
         self.assertIn("_ab-12-ts1-01_line_1.log", self.screen().replace("\n", ""))   # the shell wraps it
+
+    def test_the_screen_follows_a_resize_also_after_an_ssh_session(self):
+        """Ruffy's bug: after the first ssh session, TRuffle stopped following the
+        window size (the SIGWINCH handler ncurses relies on was gone)."""
+        def width():
+            return len(self.screen().splitlines()[1].rstrip())         # the rule under the top bar
+        self.keys("good", literal=True)
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-SW:1>")
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("Disconnected from fake-good")
+        for cols, rows in ((140, 36), (90, 24)):
+            tmux("resize-window", "-t", SESSION, "-x", str(cols), "-y", str(rows))
+            deadline = time.time() + 5
+            while width() != cols and time.time() < deadline:
+                time.sleep(0.1)
+            self.assertEqual(width(), cols, self.screen())
 
     def test_two_marked_switches_share_one_login(self):
         """The whole handover, end to end: one password typed in TRuffle, two panes
@@ -292,15 +328,75 @@ class UiSmokeTest(unittest.TestCase):
         # connect_many (then it is carried into that message) or later, from the poll.
         self.wait_for("you will be asked again", timeout=25)
 
+    def test_ctrl_c_on_a_hanging_switch_is_recorded_as_failed(self):
+        """D44, the field report: Ctrl-C on an unreachable switch put "ok" in the SSH
+        column and the switch into is:recent."""
+        self.keys("hang", literal=True)
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("Connecting to hang-sw")
+        time.sleep(0.5)
+        self.keys("C-c")
+        self.wait_for("cancelled while connecting")
+        self.assertIn("failed", self.screen())
+        self.assertNotIn("Press any key", self.screen())    # you stopped it yourself: no extra key
+        self.keys("C-u")
+        self.keys("is:recent", literal=True)
+        self.wait_for("No switch matches")
+
+    def test_closing_the_session_keeps_the_failures_of_its_panes(self):
+        """D44: a pane recorded its result only after "Press any key", so Ctrl-K killed
+        the failed panes before they had written anything."""
+        self.keys("fake-dead", literal=True)
+        self.keys("Tab")
+        self.keys("C-u")
+        self.keys("slow", literal=True)
+        self.keys("Tab")
+        self.wait_for("2 marked")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        self.wait_in_panes(session, "Press any key")
+        self.keys("C-k")
+        self.wait_for("Close switch sessions")
+        self.keys("y", literal=True)
+        self.wait_for("Closed 1 tmux session")
+        self.keys("C-u")
+        self.keys("ssh:failed", literal=True)
+        self.wait_for("2/6 switches")
+        screen = self.screen()
+        self.assertIn("fake-dead", screen)
+        self.assertIn("slow-mac", screen)
+
+    def test_a_refused_password_is_recorded_even_when_you_give_up(self):
+        """D44 #6: a refused password, then ESC at the re-prompt, left the old SSH result."""
+        self.keys("good", literal=True)
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("wrong", literal=True)
+        self.keys("Enter")
+        self.wait_for("Login failed for 'timmy'")
+        self.keys("Escape")
+        self.wait_for("ssh cancelled")
+        self.keys("C-u")
+        self.keys("ssh:failed", literal=True)
+        self.wait_for("1/6 switches")
+        self.assertIn("fake-good", self.screen())
+
     def test_failed_connection_pauses(self):
+        """... and Ctrl-C there is a key like any other: it used to quit TRuffle."""
         self.keys("dead", literal=True)
         self.keys("Enter")
         self.wait_for("Username")
         self.keys("secret", literal=True)
         self.keys("Enter")
         self.wait_for("Press any key")
-        self.keys("x")
-        self.wait_for("ssh exit code 255")       # the reason is also shown in the status line
+        self.keys("C-c")
+        self.wait_for("(exit 255)")              # the reason is also shown in the status line
 
 
 if __name__ == "__main__":

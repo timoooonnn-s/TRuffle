@@ -86,6 +86,18 @@
 ## Milestone 1l: session log for running tmux panes. DONE (2026-10-13)
 - [x] `Ctrl-G` -> `l` starts/stops recording panes that are already logged in (D41), VERSION 1.8.0
 
+## Milestone 1m: review round 10 + the package layout. DONE (2026-10-20)
+- [x] All 13 findings of D44 fixed (D45), each with a test; the field bug with tests checked to fail on 1.10
+- [x] `src/truffle/` package, `truffle` launcher, tests per module, private tmux server for the tests
+- [x] VERSION 2.0.0, 166 tests on Python 3.8 and 3.14
+- [ ] **On RHEL: `truffle --debug`, one ssh login - the debug log must say "session started".**  If it
+      does not, every attempt there is recorded as failed (the raw-mode check, D45 #1)
+- [ ] Commit `src/` and `tests/` before building a bundle (the bundle ships tracked files only)
+
+## Milestone 1n: review of 2.0 + cut down. DONE (2026-10-20)
+- [x] 13 findings fixed (D46), short help page, comments trimmed, 4,657 lines, 176 tests
+- [ ] On RHEL: `truffle --check` must print "ssh results  : ok"
+
 ## Milestone 2: field test (needs the user)
 - [x] `./truffle --check` on the RHEL server: works (2026-10-02)
 - [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu

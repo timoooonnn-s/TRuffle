@@ -42,10 +42,11 @@
 # Logs are per user and only readable by you. Also: truffle --log, or Ctrl-G in TRuffle
 # to switch it on just for this session.
 #session_log = no
+# A relative path is relative to THIS config file, like `data`.
 #log_dir = ~/.local/state/truffle/logs
 
 # Where your favourites and connection history are kept (per user).
-# Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle
+# Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle.  Relative = to this file.
 #state_dir =
 
 # Seconds to wait for a ping reply.
