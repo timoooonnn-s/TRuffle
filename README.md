@@ -13,7 +13,7 @@
 Search your switch list, ssh into a switch, log out, and you're back in the list,
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
 
-- **One file, Python 3 standard library only.** No pip, no venv, no root.
+- **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle).
 - **Password asked once per session.** It stays in memory only and is forgotten when TRuffle exits.
 - **After you log out of a switch, you're back in TRuffle.**
 
@@ -441,6 +441,8 @@ each one was taken. Several TRuffle windows merge their results, and the newest 
 - rows with more or fewer fields than the header (often a `;` inside a comment, which shifts the columns)
 - names or IPs that appear more than once
 - missing IPs, unusable hosts, invalid IPv4 addresses (`10.0.0.300`), leading zeros (`010.0.0.5`, which ping reads as octal)
+- `ssh results`: whether this system lets TRuffle see that ssh started a session. The SSH column depends on it;
+  `NOT RELIABLE` means every login would be recorded as failed
 
 TRuffle also says so at startup when the list has warnings.
 
@@ -451,7 +453,7 @@ An unknown or retired option in `truffle.conf` stops TRuffle at startup and name
 | Code | Meaning |
 |---|---|
 | `0` | everything fine |
-| `1` | the switch list has warnings (duplicates, bad addresses, shifted columns) |
+| `1` | warnings: the switch list (duplicates, bad addresses, shifted columns), or `ssh results` not reliable |
 | `2` | cannot run: switch list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
@@ -603,7 +605,7 @@ want to restart — appends a short report of every ssh login to `~/.local/state
 - whether it typed the password
 - on a [terminal server](#terminal-servers-console): each step of the switch's login — the prompts it
   saw, what it typed (never the password itself) and why it handed over
-- exit code and the reason for a failure
+- whether the session started (ssh switched the terminal to raw mode), the exit code and the reason for a failure
 - the switch's output **before** the login (banner, prompts)
 
 The password and the session itself are never in it.
@@ -681,6 +683,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
+| Every ssh shows `failed`, even good logins | Run `truffle --check`: if `ssh results` says `NOT RELIABLE`, TRuffle cannot see sessions start on this system - send the output. Also check `ssh_options` has no `-T` / `RequestTTY=no` |
 | Not sure what's wrong | `truffle --check` |
 
 ## Development
