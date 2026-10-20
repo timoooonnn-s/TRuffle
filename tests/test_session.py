@@ -15,9 +15,10 @@ import time
 import unittest
 import warnings
 
-from test_truffle import tl
-
-FAKE_SSH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fake_ssh.py")
+from support import FAKE_SSH
+from truffle import connect, session
+from truffle.console import ConsoleLogin
+from truffle.terminal import Notes
 
 
 class User(threading.Thread):
@@ -55,7 +56,7 @@ class User(threading.Thread):
             pass                                  # keep draining so the child never blocks
 
 
-class SessionTest(unittest.TestCase):
+class PtyTest(unittest.TestCase):
 
     def setUp(self):
         # forkpty() next to the helper thread is fine here (the child execs at once)
@@ -74,22 +75,33 @@ class SessionTest(unittest.TestCase):
                 pass
         shutil.rmtree(self.home)
 
-    def session(self, host, password, script=(), one_try=True, typeahead=None):
-        argv = [sys.executable, FAKE_SSH, "-l", "timmy"]
+    def session(self, host, password, script=(), one_try=True, typeahead=None, user="timmy", console=None):
+        argv = [sys.executable, FAKE_SSH, "-l", user]
         if one_try:
             argv += ["-o", "NumberOfPasswordPrompts=1"]
         user = User(self.master, list(script))
         if typeahead:
             os.write(self.master, typeahead)
         user.start()
-        result = tl.run_session(argv + ["--", host], password, in_fd=self.slave, out_fd=self.slave)
+        result = session.run_session(argv + ["--", host], password, in_fd=self.slave, out_fd=self.slave,
+                                console=console)
         user.finished = True
         user.join(2)
         self.assertIsNone(user.error, user.transcript)
         return result, user.transcript
 
+
+class SessionTest(PtyTest):
+
+    def type_later(self, data, delay):
+        """Type while ssh is still connecting (after run_session dropped the typeahead)."""
+        timer = threading.Timer(delay, os.write, (self.master, data))
+        timer.start()
+        self.addCleanup(timer.cancel)
+
     def test_login_session_logout(self):
         r, out = self.session("10.99.0.1", "secret", [("FAKE-SW:1>", "show vlan\r"), ("you typed", "exit\r")])
+        self.assertTrue(r.started)                         # ssh switched to raw mode: logged in
         self.assertTrue(r.password_sent)
         self.assertFalse(r.auth_failed)
         self.assertTrue(r.user_typed)
@@ -128,14 +140,58 @@ class SessionTest(unittest.TestCase):
         """A stored password that never gets typed must be visible, not silent."""
         r, _ = self.session("10.99.0.1", "secret", [("FAKE-SW:1>", "exit\r")])
         self.assertFalse(r.prompt_missed)                  # normal case: the prompt was found
-        result = tl.SessionResult()
-        result.wanted_password, result.password_sent = True, False
-        result.user_typed, result.exit_code = True, 255        # logged in by hand, then logged out
+        result = session.SessionResult()
+        result.wanted_password, result.password_sent, result.exit_code = True, False, 255
+        result.started, result.typed_before_start = True, True     # typed it by hand, got in
         self.assertTrue(result.prompt_missed)
-        result.password_sent = True                            # TRuffle did type it
+        result.password_sent = True                                 # TRuffle did type it
         self.assertFalse(result.prompt_missed)
-        result.password_sent, result.user_typed, result.exit_code = False, False, 255
-        self.assertFalse(result.prompt_missed)                 # dead host: no prompt could appear
+        result.password_sent, result.started = False, False
+        self.assertFalse(result.prompt_missed)                      # dead host: typing proves nothing
+
+    def test_a_key_while_connecting_does_not_turn_a_failure_into_ok(self):
+        """D44, the field report: Enter pressed while ssh waited for an unreachable switch
+        made the attempt count as a session - and the SSH column said ok.  (macOS words the
+        time-out "Operation timed out", which no failure pattern knew.)"""
+        self.type_later(b"\r", 0.2)
+        r, _ = self.session("10.99.0.6", "secret")
+        self.assertTrue(r.user_typed)
+        self.assertFalse(r.started)
+        self.assertTrue(r.failed)
+        self.assertFalse(r.prompt_missed)
+        self.assertEqual(connect.attempt_outcome(r)[0], "failed")
+
+    def test_a_banner_ending_in_password_does_not_end_the_session(self):
+        """D45 review: after the login a banner line "...password:" read as a second
+        password prompt - TRuffle killed the good session and wiped the password."""
+        r, out = self.session("10.99.0.7", "secret", [("share your password:", "exit\r")])
+        self.assertTrue(r.started)
+        self.assertFalse(r.auth_failed)
+        self.assertFalse(r.failed)
+        self.assertEqual(out.count("secret"), 0)
+
+    def test_typing_before_the_prompt_is_not_a_missed_prompt(self):
+        """D45 review: Enter while connecting means TRuffle leaves the password to you
+        (D3) - that is not "no password prompt recognised"."""
+        self.type_later(b"\r", 0.2)                   # before the prompt (it comes at 0.6 s)
+        r, _ = self.session("10.99.0.8", "secret", [("try again", ""), ("password: ", "secret\r"),
+                                                    ("FAKE-SW:1>", "exit\r")], one_try=False)
+        self.assertFalse(r.password_sent)
+        self.assertTrue(r.started)
+        self.assertTrue(r.prompt_seen)
+        self.assertFalse(r.prompt_missed)
+
+    def test_ctrl_c_while_connecting_is_a_failure(self):
+        """D44: Ctrl-C on a hanging connect ended with exit 130 and last line '^C' - which
+        no failure pattern matches, so it was recorded as ok on every platform."""
+        self.type_later(b"\x03", 0.3)
+        r, _ = self.session("10.99.0.4", "secret")
+        self.assertEqual(r.exit_code, 130)
+        self.assertTrue(r.cancelled)
+        self.assertTrue(r.failed)
+        state, reason = connect.attempt_outcome(r)
+        self.assertEqual(state, "failed")
+        self.assertIn("cancelled while connecting", reason)
 
     def test_manual_login_logout_is_not_a_failure(self):
         """No stored password (or the prompt was missed): the user types it by hand, and
@@ -156,6 +212,7 @@ class SessionTest(unittest.TestCase):
         r, _ = self.session("10.99.0.3", "secret")
         self.assertTrue(r.failed)
         self.assertFalse(r.password_sent)
+        self.assertFalse(r.cancelled)                      # exit 255 is ssh's error, not a signal
 
     def test_changed_host_key_names_the_file(self):
         kh = os.path.join(self.home, ".ssh", "known_hosts")
@@ -165,6 +222,64 @@ class SessionTest(unittest.TestCase):
         r, _ = self.session("10.99.0.2", "secret")
         self.assertTrue(r.hostkey_changed)
         self.assertEqual(r.known_hosts, kh)
+
+
+class ConsoleSessionTest(PtyTest):
+    """A terminal server (10.99.0.9 in fake_ssh) and the switch on the serial line behind it."""
+
+    TS, QUIT = "10.99.0.9", "\x11"
+
+    def console(self, line, password="secret", script=(), mode="radius", user="timmy", pw="secret"):
+        login = ConsoleLogin(None if mode == "manual" else user, None if mode == "manual" else pw,
+                             mode, wait=20, quiet=0.3, wake=0.6, notes=Notes(colors=False))
+        return self.session(self.TS, password, script, user="timmy:70%02d" % line, console=login)
+
+    def test_both_logins_typed_then_ctrl_q_after_logout(self):
+        r, out = self.console(1, script=[("FAKE-CON:1>", "show\r"), ("you typed: show", "exit\r"),
+                                         ("goes back to TRuffle", self.QUIT)])
+        self.assertTrue(r.password_sent)
+        self.assertTrue(r.console_closed)
+        self.assertFalse(r.failed)                      # Ctrl-Q is how a console session ends
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("secret", out)
+        self.assertIn("username typed (radius)", r.events)
+
+    def test_a_console_left_logged_in_gets_nothing_typed(self):
+        """Enter shows a CLI prompt, not a login prompt: typing the username and the
+        password there would put them into the switch's CLI."""
+        r, out = self.console(2, script=[("TRuffle typed nothing", "show\r"), ("you typed: show", self.QUIT)])
+        self.assertNotIn("you typed: timmy", out)
+        self.assertNotIn("you typed: secret", out)
+        self.assertNotIn("username typed (radius)", r.events)
+        self.assertTrue(r.console_closed)
+
+    def test_a_refused_switch_login_is_typed_once_then_yours(self):
+        r, out = self.console(3, script=[("refused the radius login", "admin\r"), ("Password: ", "local123\r"),
+                                         ("FAKE-CON:1>", self.QUIT)])
+        self.assertTrue(r.switch_refused)
+        self.assertFalse(r.auth_failed)                 # the terminal server took the password
+        self.assertEqual(out.count("Login incorrect"), 1)
+
+    def test_the_local_account(self):
+        r, out = self.console(3, mode="local", user="admin", pw="local123", script=[("FAKE-CON:1>", self.QUIT)])
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("Login incorrect", out)
+
+    def test_a_slow_radius_answer_is_waited_for(self):
+        r, out = self.console(4, script=[("FAKE-CON:1>", self.QUIT)])
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("over to you", out)
+
+    def test_manual_types_nothing_at_the_switch(self):
+        r, out = self.console(1, mode="manual", script=[("Login: ", "timmy\r"), ("Password: ", "secret\r"),
+                                                        ("FAKE-CON:1>", self.QUIT)])
+        self.assertNotIn("username typed", " ".join(r.events))
+        self.assertTrue(r.console_closed)
+
+    def test_wrong_terminal_server_password(self):
+        r, _ = self.console(1, password="wrong")
+        self.assertTrue(r.auth_failed)
+        self.assertTrue(r.failed)
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen not installed")
@@ -178,9 +293,9 @@ class RemoveHostKeyTest(unittest.TestCase):
                 key = " ".join(f.read().split()[:2])
             with open(kh, "w") as f:
                 f.write("10.99.0.2 %s\n" % key)
-            self.assertTrue(tl.remove_host_key("10.99.0.2", kh)[0])
-            self.assertFalse(tl.remove_host_key("10.99.0.2", kh)[0])            # already gone
-            self.assertFalse(tl.remove_host_key("10.99.0.2", os.path.join(tmp, "missing"))[0])
+            self.assertTrue(connect.remove_host_key("10.99.0.2", kh)[0])
+            self.assertFalse(connect.remove_host_key("10.99.0.2", kh)[0])            # already gone
+            self.assertFalse(connect.remove_host_key("10.99.0.2", os.path.join(tmp, "missing"))[0])
         finally:
             shutil.rmtree(tmp)
 

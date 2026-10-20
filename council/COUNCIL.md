@@ -57,3 +57,5 @@ never the yardstick.
 - 2026-10-02: Council formed. Operator and Warden added because the core features (one-time credentials, simplicity) sit exactly on their fields.
 - 2026-10-02: Tester added once there was code. Review: Operator and Warden both changed real decisions (D3, D5, D9, D10), so both stay.
 - 2026-10-04: Council reconvened for review round 5. Standing rules R1 (as few dependencies as possible) and R2 (RHEL is the target, macOS is only a test bench) written down after the user stated both. All seven seats kept: the Architect found the crash, the Warden found the unreported pane login failure, the Operator found the lying "N marked" counter. No seat was silent, so none is removed.
+- 2026-10-20: Review round 10 (D44): the Researcher's seat replaced by a **Platform** seat for the review (R2 is the bigger risk than open research questions). Drafter's seat held by the review lead.
+- 2026-10-20: D45 (fixes + package split): same seats as D44. The Platform seat stays for now - R2 checks (Python 3.8 run, the Linux pty behaviour) found real work this round.

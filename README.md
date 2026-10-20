@@ -13,7 +13,7 @@
 Search your switch list, ssh into a switch, log out, and you're back in the list,
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
 
-- **One file, Python 3 standard library only.** No pip, no venv, no root.
+- **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle).
 - **Password asked once per session.** It stays in memory only and is forgotten when TRuffle exits.
 - **After you log out of a switch, you're back in TRuffle.**
 
@@ -75,6 +75,8 @@ echo "alias truffle='$HOME/truffle/truffle'" >> ~/.bashrc
 5. **← →** selects the other commands (ping, details, help, exit).
 6. Several switches at once: **`Tab`** marks them (`+`), and marks are kept while you search for more.
    With two or more marked, **ssh** opens one [tmux pane per switch](#several-switches-at-once-tmux).
+7. A **terminal server** (a name like `ab-12-ts1-01`): **Enter** asks for the line, then TRuffle logs
+   you into the [console](#terminal-servers-console) of the switch behind it. **`Ctrl-Q`** brings you back.
 
 Filtering by a naming scheme — all the `-l1` switches, or the `w3` and `w4` ones — is what
 [patterns and `|`](#search) are for: `*-l1`, `w3|w4`.
@@ -90,6 +92,7 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 - [Commands](#commands)
 - [Search](#search)
 - [Several switches at once (tmux)](#several-switches-at-once-tmux)
+- [Terminal servers (console)](#terminal-servers-console)
 - [Settings](#settings)
 - [Favourites and recent switches](#favourites-and-recent-switches)
 - [Saved check results](#saved-check-results)
@@ -100,6 +103,7 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 - [Single-file bundle](#single-file-bundle)
 - [Session logging](#session-logging)
 - [Debug log](#debug-log)
+- [Where the log files are](#where-the-log-files-are)
 - [Colours and symbols](#colours-and-symbols)
 - [Security](#security)
 - [Troubleshooting](#troubleshooting)
@@ -108,26 +112,27 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 ## Screen
 
 ```
-  TRuffle  Switch Manager                        2 marked · timmy · 2/29 switches
-───────────────────────────────────────────────────────────────────────────────────
+  TRuffle  Switch Manager                                    2 marked · timmy · 2/29 switches
+───────────────────────────────────────────────────────────────────────────────────────────────
 
    ssh   ping   details   help   exit
 
   ›  ber core
 
-     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲  SSH
-     ─────────────────────────────────────────────────────────────────────────────────
- ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down  ● failed
-   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up    ● ok
+     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲      SSH
+     ─────────────────────────────────────────────────────────────────────────────────────────
+ ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down now  ● failed 2h
+   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up 5m     ● ok 3d
 
-───────────────────────────────────────────────────────────────────────────────────
+───────────────────────────────────────────────────────────────────────────────────────────────
   Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  ^C quit
 ```
 
 From top to bottom:
 - **Top bar:** your login user once you've connected, how many switches are shown, and — when there
-  are any — how many switches you've [marked](#several-switches-at-once-tmux) and how many
-  [tmux sessions](#several-switches-at-once-tmux) are still running.
+  are any — how many switches you've [marked](#several-switches-at-once-tmux), how many
+  [tmux sessions](#several-switches-at-once-tmux) are still running, and `local: <user>` while a
+  switch's [local account](#terminal-servers-console) is stored.
 - **Command tabs.**
 - **Search line.**
 - **Table:**
@@ -136,8 +141,13 @@ From top to bottom:
   - `+` marks a switch you picked with `Tab` for [several at once](#several-switches-at-once-tmux).
     Marks are kept when you search for something else, so you can collect them from several searches.
   - `▲`/`▼` shows the sorted column.
-  - **PING** shows the last ping result.
-  - **SSH** shows how your last real ssh attempt went: `ok` or `failed`.
+  - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
+    changes nothing - TRuffle says so instead of calling the switch `down`.
+  - **SSH** shows how your last real ssh attempt went: `ok` only when ssh actually got you logged in,
+    otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C`, or the password was refused.
+  - **Both say how old they are:** `now`, `5m`, `2h` (up to two days), then `3d`. A result older than
+    a day is **faded** — `down` from three days ago says little about today, ping again. The exact time
+    is in **details**. In a narrow window the age is left out before the word is cut.
     TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details**
     tells you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
@@ -159,12 +169,13 @@ From top to bottom:
 | `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
 | `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
-| `Ctrl-G` | [settings](#settings) for this session: session log, debug log, tmux, symbols, forget password |
+| `Ctrl-G` | [settings](#settings) for this session: session log, debug log, tmux, symbols, forget password, log files |
 | `Ctrl-R` | reload the switch list |
 | `Ctrl-L` | redraw the screen |
 | `Ctrl-C` | quit |
+| `Ctrl-Q` | in a [terminal server](#terminal-servers-console) session: back to TRuffle (log out of the switch first) |
 
-In full-screen output (ping, details, help): `↑` `↓` `PgUp` `PgDn` scroll, and `ESC` / `Enter` / `q` closes.
+In full-screen output (ping, details, help, log files): `↑` `↓` `PgUp` `PgDn` scroll, and `ESC` / `Enter` / `q` closes.
 
 **No mouse.** TRuffle is keyboard-only on purpose, so selecting text in PuTTY or Tabby works
 normally — no Shift needed.
@@ -173,7 +184,7 @@ normally — no Shift needed.
 
 | Command | What it does |
 |---|---|
-| **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. |
+| **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. On a [terminal server](#terminal-servers-console) it asks for the line first. |
 | **ping** | Checks whether the switches you're working with still answer. **One switch** (nothing marked): `ping -c 4` with live output. **Two or more marked**: all of them at once, no live output, straight into the PING column — you can keep working while it runs, and `ESC` (with an empty search) cancels it. `ESC` during a live ping keeps the replies that already arrived; stopping before any reply leaves the old result alone. |
 | **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
 | **help** | Keys, search syntax, and the file paths in use. |
@@ -323,6 +334,73 @@ the whole mechanism from first principles — what a Unix socket is, why the tic
 who could and could not get the password, and what we honestly do *not* claim. It's written to be handed
 to a colleague who doesn't work in Linux every day.
 
+## Terminal servers (console)
+
+> Only for rows whose name matches `console_hosts` (default `*-*-ts?-*`). Turn it off with `console_hosts =`.
+
+A terminal server is reached with ssh like a switch, but the **username carries the line**:
+`timmy:7012@ab-12-ts1-01` is line 12. Behind it, the switch on that serial line asks for its
+own login. TRuffle does both logins in one go.
+
+**Which rows are terminal servers** is decided by their **name**, with the same `*` / `?` patterns as
+the [search](#search): `ab-12-ts1-01` is one, `ab-12-s34-w4` is not. `truffle --check` prints how many it
+recognised.
+
+Press **Enter** (ssh) on a terminal server and TRuffle asks:
+
+```
+  ╭─ Console · ab-12-ts1-01 ───────────────────────────────╮
+  │  Line           12    logs in as timmy:7012            │
+  │                                                        │
+  │  Switch login  ‹ radius ›                              │
+  │                your login (timmy), TRuffle types it    │
+  ╰────────────────────────────────────────────────────────╯
+```
+
+- **Line:** type the number, `12` becomes `7012` (`console_port_base = 7000`). The last line you
+  used on that terminal server is filled in — only as a suggestion, lines get re-cabled.
+- **Switch login** (`←` `→`):
+  - **radius**: your normal username and password, the ones the terminal server takes too.
+  - **local**: a switch's local account, for a switch that can't reach its RADIUS server. Asked
+    once, then kept in memory like your password (same lifetime, `Ctrl-G` `p` forgets it). The
+    top bar shows `local: <user>` while it is held.
+  - **manual**: TRuffle logs you into the terminal server and wakes the line, you log in at the switch.
+
+| You want | Press |
+|---|---|
+| choose the line | type its number (`Backspace` / `Ctrl-U` deletes) |
+| choose who logs in at the switch | `←` `→` |
+| connect | `Enter` |
+| cancel | `ESC` |
+| **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the switch |
+
+What TRuffle then does, in one ssh session:
+
+1. types your password for the terminal server,
+2. presses **Enter** to wake the serial line,
+3. at the switch's `Login:` prompt types the username, at `Password:` the password,
+4. waits — a switch whose RADIUS server is out of reach can take **minutes**. After a few seconds
+   without an answer it says so; any key takes over. (`console_login_wait = 240` seconds.)
+
+**TRuffle types only at a prompt it recognises.** A console can still be logged in from the last
+person. Enter then shows a CLI prompt, and typing your username and password there would put
+them into the switch's command history, its syslog and onto the screen of anyone else on that
+line. So when no login prompt shows up, TRuffle types nothing and hands over to you. Same when
+the switch **refuses** the login: it is typed **once**, never again, and the password is kept,
+because the terminal server has just accepted it. You log in by hand.
+
+**Getting back to TRuffle:** logging out of the switch does not end the session, it only brings
+back the switch's `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q goes back to
+TRuffle."* **`Ctrl-Q`** ends the session at any time. **Log out of the switch first**: `Ctrl-Q`
+while you're still logged in leaves the console logged in for the next person.
+
+- Terminal servers open **one at a time**, not in [tmux panes](#several-switches-at-once-tmux).
+- The **SSH** column of a terminal server says whether the terminal server let you in.
+- If the login on your terminal server misbehaves, `truffle --debug` records both logins'
+  prompts (never a password) — see [Debug log](#debug-log).
+- Another login scheme (another prefix than `70`, a word before the port): `console_login` and
+  `console_port_base` in [`truffle.conf.example`](truffle.conf.example).
+
 ## Settings
 
 Some things you only want for the next hour — recording a change window, or chasing one switch
@@ -334,7 +412,8 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
 | `t` | Several at once (tmux) | turn the [multi-switch panes](#several-switches-at-once-tmux) on or off |
 | `c` | Screen symbols | `auto` → `unicode` → `ascii`, applied at once if lines look garbled |
-| `p` | Forget the stored password | drops it now, e.g. before you leave your desk. Running sessions and tmux panes are untouched |
+| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local account](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
+| `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
 | `ESC` | | close |
 
 Changes apply to **this TRuffle only** and take effect on the next connection (the session log also on running tmux panes) — put them in
@@ -353,7 +432,7 @@ file; nothing else is worth flipping mid-day.
 ## Saved check results
 
 The PING results, and your last ssh attempts with the reason they failed, each with its time, are saved per user in
-`~/.local/state/truffle/status`. After a restart they're shown again until the next check, and **details** shows when
+`~/.local/state/truffle/status`. After a restart they're shown again, with their [age](#screen), until the next check, and **details** shows when
 each one was taken. Several TRuffle windows merge their results, and the newest one wins.
 
 ## Data check
@@ -362,6 +441,8 @@ each one was taken. Several TRuffle windows merge their results, and the newest 
 - rows with more or fewer fields than the header (often a `;` inside a comment, which shifts the columns)
 - names or IPs that appear more than once
 - missing IPs, unusable hosts, invalid IPv4 addresses (`10.0.0.300`), leading zeros (`010.0.0.5`, which ping reads as octal)
+- `ssh results`: whether this system lets TRuffle see that ssh started a session. The SSH column depends on it;
+  `NOT RELIABLE` means every login would be recorded as failed
 
 TRuffle also says so at startup when the list has warnings.
 
@@ -372,7 +453,7 @@ An unknown or retired option in `truffle.conf` stops TRuffle at startup and name
 | Code | Meaning |
 |---|---|
 | `0` | everything fine |
-| `1` | the switch list has warnings (duplicates, bad addresses, shifted columns) |
+| `1` | warnings: the switch list (duplicates, bad addresses, shifted columns), or `ssh results` not reliable |
 | `2` | cannot run: switch list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
@@ -454,9 +535,10 @@ TRuffle reads these files in order, and later ones win:
 | `--log` | turn on [session logging](#session-logging) |
 | `--ascii` | plain ASCII instead of lines and symbols ([why](#colours-and-symbols)) |
 | `--check` | check config, switch list ([data check](#data-check)) and required tools, then exit |
+| `--logs` | show where the log files are and the newest ones, then exit ([details](#where-the-log-files-are)) |
 | `--version` | show the version |
 
-`--debug` writes to `debug.log` in the state directory; `truffle --check` prints that path.
+`--debug` writes to `debug.log` in the state directory; `truffle --check` and `truffle --logs` print that path.
 
 ## Team setup
 
@@ -472,7 +554,7 @@ To move TRuffle without git, e.g. as a mail attachment, pack it into one plain-t
 python3 tools/make-bundle.py          # creates dist/truffle-bundle-<version>.py
 ```
 
-**Bump `VERSION` in `truffle` before building a bundle whose contents changed.** The version is part of
+**Bump `VERSION` in `src/truffle/__init__.py` before building a bundle whose contents changed.** The version is part of
 the file name, so two different bundles must never share one. `make-bundle.py` refuses to overwrite an
 existing bundle that has different contents and tells you to bump; `--force` overrides that.
 
@@ -502,7 +584,9 @@ git status                         # if it's a git checkout: review, commit, pus
 
 Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRuffle when
 you want it just for the next session (a change window, say). Each ssh session is written to
-`~/.local/state/truffle/logs/<date>-<time>_<switch>.log`, readable only by you.
+`~/.local/state/truffle/logs/<date>-<time>_<switch>.log` (a console:
+`..._<terminal server>_line_<n>.log`), readable only by you. [Where the log files are](#where-the-log-files-are)
+shows how to find them again.
 The log contains what was on screen, never the password TRuffle typed. Commands like
 `show running-config` can still put secrets into it.
 
@@ -519,10 +603,32 @@ want to restart — appends a short report of every ssh login to `~/.local/state
 - the ssh command
 - which password prompts TRuffle saw
 - whether it typed the password
-- exit code and the reason for a failure
+- on a [terminal server](#terminal-servers-console): each step of the switch's login — the prompts it
+  saw, what it typed (never the password itself) and why it handed over
+- whether the session started (ssh switched the terminal to raw mode), the exit code and the reason for a failure
 - the switch's output **before** the login (banner, prompts)
 
 The password and the session itself are never in it.
+
+## Where the log files are
+
+A full path is far too long for TRuffle's footer, so:
+- After a logged session the footer names the **file** (`20261020-141233_ab-12-ts1-01_line_12.log`).
+- **`Ctrl-G` → `f`** lists every log file this TRuffle has written, grouped by folder, so every
+  name fits on a line — session logs, tmux pane logs and the debug log.
+- **When TRuffle exits**, it prints the same list with full paths to the shell, where you can
+  select and copy them:
+
+```
+TRuffle closed - credentials forgotten.
+Log files written while TRuffle was open:
+  /home/timmy/.local/state/truffle/logs/20261020-141233_ab-12-ts1-01_line_12.log
+  /home/timmy/.local/state/truffle/debug.log
+```
+
+- **`truffle --logs`** from any shell: the log folder, the debug log and the newest log files.
+
+A second TRuffle window of yours that logs at the same time shows up in the list too — they share the folder.
 
 ## Colours and symbols
 
@@ -546,6 +652,8 @@ The password and the session itself are never in it.
   and you're asked again. This protects a central (TACACS+/RADIUS) account from lockouts.
   A [tmux pane](#several-switches-at-once-tmux) that can't log in reports it back, so one mistyped
   password is not spent on switch after switch.
+  A switch behind a [terminal server](#terminal-servers-console) that refuses the login is different:
+  the terminal server has just accepted the password, so it is kept, and you log in by hand.
 - **Forgotten after 10 hours.** The password is dropped 10 hours after you **typed** it and you're asked
   again (`password_lifetime` in minutes, `0` turns it off). It's measured from when you typed it, not from
   your last keypress, so a window left running for days can't keep a live login — but it never expires in
@@ -553,6 +661,9 @@ The password and the session itself are never in it.
   **It only deletes the password inside TRuffle.** A switch session you're sitting in keeps running, and
   tmux panes keep running and stay logged in. Nothing in your workspace is touched.
 - **Once you type in a session,** TRuffle stops watching. A later `Password:` prompt on the switch is never answered for you.
+- **Terminal servers:** the switch's login is typed only at a `Login:` / `Password:` prompt TRuffle
+  recognises, once, and never into a console that is still logged in. A switch's **local account** is
+  kept like your password: in memory only, forgotten with it.
 - **Host keys:** new switches are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
   TRuffle asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.
 - **CSV values** never pass through a shell, and hosts that look like command-line options (`-o...`) are rejected.
@@ -568,8 +679,11 @@ The password and the session itself are never in it.
 | Only a few colours in PuTTY | PuTTY *Connection → Data → Terminal-type string* → `xterm-256color` |
 | F-keys don't sort | PuTTY *Terminal → Keyboard → Function keys* → `ESC[n~` (default) or `Xterm R6`. `ESC` with an empty search clears a sort |
 | TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
+| Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
+| Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
-| Screen garbled | `Ctrl-L` |
+| Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
+| Every ssh shows `failed`, even good logins | Run `truffle --check`: if `ssh results` says `NOT RELIABLE`, TRuffle cannot see sessions start on this system - send the output. Also check `ssh_options` has no `-T` / `RequestTTY=no` |
 | Not sure what's wrong | `truffle --check` |
 
 ## Development
@@ -578,6 +692,14 @@ The password and the session itself are never in it.
 python3 -m unittest discover -s tests -v
 ```
 
-- `tests/fake_ssh.py` acts as a switch (password `secret`, a changed host key, a timeout).
-  Point `ssh_command` at it in a test config.
+- The `truffle` file is only a launcher; the code is the package in `src/truffle/`, one module per job.
+  Its docstring (`src/truffle/__init__.py`) maps them: the lower modules (config, switch list, search,
+  results, ssh in a pty, tmux, ...) never import the curses screens in `src/truffle/ui/`, so they are
+  tested without a terminal. Python 3.8+ and the standard library only.
+- `tests/fake_ssh.py` acts as a switch (password `secret`, a changed host key, timeouts, a connect that
+  hangs) and as a terminal server with four kinds of switch behind it (normal, still logged in, local
+  account only, slow RADIUS). Like the real ssh it switches the terminal to raw mode once logged in -
+  that is how TRuffle tells a session from a failed connect. Point `ssh_command` at it in a test config.
+- The tmux tests run on a **private tmux server** of their own, so running them never touches the
+  sessions of a TRuffle you have open.
 - Design rules: [STYLE.md](STYLE.md).

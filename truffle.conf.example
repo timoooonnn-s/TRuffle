@@ -42,10 +42,11 @@
 # Logs are per user and only readable by you. Also: truffle --log, or Ctrl-G in TRuffle
 # to switch it on just for this session.
 #session_log = no
+# A relative path is relative to THIS config file, like `data`.
 #log_dir = ~/.local/state/truffle/logs
 
 # Where your favourites and connection history are kept (per user).
-# Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle
+# Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle.  Relative = to this file.
 #state_dir =
 
 # Seconds to wait for a ping reply.
@@ -62,6 +63,19 @@
 # Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
 # and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
 #tmux = yes
+
+# Terminal servers: recognised by NAME, with the same * / ? patterns as the search
+# (several separated by spaces or commas; empty = no terminal servers).  ssh on one asks
+# for the line and logs in as console_login, with {port} = console_port_base + line:
+#   line 12  ->  timmy:7012@ab-12-ts1-01
+# Another login scheme only needs another template, e.g. "{user}:port{port}" with
+# console_port_base = 0.  The template lives here, never in the switch list.
+#console_hosts = *-*-ts?-*
+#console_login = {user}:{port}
+#console_port_base = 7000
+# Seconds to wait for the switch behind the terminal server after TRuffle typed its
+# password: a switch that cannot reach its RADIUS server takes minutes.
+#console_login_wait = 240
 
 
 # Screen symbols: auto (Unicode on UTF-8 terminals), unicode, or ascii

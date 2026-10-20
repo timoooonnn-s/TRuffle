@@ -10,7 +10,9 @@ import sys
 import time
 import unittest
 
-from test_truffle import args, tl
+from support import PrivateTmux, args
+from truffle import config, handover, tmux
+from truffle.terminal import which
 
 
 class HandoverTest(unittest.TestCase):
@@ -23,12 +25,12 @@ class HandoverTest(unittest.TestCase):
             h.close()
 
     def make(self, user="timmy", password="secret"):
-        h = tl.Handover(lambda: (user, password))
+        h = handover.Handover(lambda: (user, password))
         self.handovers.append(h)
         return h
 
-    def ask(self, handover, ticket):
-        return tl.handover_request(handover.path, "GET %s" % ticket)
+    def ask(self, h, ticket):
+        return handover.handover_request(h.path, "GET %s" % ticket)
 
     # -- the normal case ----------------------------------------------------
 
@@ -67,7 +69,7 @@ class HandoverTest(unittest.TestCase):
         h = self.make()
         ticket = h.issue("10.0.0.1")
         h.bind(ticket, os.getpid())
-        h.tickets[ticket]["created"] -= tl.TICKET_LIFETIME + 1
+        h.tickets[ticket]["created"] -= handover.TICKET_LIFETIME + 1
         self.assertEqual(self.ask(h, ticket), "ERR ticket expired")
 
     def test_an_unbound_ticket_is_refused_at_once(self):
@@ -103,7 +105,7 @@ class HandoverTest(unittest.TestCase):
         self.assertFalse(os.path.exists(path))
         self.assertFalse(os.path.exists(directory))
         with self.assertRaises(OSError):                          # nobody can connect any more
-            tl.handover_request(path, "GET x")
+            handover.handover_request(path, "GET x")
 
     def test_close_twice_is_harmless(self):
         h = self.make()
@@ -113,9 +115,9 @@ class HandoverTest(unittest.TestCase):
     # -- the password never reaches a command line --------------------------
 
     def test_the_pane_command_line_carries_no_password(self):
-        cfg = tl.load_config(args())
+        cfg = config.load_config(args())
         cfg.config_file, cfg.debug, cfg.session_log = None, False, False
-        command = tl.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.1", "sw1")
+        command = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.1", "sw1")
         self.assertNotIn("secret", command)
         self.assertIn("--pane", command)
         self.assertIn("a" * 32, command)             # only the ticket, which is useless alone
@@ -125,7 +127,7 @@ class HandoverTest(unittest.TestCase):
         and is not silently unsupported on this platform."""
         a, b = socket.socketpair(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
-            uid, pid = tl.peer_identity(a)
+            uid, pid = handover.peer_identity(a)
         finally:
             a.close()
             b.close()
@@ -133,26 +135,31 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual(pid, os.getpid())
 
 
-@unittest.skipUnless(tl.which("tmux"), "tmux not installed")
+@unittest.skipUnless(which("tmux"), "tmux not installed")
 class TmuxHelpersTest(unittest.TestCase):
+    def setUp(self):
+        self.tmux = PrivateTmux()
+        self.tmux.start()
+        self.addCleanup(self.tmux.stop)
+
     def test_sessions_list_only_ours(self):
         name = "notatrufflesession-%d" % os.getpid()
         try:
-            tl.tmux_run("new-session", "-d", "-s", name, "sleep 5")
+            tmux.tmux_run("new-session", "-d", "-s", name, "sleep 5")
         except (RuntimeError, OSError):
             self.skipTest("cannot start tmux here")
         try:
-            self.assertNotIn(name, tl.truffle_sessions())
+            self.assertNotIn(name, tmux.truffle_sessions())
         finally:
-            tl.tmux_try("kill-session", "-t", name)
+            tmux.tmux_try("kill-session", "-t", name)
 
     def test_tmux_try_swallows_failures(self):
-        tl.tmux_try("this-command-does-not-exist")          # must not raise
+        tmux.tmux_try("this-command-does-not-exist")          # must not raise
 
     def test_parent_pid_of_a_child(self):
         proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(3)"])
         try:
-            self.assertEqual(tl.parent_pid(proc.pid), os.getpid())
+            self.assertEqual(handover.parent_pid(proc.pid), os.getpid())
         finally:
             proc.kill()
             proc.wait()
