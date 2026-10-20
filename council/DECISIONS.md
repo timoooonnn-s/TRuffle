@@ -856,3 +856,51 @@ tmux sessions writes its own log from then on; `l` again stops it.
   is no longer called `truffle-*`, which TRuffle counted as one of its own.
 
 `VERSION` 1.8.0 (new feature). 133 tests.
+
+## D42: Terminal servers, and where the log files are (user, 2026-10-20)
+
+**Prototype, on the branch `terminal-server`. Not yet tried on a real terminal server.**
+The discussion is in [ideas/terminal-server.md](ideas/terminal-server.md).
+
+### Terminal servers
+- A terminal server is recognised by **name** (`console_hosts = *-*-ts?-*`, the search's own
+  patterns). `ssh` on one opens a small dialog: the **line** (12 -> `timmy:7012`, from
+  `console_login = {user}:{port}` and `console_port_base = 7000`) and the **switch login**:
+  `radius` / `local` / `manual`. The last line and login per terminal server are remembered in the
+  state folder, as a suggestion only - the lines get re-cabled (user: "option A, no inventory work").
+- **Two logins in one session.** The existing "second password prompt = wrong password, kill ssh"
+  rule would have killed the session at the switch's own prompt. `ConsoleLogin` is a small state
+  machine next to `run_session` (ts -> quiet -> login -> user -> pass -> watch), testable without a
+  pty: Enter wakes the line once the terminal server is quiet, then username and password, each only
+  at a prompt it recognises.
+- *Warden:* **nothing is typed blindly.** A console can still be logged in from the last person;
+  typed into a CLI the password would land in its history, its syslog and on other people's screens.
+  No login prompt after two Enters -> TRuffle types nothing and hands over. A refused switch login is
+  typed **once**; the password is kept (the terminal server has just accepted it - user's choice),
+  you log in by hand. Any key from you ends the automation, as before.
+- *Researcher:* a switch that cannot reach its RADIUS server takes minutes (user: "2-3 minutes").
+  `console_login_wait = 240`; after 8 s without an answer TRuffle says why.
+- The **local account** is asked once and kept in memory with the same `password_lifetime`;
+  `Ctrl-G p` and exit forget both. The top bar shows `local: <user>` while it is held.
+- **`Ctrl-Q` ends a console session.** Logging out of the switch only brings back its `Login:`
+  prompt; TRuffle then says "Logged out? Ctrl-Q goes back to TRuffle" - only when the prompt comes
+  BACK, never at the first one. Ctrl-Q and not Ctrl-]: AltGr on a Swiss keyboard (user). The key is
+  taken away from the switch only in console sessions. The connect note warns that Ctrl-Q while
+  logged in leaves the console logged in for the next person.
+- The **SSH** column of a terminal server is whether the terminal server let you in. Terminal servers
+  open one at a time, not in tmux panes. The template is in `truffle.conf` only and goes through
+  `str.replace` with `{user}` / `{port}` - never `str.format`, never the CSV (same rule as
+  ssh-profiles).
+- *Tester:* the fake ssh got a terminal server (10.99.0.9) with four lines: a normal switch, a console
+  left logged in, a switch that only takes its local account, and a slow RADIUS. The fake's password
+  prompt now turns echo off **before** the prompt, like ssh - the old order echoed a password typed
+  fast enough, which only the console test noticed.
+
+### Where the log files are
+- User: "I can't really read the full path in TRuffle." The footer now names the **file** only;
+  **`Ctrl-G f`** lists every log written since TRuffle started, grouped by folder; at **exit** the same
+  list is printed with full paths to the shell; **`truffle --logs`** prints the folder and the newest
+  files. Found by modification time in `log_dir` plus `debug.log`, so tmux pane logs (written by the
+  recorder, not by TRuffle) are included. A second TRuffle window logging at the same time shows up too.
+
+`VERSION` 1.9.0 (new feature). 155 tests.

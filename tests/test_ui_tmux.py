@@ -125,6 +125,43 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Left", "Enter")               # "exit" is left of "ssh" (the bar wraps)
         self.wait_for("credentials forgotten")
 
+    def test_terminal_server_console_and_the_log_paths(self):
+        """A terminal server row: line dialog, both logins typed, Ctrl-Q back after the
+        logout, and the session log's path in Ctrl-G f and on exit."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("ab-12-ts1-01;10.99.0.9;lab;Terminal server;\n")
+        self.start("session_log = yes\n")
+        self.keys("ts1", literal=True)
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("1", literal=True)
+        self.wait_for("logs in as timmy:7001")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-CON:1>", timeout=15)
+        self.assertNotIn("you typed: timmy", self.screen())
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("goes back to TRuffle")
+        self.keys("C-q")
+        self.wait_for("Console closed: ab-12-ts1-01 line 1")
+        self.assertIn("ab-12-ts1-01_line_1.log", self.screen())
+        self.keys("Enter")                               # remembered: line 1, radius
+        self.wait_for("logs in as timmy:7001")
+        self.keys("Escape")
+        self.keys("C-g")
+        self.wait_for("Log files of this session")
+        self.keys("f", literal=True)
+        self.wait_for("_ab-12-ts1-01_line_1.log")
+        self.assertIn(os.path.join(self.tmp, ".local", "state", "truffle", "logs") + os.sep, self.screen())
+        self.keys("Escape")
+        self.keys("Escape")
+        self.keys("Left", "Enter")
+        self.wait_for("Log files written while TRuffle was open")
+        self.assertIn("_ab-12-ts1-01_line_1.log", self.screen().replace("\n", ""))   # the shell wraps it
+
     def test_two_marked_switches_share_one_login(self):
         """The whole handover, end to end: one password typed in TRuffle, two panes
         logged in by themselves, no password on any command line."""

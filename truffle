@@ -42,7 +42,7 @@ import time
 import tty
 import warnings
 
-VERSION = "1.8.0"          # bump before building a bundle
+VERSION = "1.9.0"          # bump before building a bundle
 TITLE = "TRuffle: Switch Manager"
 CREDIT = "by Timmy & Ruffy"
 SCRIPT = os.path.realpath(os.path.abspath(__file__))       # what panes and the recorder re-run
@@ -119,6 +119,10 @@ DEFAULTS = {
     "password_lifetime": str(PASSWORD_LIFETIME_MINUTES),
     "charset": "auto",
     "tmux": "yes",
+    "console_hosts": "*-*-ts?-*",
+    "console_login": "{user}:{port}",
+    "console_port_base": "7000",
+    "console_login_wait": "240",
 }
 
 class ConfigError(Exception):
@@ -240,8 +244,15 @@ def load_config(args):
         raise ConfigError("charset: use auto, unicode or ascii")
     cfg.charset_setting = charset
     cfg.tmux = parse_bool(raw["tmux"], "tmux")
+    cfg.console_hosts = [p.lower() for p in re.split(r"[\s,]+", raw["console_hosts"]) if p]
+    cfg.console_login = raw["console_login"] or DEFAULTS["console_login"]
+    if "{port}" not in cfg.console_login or re.search(r"\{(?!user\}|port\})", cfg.console_login):
+        raise ConfigError("console_login: use {user} and {port}, e.g. {user}:{port}")
+    cfg.console_port_base = parse_int(raw["console_port_base"], "console_port_base", 0, 65000)
+    cfg.console_login_wait = parse_int(raw["console_login_wait"], "console_login_wait", 10, 900)
     cfg.debug = args.debug
     cfg.config_file = args.config
+    cfg.started = time.time()          # log files written from now on are "this session's"
     return cfg
 
 
@@ -857,6 +868,19 @@ class UserState(object):
         self.recent = dict(newest)
         self._write("recent", ["%d\t%s" % (stamp, k) for k, stamp in reversed(newest)])
 
+    def console_choice(self, key):
+        """(line, login) you used last on this terminal server, or (None, "radius").
+        Only a suggestion: lines get re-cabled, so the dialog always lets you change it."""
+        for row in reversed(self._read("console")):
+            parts = row.rstrip("\n").split("\t")
+            if len(parts) == 3 and parts[0] == key and parts[1].isdigit() and parts[2] in CONSOLE_MODES:
+                return int(parts[1]), parts[2]
+        return None, "radius"
+
+    def save_console_choice(self, key, line, mode):
+        rows = [row.rstrip("\n") for row in self._read("console") if row.split("\t", 1)[0] != key]
+        self._write("console", (rows + ["%s\t%d\t%s" % (key, line, mode)])[-500:])
+
     # A tmux pane cannot tell TRuffle anything over the socket (it is closed once the
     # panes have their login), so a wrong password is reported through this file -
     # the same way results are.  TRuffle then wipes the password it holds, instead of
@@ -1174,6 +1198,191 @@ def build_ssh_argv(cfg, user, host, inject_password):
     return argv + ["--", host]
 
 
+# --------------------------------------------------------------------------
+# Terminal servers: ssh to the terminal server as user:<port> (port = line + 7000),
+# then the switch's own login on the serial line behind it - two logins in one session.
+# --------------------------------------------------------------------------
+
+CONSOLE_EXIT_KEY, CONSOLE_EXIT_NAME = b"\x11", "Ctrl-Q"      # Ctrl-] is AltGr on a Swiss keyboard
+CONSOLE_MODES = ("radius", "local", "manual")
+# "Login:", "ber-core-01 login:", "Username:", "User Name:" - the switch asking, never
+# "Last login: Mon ..." (that one does not end with the colon).
+LOGIN_PROMPT = re.compile(r"\b(?:login|user(?:\s?name)?)\s*:\s*$", re.IGNORECASE)
+LOGIN_REFUSED = re.compile(r"login incorrect|authentication failed|incorrect password|invalid password",
+                           re.IGNORECASE)
+CONSOLE_QUIET = 1.0          # the terminal server says nothing for this long: it let us in
+CONSOLE_WAKE = 5.0           # seconds for the line to show its login prompt after Enter
+CONSOLE_WAITING_NOTE = 8.0   # no answer this long after the password: say why it takes so long
+
+
+def is_console_server(cfg, dev):
+    """A terminal server is recognised by its NAME (console_hosts, e.g. *-*-ts?-*)."""
+    name = (dev.name or "").lower()
+    return bool(name) and any(glob_match(name, pattern) for pattern in cfg.console_hosts)
+
+
+def parse_console_line(cfg, text):
+    """'12' -> 12, or None when it is not a line this terminal server can have."""
+    text = text.strip()
+    if not re.match(r"^[0-9]{1,3}$", text) or int(text) < 1:
+        return None
+    return int(text) if cfg.console_port_base + int(text) <= 65535 else None
+
+
+def console_user(cfg, user, line):
+    """The username for the terminal server: timmy + line 12 -> timmy:7012.
+    str.replace, not str.format: the template cannot reach anything but these two."""
+    port = cfg.console_port_base + line
+    return cfg.console_login.replace("{user}", user).replace("{port}", str(port))
+
+
+class ConsoleLogin(object):
+    """What happens in a console session after the terminal server's own password: wake
+    the serial line, then the switch's login.  Kept apart from run_session so every step
+    can be tested without a pty.  Methods return actions for run_session:
+    ("send", bytes) goes to the switch, ("show", text) only to your screen (never to the
+    switch, never into the session log).
+
+    Steps:  ts -> quiet -> login -> user -> pass -> watch
+      ts     the terminal server asks for its password - run_session types it as always
+      quiet  ... and it let us in: once it is quiet, press Enter to wake the line
+      login  wait for the switch's login prompt (Enter once more if nothing came)
+      user   username typed, wait for the password prompt
+      pass   password typed.  A switch that cannot reach its RADIUS server takes minutes
+      watch  TRuffle types nothing more.  It only points at Ctrl-Q when you log out of the
+             switch, because then you are at its login prompt again, not back in TRuffle
+
+    The Warden's rule: TRuffle types ONLY at a prompt it recognises.  The console may
+    still be logged in from the last person, and a username + password typed blindly into
+    a switch CLI ends up in its command history, its syslog and on everyone's screen on
+    that line.  Anything unexpected hands over to you.  One try: a refused login is never
+    typed again - and the password is kept, the terminal server has just accepted it.
+    user None = manual: TRuffle wakes the line and you log in yourself."""
+
+    def __init__(self, user=None, password=None, mode="manual", wait=240,
+                 quiet=CONSOLE_QUIET, wake=CONSOLE_WAKE, colors=True, gt=">"):
+        self.user, self.password, self.mode = user, password, mode
+        self.wait, self.quiet, self.wake = wait, quiet, wake
+        self.colors, self.gt = colors, gt
+        self.step, self.at, self.wakes = "ts", 0.0, 0
+        self.tail = ""
+        self.answered = False        # the switch said something after the password
+        self.waiting_shown = False
+        self.refused = False         # the switch turned the login down
+        self.you_typed = False
+        self.hinted = False
+        self.prompts = 0             # login prompts (or a logged-in CLI) the line has shown so far
+        self.events = []
+
+    def note(self, *lines):
+        return note_text(lines, self.colors, self.gt) + "\r\n"
+
+    def _last(self):
+        return clean_output(re.split(r"[\r\n]", self.tail)[-1]).strip()
+
+    def _hand_over(self, why, show=True):
+        self.events.append("over to you: %s" % why)
+        self.step, self.tail = "watch", ""
+        return [("show", self.note(why))] if show else []
+
+    def no_password(self):
+        """No stored password: you type both logins, TRuffle only watches."""
+        self.step = "watch"
+
+    def password_sent(self, now):
+        self.step, self.at = "quiet", now
+
+    def typed(self):
+        """You pressed a key: from now on everything is yours."""
+        if self.step != "watch":
+            self._hand_over("you typed", show=False)
+        self.you_typed, self.hinted = True, False
+
+    def output(self, text, now):
+        if not text:
+            return []
+        self.tail = (self.tail + text)[-1024:]
+        last = self._last()
+        if self.step == "ts":
+            return []
+        if self.step == "quiet":
+            if not LOGIN_PROMPT.search(last):
+                self.at = now                 # still talking: not quiet yet
+                return []
+            self.step = "login"               # the line showed its prompt by itself
+        if self.step == "login":
+            if LOGIN_PROMPT.search(last):
+                self.prompts += 1
+                self.events.append("switch login prompt seen: %r" % last)
+                if self.user is None:
+                    return self._hand_over("manual login", show=False)
+                self.step, self.at, self.tail = "user", now, ""
+                self.events.append("username typed (%s)" % self.mode)
+                return [("send", self.user.encode("utf-8") + b"\r")]
+            if is_password_prompt(last):
+                return self._hand_over("The switch asks for a password without asking for a "
+                                       "username first - TRuffle typed nothing, over to you.")
+            return []
+        if self.step == "user":
+            if is_password_prompt(last):
+                self.events.append("switch password prompt seen: %r" % last)
+                if self.password is None:
+                    return self._hand_over("no password stored", show=False)
+                self.step, self.at, self.tail = "pass", now, ""
+                self.events.append("password typed (once)")
+                return [("send", self.password.encode("utf-8") + b"\r")]
+            if LOGIN_PROMPT.search(last):
+                self.refused, self.prompts = True, self.prompts + 1
+                return self._hand_over("The switch did not take the %s username - log in by hand." % self.mode)
+            return []
+        if self.step == "pass":
+            if clean_output(text).strip():
+                self.answered = True
+            if LOGIN_REFUSED.search(clean_output(self.tail)) or LOGIN_PROMPT.search(last) \
+                    or is_password_prompt(last):
+                self.refused, self.prompts = True, self.prompts + 1
+                return self._hand_over("The switch refused the %s login - log in by hand "
+                                       "(TRuffle keeps the password)." % self.mode)
+            return []
+        # watch: you logged out of the switch, and its login prompt is BACK - not the first
+        # one, which is simply the switch asking.  tail is cleared, so one prompt counts once.
+        if LOGIN_PROMPT.search(last):
+            self.tail = ""
+            earlier, self.prompts = self.prompts, self.prompts + 1
+            if earlier and self.you_typed and not self.hinted:
+                self.hinted = True
+                return [("show", self.note("Logged out? %s goes back to TRuffle." % CONSOLE_EXIT_NAME) + last + " ")]
+        return []
+
+    def tick(self, now):
+        """Called about every 0.2 s: the steps that move on because NOTHING came."""
+        if self.step == "quiet" and now - self.at >= self.quiet:
+            self.step, self.at, self.wakes = "login", now, 1
+            self.events.append("terminal server quiet -> Enter to wake the line")
+            return [("send", b"\r")]
+        if self.step == "login" and now - self.at >= self.wake:
+            if self.wakes < 2:
+                self.wakes, self.at = self.wakes + 1, now
+                self.events.append("no login prompt yet -> Enter once more")
+                return [("send", b"\r")]
+            self.prompts += 1                 # whatever is on the line, it is a session already
+            if self.user is None:
+                return self._hand_over("no login prompt (manual login)", show=False)
+            return self._hand_over("No login prompt on the line (still logged in, or busy?) - "
+                                   "TRuffle typed nothing, over to you.")
+        if self.step == "user" and now - self.at >= self.wait:
+            return self._hand_over("No password prompt from the switch - over to you.")
+        if self.step == "pass":
+            if not self.waiting_shown and not self.answered and now - self.at >= CONSOLE_WAITING_NOTE:
+                self.waiting_shown = True
+                return [("show", self.note("Waiting for the switch - one that cannot reach its RADIUS "
+                                           "server can take a few minutes.", "Any key takes over."))]
+            if now - self.at >= self.wait:
+                self.events.append("no refusal within %ds -> logged in" % self.wait)
+                self.step = "watch"
+        return []
+
+
 class SessionResult(object):
     def __init__(self):
         self.exit_code = None
@@ -1186,6 +1395,9 @@ class SessionResult(object):
         self.wanted_password = False  # a password was stored for this attempt
         self.events = []             # what happened around the login, for --debug
         self.pre_login = ""          # output before the user's first keystroke (no secrets)
+        self.console_closed = False  # console: you pressed Ctrl-Q
+        self.switch_refused = False  # console: the switch behind the terminal server said no
+        self.log_path = None         # the session log of this connection, if one was written
 
     @property
     def prompt_missed(self):
@@ -1199,7 +1411,7 @@ class SessionResult(object):
     @property
     def failed(self):
         """ssh could not connect / log in, or the session died - not a normal logout."""
-        if self.exit_code == 0:
+        if self.exit_code == 0 or self.console_closed:
             return False
         return not self.user_typed or SSH_FAILURE.search(self.last_line) is not None
 
@@ -1252,18 +1464,27 @@ def _reap(pid, grace=2.0):
     return 255
 
 
-def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
+def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=None):
     """Run argv (ssh) in a pseudo-terminal connected to our terminal.
 
     If a password is given it is typed once, at the first password prompt,
     as long as the user has not typed anything yet.  A second password prompt
     means the login failed: the session is aborted instead of retrying.
     Login problems (wrong password, changed host key) are only detected in the
-    output before the user's first keystroke, never in the session itself."""
+    output before the user's first keystroke, never in the session itself.
+
+    console (a ConsoleLogin): argv goes to a terminal server.  After its password
+    the switch behind it logs in as well (see ConsoleLogin), so a later password
+    prompt is the switch's, not a sign of a wrong password - and CONSOLE_EXIT_KEY
+    closes the session, because logging out of the switch does not."""
     in_fd = sys.stdin.fileno() if in_fd is None else in_fd
     out_fd = sys.stdout.fileno() if out_fd is None else out_fd
     result = SessionResult()
     result.wanted_password = bool(password)
+    if console is not None:
+        console.events = result.events
+        if not password:
+            console.no_password()
     try:
         termios.tcflush(in_fd, termios.TCIFLUSH)    # drop typeahead, e.g. a double Enter
     except termios.error:
@@ -1301,7 +1522,8 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
     exit_code = None
     try:
         while True:
-            ready = select.select([master, in_fd], [], [], 1.0)[0]
+            ready = select.select([master, in_fd], [], [], 1.0 if console is None else 0.2)[0]
+            now, actions = time.time(), []
             if master in ready:
                 try:
                     data = os.read(master, 65536)
@@ -1322,7 +1544,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                 captured = (captured + text)[-16384:]
                 if not result.user_typed:
                     before_input = (before_input + text)[-16384:]
-                if armed:
+                if armed and (console is None or console.step in ("ts", "quiet")):
                     tail = (tail + text)[-1024:]
                     last = re.split(r"[\r\n]", tail)[-1]
                     if is_password_prompt(last):
@@ -1340,6 +1562,11 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                             _write_all(master, password.encode("utf-8") + b"\r")
                             result.password_sent = True
                             result.events.append("password typed (once)")
+                            if console is not None:
+                                console.password_sent(now)
+                                text = ""            # the prompt is the terminal server's, not the switch's
+                if console is not None:
+                    actions += console.output(text, now)
             if in_fd in ready:
                 try:
                     data = os.read(in_fd, 4096)
@@ -1347,6 +1574,22 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                     data = b""
                 if not data:           # our own terminal is gone
                     break
+                if console is not None and CONSOLE_EXIT_KEY in data:
+                    before = data[:data.index(CONSOLE_EXIT_KEY)]
+                    if before:
+                        try:
+                            _write_all(master, before)
+                        except OSError:
+                            pass
+                    result.console_closed = True
+                    result.events.append("%s -> session closed" % CONSOLE_EXIT_NAME)
+                    try:
+                        os.kill(pid, signal.SIGTERM)
+                    except OSError:
+                        pass
+                    break
+                if console is not None:
+                    console.typed()
                 if armed:
                     result.events.append("you typed -> TRuffle stops watching for prompts" if result.password_sent
                                          else "you typed before any password prompt -> TRuffle will not type it")
@@ -1356,6 +1599,16 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
                     _write_all(master, data)
                 except OSError:
                     pass
+            if console is not None:
+                actions += console.tick(now)
+                for kind, payload in actions:
+                    try:
+                        if kind == "send":
+                            _write_all(master, payload)
+                        else:
+                            _write_all(out_fd, payload.encode("utf-8", "replace"))
+                    except OSError:
+                        pass
             if not ready:
                 # ssh may have exited while something else keeps the pty open (ControlPersist).
                 try:
@@ -1379,6 +1632,8 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None):
         os.close(master)
 
     result.exit_code = exit_code
+    if console is not None:
+        result.switch_refused = console.refused
     if result.password_sent and exit_code == 255 and "Permission denied" in before_input:
         result.auth_failed = True
     result.hostkey_changed = "REMOTE HOST IDENTIFICATION HAS CHANGED" in before_input
@@ -1435,8 +1690,10 @@ def open_log_file(path):
 def open_session_log(cfg, name, host, user):
     """--log: a new 0600 log file for one session.  Returns (file or None, error or None)."""
     try:
-        f = open_log_file(session_log_path(cfg, name, host))
+        path = session_log_path(cfg, name, host)
+        f = open_log_file(path)
         f.write(log_header(name, host, user).encode("utf-8"))
+        f.truffle_path = path              # what TRuffle shows you afterwards
         return f, None
     except OSError as e:
         return None, "cannot write session log: %s" % e
@@ -1509,6 +1766,47 @@ def write_debug_report(cfg, name, host, argv, password, result):
         return "cannot write %s: %s" % (path, e.strerror or e)
 
 
+def log_note(result):
+    """' - session log NAME' for the footer: the file name only, Ctrl-G f has the path."""
+    if not result.log_path:
+        return ""
+    return " - session log %s (Ctrl-G f: full path)" % os.path.basename(result.log_path)
+
+
+def logs_since(cfg, since):
+    """Log files written since `since`, oldest first: the session logs in log_dir (tmux
+    panes write theirs there too) and the debug log.  Another TRuffle window of yours
+    writing at the same time shows up here as well - they share the folder."""
+    found = []
+    candidates = [os.path.join(cfg.state_dir, "debug.log")]
+    try:
+        candidates += [os.path.join(cfg.log_dir, n) for n in os.listdir(cfg.log_dir) if n.endswith(".log")]
+    except OSError:
+        pass
+    for path in candidates:
+        try:
+            mtime = os.stat(path).st_mtime
+        except OSError:
+            continue
+        if mtime >= since:
+            found.append((mtime, path))
+    return [path for _, path in sorted(found)]
+
+
+def list_logs(cfg, newest=10):
+    """truffle --logs: where the logs are, and the newest ones - from any shell."""
+    print("session logs : %s  (%s)" % (cfg.log_dir, "on" if cfg.session_log else "off unless --log / Ctrl-G l"))
+    print("debug log    : %s" % os.path.join(cfg.state_dir, "debug.log"))
+    files = logs_since(cfg, 0)[-newest:]
+    if files:
+        print("newest       :")
+        for path in files:
+            print("  %s" % path)
+    else:
+        print("newest       : none yet")
+    return 0
+
+
 def ssh_failure_reason(result):
     """Why a ssh attempt failed, short enough for a column and useful in a report:
     "Connection timed out" is a different ticket from "Permission denied", which is a
@@ -1526,10 +1824,11 @@ def ssh_failure_reason(result):
     return "exit code %s" % result.exit_code
 
 
-def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle"):
+def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle", console=None):
     """One ssh connection outside curses - used by the main screen and by tmux panes.
     Connects (typing the password once), offers to replace a changed host key, and waits
-    for a key after a failure so the reason stays readable.  Returns a SessionResult."""
+    for a key after a failure so the reason stays readable.  Returns a SessionResult.
+    console: a function returning a fresh ConsoleLogin for a terminal server line."""
     out = sys.stdout.fileno()
 
     def say(*lines):
@@ -1537,8 +1836,17 @@ def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle"):
     key_removed = False
     while True:
         argv = build_ssh_argv(cfg, user, host, inject_password=bool(password))
-        say("Connecting to %s (%s) as %s" % (name, host, user),
-            "log out to %s, ~. force-disconnects" % back)
+        login = console() if console else None
+        if login is None:
+            say("Connecting to %s (%s) as %s" % (name, host, user),
+                "log out to %s, ~. force-disconnects" % back)
+        else:
+            say("Connecting to %s (%s) as %s" % (name, host, user),
+                "switch login: %s" % {"radius": "your login, TRuffle types it",
+                                      "local": "the local account, TRuffle types it",
+                                      "manual": "you type it"}[login.mode],
+                "log out of the switch FIRST, then %s to %s" % (CONSOLE_EXIT_NAME, back),
+                "(%s while logged in leaves the console logged in for the next person)" % CONSOLE_EXIT_NAME)
         os.write(out, b"\r\n\r\n")
         log = None
         if cfg.session_log:
@@ -1546,10 +1854,14 @@ def ssh_flow(cfg, name, host, user, password, note, back="return to TRuffle"):
             if error:
                 say(error)
         try:
-            result = run_session(argv, password, log)
+            result = run_session(argv, password, log, console=login)
         finally:
             if log is not None:
                 log.close()
+                result_log = getattr(log, "truffle_path", None)
+            else:
+                result_log = None
+        result.log_path = result_log
         if cfg.debug:
             error = write_debug_report(cfg, name, host, argv, password, result)
             if error:
@@ -2340,6 +2652,9 @@ class App(object):
         self.batch = None
         self.creds = None              # (user, password or None) - memory only
         self.creds_at = 0.0            # when it was typed; forgotten PASSWORD_LIFETIME later
+        self.local_creds = None        # (user, password or None): a switch's local account, for
+        self.local_at = 0.0            # the console behind a terminal server - memory only, same lifetime
+        self.last_local_user = ""
         self.authfail_seen = 0.0       # last login failure a tmux pane reported
         self.state = UserState(cfg.state_dir)
         self.fields = {}               # lower-case header / label -> CSV header (for field:value)
@@ -2416,7 +2731,7 @@ class App(object):
             self.message(self.state.error, error=True, seconds=10)
 
     def forget_creds(self, why):
-        self.creds = None
+        self.creds = self.local_creds = None
         self.message("Password forgotten (%s) - you will be asked again." % why, seconds=15)
 
     def check_pane_auth_failure(self):
@@ -2604,6 +2919,8 @@ class App(object):
         right = "%d/%d switches" % (len(self.view), len(self.devices))
         if self.creds:
             right = "%s %s %s" % (self.creds[0], sym["sep"], right)
+        if self.local_creds:
+            right = "local: %s %s %s" % (self.local_creds[0], sym["sep"], right)
         if self.marked:
             right = "%d marked %s %s" % (len(self.marked), sym["sep"], right)
         if self.my_sessions:
@@ -2768,6 +3085,10 @@ class App(object):
         TRuffle has the screen), and tmux panes keep running and stay logged in."""
         if self.creds and creds_expired(time.time(), self.creds_at, self.cfg.password_lifetime):
             self.forget_creds("typed %s ago" % minutes_text(self.cfg.password_lifetime))
+        if self.local_creds and creds_expired(time.time(), self.local_at, self.cfg.password_lifetime):
+            self.local_creds = None
+            self.message("Local account forgotten (typed %s ago) - you will be asked again."
+                         % minutes_text(self.cfg.password_lifetime), seconds=15)
 
     def set_creds(self, creds):
         self.creds = creds
@@ -2886,6 +3207,11 @@ class App(object):
             # usable address (a mark left over from a switch that has left the list does not
             # count).  Only otherwise does the selected row matter, so it cannot block them.
             marked = [d for d in self.marked_devices() if valid_host(d.host)]
+            consoles = [d.name for d in marked if is_console_server(self.cfg, d)]
+            if len(marked) > 1 and command == "ssh" and consoles:
+                self.message("Terminal servers open one at a time - unmark %s (Shift-Tab) or ESC clears all marks"
+                             % ", ".join(consoles[:3]) + ("..." if len(consoles) > 3 else ""), error=True, seconds=10)
+                return None
             if len(marked) > 1:
                 return self.connect_many(marked) if command == "ssh" else self.start_batch(marked)
         dev = self.selected()
@@ -2897,7 +3223,9 @@ class App(object):
         if not valid_host(dev.host):
             self.message("'%s' has no usable IP/host ('%s')" % (dev.name, dev.host), error=True)
             return None
-        if command == "ssh":
+        if command == "ssh" and is_console_server(self.cfg, dev):
+            self.connect_console(dev)
+        elif command == "ssh":
             self.connect(dev)
         elif command == "ping":
             stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)),
@@ -3098,7 +3426,10 @@ class App(object):
             rows.append(("c", "Screen symbols", self.cfg.charset_setting +
                          ("" if self.cfg.charset_setting != "auto" else " (%s)" % self.cfg.charset), ""))
             rows.append(("p", "Forget the stored password now",
-                         "held" if self.creds else "not held", ""))
+                         "held" if self.creds or self.local_creds else "not held",
+                         "+ local account" if self.local_creds else ""))
+            written = logs_since(self.cfg, self.cfg.started)
+            rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
             width = min(80, max(56, scr.getmaxyx()[1] - 6))
             label_w, value_x = 34, 3 + 4 + 34 + 2
             y0, x0 = self.draw_window("Settings", "for this TRuffle only", len(rows) + 7, width)
@@ -3146,10 +3477,12 @@ class App(object):
                 self.th = Theme(self.cfg.charset)        # rebuild: symbols change at once
                 self.message("Screen symbols: %s" % nxt)
             elif key == "p":
-                if self.creds:
+                if self.creds or self.local_creds:
                     self.forget_creds("you asked")
                 else:
                     self.message("No password is stored")
+            elif key == "f":
+                self.show_logs()
 
     def confirm(self, title, question, detail=()):
         """A y/n window.  Anything other than y / Enter means no."""
@@ -3165,14 +3498,18 @@ class App(object):
 
     # -- credentials --------------------------------------------------------
 
-    def credential_dialog(self, error=None):
-        """Ask user + password.  Returns (user, password or None) or None on ESC."""
-        entry = [self.last_user or "", ""]           # what is typed: username, password
+    def credential_dialog(self, error=None, local_for=None):
+        """Ask user + password.  Returns (user, password or None) or None on ESC.
+        local_for: the terminal server name - then it asks for a switch's local account."""
+        entry = [(self.last_local_user if local_for else self.last_user) or "", ""]
         field = 1 if entry[0] else 0
         scr, th, sym = self.scr, self.th, self.th.sym
         while True:
             bw, bh = min(62, scr.getmaxyx()[1] - 6), 13
-            y0, x0 = self.draw_window("Login", "asked once per session", bh, bw)
+            if local_for:
+                y0, x0 = self.draw_window("Local account", "switch behind %s" % local_for, bh, bw)
+            else:
+                y0, x0 = self.draw_window("Login", "asked once per session", bh, bw)
             fw = max(6, bw - 18)
 
             values = [entry[0], sym["mask"] * len(entry[1])]
@@ -3189,7 +3526,8 @@ class App(object):
                     put(scr, y0 + 6 + i, x0 + 3, line, th.win_err)
             put(scr, y0 + 8, x0 + 3, ("Kept in memory only %s forgotten when TRuffle exits" % sym["sep"])[:bw - 6],
                 th.win_hint)
-            put(scr, y0 + 9, x0 + 3, "Empty password: ssh asks at every login"[:bw - 6], th.win_hint)
+            put(scr, y0 + 9, x0 + 3, ("Empty password: you type it at the switch" if local_for
+                                      else "Empty password: ssh asks at every login")[:bw - 6], th.win_hint)
             x = x0 + 3
             for key, label in (("Enter", "OK"), ("Tab", "next field"), ("ESC", "cancel")):
                 put(scr, y0 + 11, x, key, th.win_key)
@@ -3211,7 +3549,10 @@ class App(object):
                 if not valid_user(entry[0]):
                     error, field = "Please enter a valid username.", 0
                     continue
-                self.last_user = entry[0]
+                if local_for:
+                    self.last_local_user = entry[0]
+                else:
+                    self.last_user = entry[0]
                 return entry[0], (entry[1] or None)
             elif key == "BACKSPACE":
                 entry[field] = entry[field][:-1]
@@ -3247,7 +3588,7 @@ class App(object):
                 self.message("%s: %s" % (dev.name, reason), error=True, seconds=15)
             elif not result.failed:
                 self.state.touch(device_key(dev))
-                self.message("Disconnected from %s" % dev.name)
+                self.message("Disconnected from %s%s" % (dev.name, log_note(result)))
             else:
                 text = "%s: ssh exit code %d" % (dev.name, result.exit_code)
                 if result.last_line:
@@ -3263,6 +3604,165 @@ class App(object):
             self.save_status()
             self.status_changed(dev, force=True)        # is:recent, ssh: searches, status sorts
             return
+
+    def connect_console(self, dev):
+        """A terminal server: ask which line and who logs in at the switch behind it,
+        then ssh as user:<port>.  The terminal server always takes your normal login."""
+        key = device_key(dev)
+        line, mode = self.state.console_choice(key)
+        choice = self.console_dialog(dev, line, mode)
+        if choice is None:
+            self.message("Console cancelled")
+            return
+        line, mode = choice
+        self.state.save_console_choice(key, line, mode)
+        label = "%s line %d" % (dev.name, line)
+        error = None
+        while True:
+            if self.creds is None:
+                creds = self.credential_dialog(error)
+                if creds is None:
+                    self.message("Console cancelled")
+                    return
+                self.set_creds(creds)
+            if mode == "local" and self.local_creds is None:
+                local = self.credential_dialog(local_for=dev.name)
+                if local is None:
+                    self.message("Console cancelled")
+                    return
+                self.local_creds, self.local_at = local, time.time()
+            user, password = self.creds
+            switch_user, switch_password = {"radius": self.creds, "local": self.local_creds,
+                                            "manual": (None, None)}[mode]
+            ts_user = console_user(self.cfg, user, line)
+            if not valid_user(ts_user):
+                self.message("'%s' is not a valid username - check console_login in truffle.conf" % ts_user,
+                             error=True, seconds=12)
+                return
+
+            def login():
+                return ConsoleLogin(switch_user, switch_password, mode, self.cfg.console_login_wait,
+                                    colors=self.th.colors, gt=self.th.sym["gt"])
+            self.leave_curses()
+            try:
+                result = ssh_flow(self.cfg, label, dev.host, ts_user, password, self.note, console=login)
+            finally:
+                self.resume_curses()
+            if result.auth_failed:
+                self.creds = None             # the terminal server said no: that is YOUR password
+                error = "Login failed for '%s' on %s - please re-enter." % (ts_user, dev.name)
+                continue
+            reason = ssh_failure_reason(result) if result.failed or result.hostkey_changed else ""
+            if result.hostkey_changed:
+                self.message("%s: %s" % (dev.name, reason), error=True, seconds=15)
+            elif result.failed:
+                text = "%s: ssh exit code %d" % (label, result.exit_code)
+                if result.last_line:
+                    text += " - " + result.last_line
+                self.message(text, error=True, seconds=10)
+            else:
+                self.state.touch(key)
+                if result.switch_refused:
+                    self.message("%s: the switch refused the %s login, so you logged in by hand - "
+                                 "the password is kept%s" % (label, mode, log_note(result)), seconds=12)
+                else:
+                    self.message("Console closed: %s%s" % (label, log_note(result)))
+            if result.prompt_missed:
+                self.message("%s: no password prompt recognised - you had to type it yourself. "
+                             "Run 'truffle --debug' and connect again to see what it sent." % dev.name,
+                             error=True, seconds=20)
+            # The SSH column of a terminal server says whether IT let you in - not the switch
+            # behind it, which may not even be in the list.
+            self.set_status("ssh", dev.host, SSH_FAILED if reason else SSH_OK, reason)
+            self.save_status()
+            self.status_changed(dev, force=True)
+            return
+
+    def console_dialog(self, dev, line, mode):
+        """Line number and switch login for a terminal server.  Digits type the line,
+        Left / Right choose the login.  Returns (line, mode) or None on ESC."""
+        text = str(line) if line else ""
+        mi = CONSOLE_MODES.index(mode) if mode in CONSOLE_MODES else 0
+        error = None
+        scr, th, sym = self.scr, self.th, self.th.sym
+        while True:
+            mode = CONSOLE_MODES[mi]
+            bw, bh = min(66, scr.getmaxyx()[1] - 6), 13
+            y0, x0 = self.draw_window("Console", dev.name, bh, bw)
+            put(scr, y0 + 2, x0 + 3, "Line", th.win_label)
+            put(scr, y0 + 2, x0 + 17, " " + text.ljust(4), th.field)
+            put(scr, y0 + 2, x0 + 18 + len(text), " ", th.cursor)
+            n = parse_console_line(self.cfg, text) if text else None
+            user = self.creds[0] if self.creds else (self.last_user or "user")
+            if n:
+                put(scr, y0 + 2, x0 + 24, ("logs in as %s" % console_user(self.cfg, user, n))[:bw - 27], th.win_hint)
+            put(scr, y0 + 4, x0 + 3, "Switch login", th.win_label)
+            put(scr, y0 + 4, x0 + 17, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]), th.field)
+            local = self.local_creds[0] if self.local_creds else None
+            what = {"radius": "your login (%s), TRuffle types it" % user,
+                    "local": ("local account %s, TRuffle types it" % local) if local
+                             else "a local account - asked once, then kept",
+                    "manual": "you log in at the switch yourself"}[mode]
+            put(scr, y0 + 5, x0 + 17, what[:bw - 20], th.win_hint)
+            if error:
+                put(scr, y0 + 7, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
+            put(scr, y0 + 9, x0 + 3, ("Line = the port on the terminal server: 12 -> %d"
+                                      % (self.cfg.console_port_base + 12))[:bw - 6], th.win_hint)
+            x = x0 + 3
+            for key, label in (("Enter", "connect"), (sym["lr"], "switch login"), ("ESC", "cancel")):
+                put(scr, y0 + 11, x, key, th.win_key)
+                put(scr, y0 + 11, x + len(key) + 1, label, th.win_hint)
+                x += len(key) + len(label) + 4
+            scr.refresh()
+
+            key = read_key(scr, -1)
+            if key is None:
+                continue
+            if key == "ESC":
+                return None
+            if key in ("LEFT", "RIGHT", "TAB", "BTAB"):
+                mi = (mi + (-1 if key in ("LEFT", "BTAB") else 1)) % len(CONSOLE_MODES)
+            elif key == "ENTER":
+                n = parse_console_line(self.cfg, text)
+                if n is None:
+                    error = "Please enter the line number, e.g. 12."
+                    continue
+                return n, CONSOLE_MODES[mi]
+            elif key == "BACKSPACE":
+                text = text[:-1]
+            elif key == "CTRL_U":
+                text = ""
+            elif key == "RESIZE":
+                self.sync_size()
+            elif key == "PASTE":
+                text = (text + "".join(c for c in paste_text(PASTE["text"], multiline=False) if c.isdigit()))[:3]
+                PASTE["text"] = ""
+            elif len(key) == 1 and key.isdigit() and len(text) < 3:
+                text += key
+                error = None
+
+    def show_logs(self):
+        """Ctrl-G f: the log files of this TRuffle session with their whole path - the
+        footer is far too short for one.  Grouped by folder, so a name fits on a line."""
+        th = self.th
+        files = logs_since(self.cfg, self.cfg.started)
+        lines = []
+        if not files:
+            lines.append("No log file written since TRuffle started.")
+        folder = None
+        for path in files:
+            if os.path.dirname(path) != folder:
+                folder = os.path.dirname(path)
+                lines += [[], [(folder + os.sep, th.key)]]
+            lines.append("    " + os.path.basename(path))
+        lines += [[], [("Session logs ", th.hint), (self.cfg.log_dir, th.text),
+                       ("  (%s)" % ("on" if self.cfg.session_log else "off - Ctrl-G l"), th.hint)],
+                  [("Debug log    ", th.hint), (os.path.join(self.cfg.state_dir, "debug.log"), th.text),
+                   ("  (%s)" % ("on" if self.cfg.debug else "off - Ctrl-G d"), th.hint)],
+                  [],
+                  "TRuffle prints this list with the full paths when it exits.",
+                  "From any shell: truffle --logs"]
+        self.show_text("log files", lines=lines)
 
     def note(self, *lines):
         return note_text(lines, self.th.colors, self.th.sym["gt"])
@@ -3544,11 +4044,19 @@ def help_sections(cfg, ncols, switches):
         ("item", "tmux", "%s" % ("on" if cfg.tmux else "off (tmux = yes in truffle.conf)")),
         ("section", "Inside an ssh session"),
         ("item", "~.", "(at the start of a line) force-disconnect a hanging session"),
+        ("section", "Terminal servers (%s)" % (", ".join(cfg.console_hosts) or "off: console_hosts is empty")),
+        ("item", "Enter (ssh)", "asks for the line (12 = port %d) and who logs in at the switch:"
+                                % (cfg.console_port_base + 12)),
+        ("item", "", "radius = your login, local = a local account (asked once, then kept),"),
+        ("item", "", "manual = you type it.  TRuffle types only at a login prompt it knows"),
+        ("item", CONSOLE_EXIT_NAME, "back to TRuffle - log out of the switch FIRST, or the console"),
+        ("item", "", "stays logged in for the next person on that line"),
         ("section", "Setup"),
         ("item", "Switch list", "%s  (%d switches)" % (cfg.data, switches)),
         ("item", "Config files", ", ".join(cfg.files) or "none (defaults)"),
         ("item", "State / results", cfg.state_dir),
         ("item", "Session log", cfg.log_dir if cfg.session_log else "off  (start with --log to record)"),
+        ("item", "Log files", "Ctrl-G f lists this session's with the full path; printed at exit too"),
         ("item", "Debug log", os.path.join(cfg.state_dir, "debug.log") if cfg.debug
                               else "off  (start with --debug if a login misbehaves)"),
     ]
@@ -3574,6 +4082,10 @@ def check(cfg):
             first = devices[0]
             print("first switch : name %r  ssh to %r"
                   % (first.values.get(picked["name"], ""), first.host))
+        consoles = [d for d in devices if is_console_server(cfg, d)]
+        print("term. servers: %d  (console_hosts = %s)%s" % (
+            len(consoles), " ".join(cfg.console_hosts) or "off",
+            "  e.g. %s" % consoles[0].name if consoles else ""))
         issues = warns + data_issues(devices, report["lines"], report["issues"], picked["name"])
         no_warnings = not issues
         print("data check   : %s" % ("ok" if no_warnings else "%d warning(s)" % len(issues)))
@@ -3607,6 +4119,7 @@ def main(argv=None):
                              "directory (truffle --check prints the path)")
     parser.add_argument("--ascii", action="store_true", help="plain ASCII screen (if lines/symbols look garbled)")
     parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
+    parser.add_argument("--logs", action="store_true", help="show where the log files are and the newest ones, then exit")
     parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
                         help=argparse.SUPPRESS)        # internal: one switch inside a tmux pane
     parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
@@ -3622,6 +4135,8 @@ def main(argv=None):
         return 2
     if args.check:
         return check(cfg)
+    if args.logs:
+        return list_logs(cfg)
     harden_process()                              # before the password can ever be in memory
     try:
         locale.setlocale(locale.LC_ALL, "")
@@ -3651,6 +4166,11 @@ def main(argv=None):
         # terminal must not keep a mode we switched on.
         bracketed_paste(False)
     print("TRuffle closed - credentials forgotten.")
+    written = logs_since(cfg, cfg.started)
+    if written:
+        print("Log files written while TRuffle was open:")
+        for path in written:
+            print("  %s" % path)
     for session in truffle_sessions():
         print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"
               % (session, session))

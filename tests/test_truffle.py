@@ -991,5 +991,152 @@ class TestProcStream(unittest.TestCase):
         self.assertEqual(s.returncode, 127)
 
 
+class TestConsole(TempDir):
+    """Terminal servers: recognised by name, logged into as user:<7000 + line>."""
+
+    def dev(self, name):
+        d = tl.Device()
+        d.name, d.host = name, "10.0.0.1"
+        return d
+
+    def test_recognised_by_name_only(self):
+        cfg = tl.load_config(args())
+        self.assertTrue(tl.is_console_server(cfg, self.dev("ab-12-ts1-01")))
+        self.assertTrue(tl.is_console_server(cfg, self.dev("AB-12-TS3-02.example.net")))
+        for name in ("ab-12-s34-w4", "ab-12-ts12-01", "ab-12-ts-01", "ts1", ""):
+            self.assertFalse(tl.is_console_server(cfg, self.dev(name)), name)
+
+    def test_console_hosts_can_be_changed_or_switched_off(self):
+        cfg = tl.load_config(args(config=self.write("c.conf", "[truffle]\nconsole_hosts = con-*, *-cs?\n")))
+        self.assertTrue(tl.is_console_server(cfg, self.dev("con-berlin")))
+        self.assertTrue(tl.is_console_server(cfg, self.dev("ber-cs1")))
+        self.assertFalse(tl.is_console_server(cfg, self.dev("ab-12-ts1-01")))
+        cfg = tl.load_config(args(config=self.write("c.conf", "[truffle]\nconsole_hosts =\n")))
+        self.assertFalse(tl.is_console_server(cfg, self.dev("ab-12-ts1-01")))
+
+    def test_line_to_username(self):
+        cfg = tl.load_config(args())
+        self.assertEqual(tl.parse_console_line(cfg, "12"), 12)
+        self.assertEqual(tl.parse_console_line(cfg, " 7 "), 7)
+        for bad in ("", "0", "abc", "1 2", "1234", "-1", "12a"):
+            self.assertIsNone(tl.parse_console_line(cfg, bad), bad)
+        self.assertEqual(tl.console_user(cfg, "timmy", 12), "timmy:7012")
+        self.assertEqual(tl.console_user(cfg, "timmy", 1), "timmy:7001")
+        self.assertTrue(tl.valid_user(tl.console_user(cfg, "timmy", 12)))
+
+    def test_login_template(self):
+        cfg = tl.load_config(args(config=self.write("c.conf", "[truffle]\nconsole_login = {user}:port{port}\n"
+                                                               "console_port_base = 0\n")))
+        self.assertEqual(tl.console_user(cfg, "timmy", 5), "timmy:port5")
+        for body in ("console_login = {user}\n", "console_login = {user}:{port}{0}\n",
+                     "console_login = {user.__class__}:{port}\n", "console_port_base = lots\n"):
+            with self.assertRaises(tl.ConfigError, msg=body):
+                tl.load_config(args(config=self.write("c.conf", "[truffle]\n" + body)))
+
+    def test_last_line_and_login_are_remembered_per_terminal_server(self):
+        st = tl.UserState(os.path.join(self.tmp, "state"))
+        self.assertEqual(st.console_choice("ab-12-ts1-01"), (None, "radius"))
+        st.save_console_choice("ab-12-ts1-01", 12, "local")
+        st.save_console_choice("ab-12-ts2-01", 3, "manual")
+        st.save_console_choice("ab-12-ts1-01", 14, "radius")
+        again = tl.UserState(os.path.join(self.tmp, "state"))
+        self.assertEqual(again.console_choice("ab-12-ts1-01"), (14, "radius"))
+        self.assertEqual(again.console_choice("ab-12-ts2-01"), (3, "manual"))
+        with open(os.path.join(self.tmp, "state", "console")) as f:
+            self.assertEqual(len(f.readlines()), 2)
+
+
+class TestConsoleLogin(unittest.TestCase):
+    """The console login's decisions, without a pty: what is typed when."""
+
+    def run_to_login(self, c):
+        c.password_sent(0.0)
+        self.assertEqual(c.tick(2.0), [("send", b"\r")])          # quiet -> Enter wakes the line
+
+    def test_types_only_at_the_prompts(self):
+        c = tl.ConsoleLogin("timmy", "secret", "radius", colors=False)
+        self.run_to_login(c)
+        self.assertEqual(c.output("\r\nLast login: Mon Oct 19 on ttyS0\r\n", 2.1), [])
+        self.assertEqual(c.output("Login: ", 2.2), [("send", b"timmy\r")])
+        self.assertEqual(c.output("timmy\r\n", 2.3), [])          # our own echo is no prompt
+        self.assertEqual(c.output("Password: ", 2.4), [("send", b"secret\r")])
+        self.assertEqual(c.output("\r\nsw:1>", 2.5), [])
+        self.assertFalse(c.refused)
+
+    def test_no_login_prompt_means_nothing_typed(self):
+        c = tl.ConsoleLogin("timmy", "secret", "radius", wake=5, colors=False)
+        self.run_to_login(c)
+        self.assertEqual(c.output("\r\nsw:1#", 2.1), [])                # somebody left it logged in
+        self.assertEqual(c.tick(7.1), [("send", b"\r")])                # Enter once more ...
+        self.assertEqual(c.output("\r\nsw:1#", 7.2), [])
+        actions = c.tick(12.2)                                          # ... then hand over
+        self.assertEqual(c.step, "watch")
+        self.assertEqual([kind for kind, _ in actions], ["show"])
+        self.assertEqual(c.output("Login: ", 13), [])                   # too late: never typed now
+
+    def test_refused_once_then_yours(self):
+        c = tl.ConsoleLogin("timmy", "secret", "radius", colors=False)
+        self.run_to_login(c)
+        c.output("Login: ", 2.1)
+        c.output("Password: ", 2.2)
+        actions = c.output("\r\nLogin incorrect\r\nLogin: ", 30)
+        self.assertTrue(c.refused)
+        self.assertEqual([kind for kind, _ in actions], ["show"])
+        self.assertEqual(c.output("Password: ", 31), [])                # never a second time
+
+    def test_your_key_takes_over(self):
+        c = tl.ConsoleLogin("timmy", "secret", "radius", colors=False)
+        self.run_to_login(c)
+        c.typed()
+        self.assertEqual(c.output("Login: ", 2.1), [])
+
+    def test_the_logout_hint_comes_once_per_logout(self):
+        c = tl.ConsoleLogin(None, None, "manual", colors=False)
+        self.run_to_login(c)
+        self.assertEqual(c.output("Login: ", 2.1), [])                  # manual: yours, no hint yet
+        c.typed()
+        hint = c.output("\r\nLogin: ", 50)
+        self.assertIn("Ctrl-Q", hint[0][1])
+        self.assertEqual(c.output("", 51) + c.output("\x1b[K", 51), [])
+        c.typed()
+        self.assertEqual(len(c.output("\r\nLogin: ", 90)), 1)
+
+    def test_terminal_server_prompt_line_wakes_by_itself(self):
+        c = tl.ConsoleLogin("timmy", "secret", "radius", colors=False)
+        c.password_sent(0.0)
+        self.assertEqual(c.output("\r\nsw login: ", 0.5), [("send", b"timmy\r")])
+
+
+class TestLogFiles(TempDir):
+    def test_only_files_written_since_start_oldest_first(self):
+        cfg = types.SimpleNamespace(log_dir=os.path.join(self.tmp, "logs"), state_dir=os.path.join(self.tmp, "st"))
+        os.makedirs(cfg.log_dir)
+        os.makedirs(cfg.state_dir)
+        old = self.write("logs/20261001-0900_old.log", "x")
+        os.utime(old, (1000, 1000))
+        self.write("logs/notes.txt", "x")
+        a = self.write("logs/20261020-1400_ab-12-ts1-01_line_12.log", "x")
+        os.utime(a, (5000, 5000))
+        d = self.write("st/debug.log", "x")
+        os.utime(d, (6000, 6000))
+        self.assertEqual(tl.logs_since(cfg, 2000), [a, d])
+        self.assertEqual(tl.logs_since(cfg, 0), [old, a, d])
+        cfg.log_dir = os.path.join(self.tmp, "missing")
+        self.assertEqual(tl.logs_since(cfg, 0), [d])
+
+    def test_the_footer_names_the_file_only(self):
+        r = tl.SessionResult()
+        self.assertEqual(tl.log_note(r), "")
+        r.log_path = "/home/timmy/.local/state/truffle/logs/20261020-1400_sw1.log"
+        self.assertEqual(tl.log_note(r), " - session log 20261020-1400_sw1.log (Ctrl-G f: full path)")
+
+    def test_session_log_remembers_its_path(self):
+        cfg = types.SimpleNamespace(log_dir=os.path.join(self.tmp, "logs"))
+        log, error = tl.open_session_log(cfg, "ab-12-ts1-01 line 12", "10.0.0.1", "timmy:7012")
+        log.close()
+        self.assertTrue(log.truffle_path.endswith("_ab-12-ts1-01_line_12.log"), log.truffle_path)
+        self.assertTrue(os.path.isfile(log.truffle_path))
+
+
 if __name__ == "__main__":
     unittest.main()

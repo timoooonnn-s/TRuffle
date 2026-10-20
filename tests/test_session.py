@@ -55,7 +55,7 @@ class User(threading.Thread):
             pass                                  # keep draining so the child never blocks
 
 
-class SessionTest(unittest.TestCase):
+class PtyTest(unittest.TestCase):
 
     def setUp(self):
         # forkpty() next to the helper thread is fine here (the child execs at once)
@@ -74,19 +74,23 @@ class SessionTest(unittest.TestCase):
                 pass
         shutil.rmtree(self.home)
 
-    def session(self, host, password, script=(), one_try=True, typeahead=None):
-        argv = [sys.executable, FAKE_SSH, "-l", "timmy"]
+    def session(self, host, password, script=(), one_try=True, typeahead=None, user="timmy", console=None):
+        argv = [sys.executable, FAKE_SSH, "-l", user]
         if one_try:
             argv += ["-o", "NumberOfPasswordPrompts=1"]
         user = User(self.master, list(script))
         if typeahead:
             os.write(self.master, typeahead)
         user.start()
-        result = tl.run_session(argv + ["--", host], password, in_fd=self.slave, out_fd=self.slave)
+        result = tl.run_session(argv + ["--", host], password, in_fd=self.slave, out_fd=self.slave,
+                                console=console)
         user.finished = True
         user.join(2)
         self.assertIsNone(user.error, user.transcript)
         return result, user.transcript
+
+
+class SessionTest(PtyTest):
 
     def test_login_session_logout(self):
         r, out = self.session("10.99.0.1", "secret", [("FAKE-SW:1>", "show vlan\r"), ("you typed", "exit\r")])
@@ -165,6 +169,64 @@ class SessionTest(unittest.TestCase):
         r, _ = self.session("10.99.0.2", "secret")
         self.assertTrue(r.hostkey_changed)
         self.assertEqual(r.known_hosts, kh)
+
+
+class ConsoleSessionTest(PtyTest):
+    """A terminal server (10.99.0.9 in fake_ssh) and the switch on the serial line behind it."""
+
+    TS, QUIT = "10.99.0.9", "\x11"
+
+    def console(self, line, password="secret", script=(), mode="radius", user="timmy", pw="secret"):
+        login = tl.ConsoleLogin(None if mode == "manual" else user, None if mode == "manual" else pw,
+                                mode, wait=20, quiet=0.3, wake=0.6, colors=False)
+        return self.session(self.TS, password, script, user="timmy:70%02d" % line, console=login)
+
+    def test_both_logins_typed_then_ctrl_q_after_logout(self):
+        r, out = self.console(1, script=[("FAKE-CON:1>", "show\r"), ("you typed: show", "exit\r"),
+                                         ("goes back to TRuffle", self.QUIT)])
+        self.assertTrue(r.password_sent)
+        self.assertTrue(r.console_closed)
+        self.assertFalse(r.failed)                      # Ctrl-Q is how a console session ends
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("secret", out)
+        self.assertIn("username typed (radius)", r.events)
+
+    def test_a_console_left_logged_in_gets_nothing_typed(self):
+        """Enter shows a CLI prompt, not a login prompt: typing the username and the
+        password there would put them into the switch's CLI."""
+        r, out = self.console(2, script=[("TRuffle typed nothing", "show\r"), ("you typed: show", self.QUIT)])
+        self.assertNotIn("you typed: timmy", out)
+        self.assertNotIn("you typed: secret", out)
+        self.assertNotIn("username typed (radius)", r.events)
+        self.assertTrue(r.console_closed)
+
+    def test_a_refused_switch_login_is_typed_once_then_yours(self):
+        r, out = self.console(3, script=[("refused the radius login", "admin\r"), ("Password: ", "local123\r"),
+                                         ("FAKE-CON:1>", self.QUIT)])
+        self.assertTrue(r.switch_refused)
+        self.assertFalse(r.auth_failed)                 # the terminal server took the password
+        self.assertEqual(out.count("Login incorrect"), 1)
+
+    def test_the_local_account(self):
+        r, out = self.console(3, mode="local", user="admin", pw="local123", script=[("FAKE-CON:1>", self.QUIT)])
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("Login incorrect", out)
+
+    def test_a_slow_radius_answer_is_waited_for(self):
+        r, out = self.console(4, script=[("FAKE-CON:1>", self.QUIT)])
+        self.assertFalse(r.switch_refused)
+        self.assertNotIn("over to you", out)
+
+    def test_manual_types_nothing_at_the_switch(self):
+        r, out = self.console(1, mode="manual", script=[("Login: ", "timmy\r"), ("Password: ", "secret\r"),
+                                                        ("FAKE-CON:1>", self.QUIT)])
+        self.assertNotIn("username typed", " ".join(r.events))
+        self.assertTrue(r.console_closed)
+
+    def test_wrong_terminal_server_password(self):
+        r, _ = self.console(1, password="wrong")
+        self.assertTrue(r.auth_failed)
+        self.assertTrue(r.failed)
 
 
 @unittest.skipUnless(shutil.which("ssh-keygen"), "ssh-keygen not installed")

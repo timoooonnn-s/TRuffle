@@ -6,6 +6,12 @@
              "denied" prints "Permission denied" like a rejected command)
   10.99.0.2  host key changed while $HOME/.ssh/known_hosts mentions 10.99.0.2
   10.99.0.3  connection timeout
+  10.99.0.9  terminal server: user "<name>:70NN", password "secret", then silent until
+             Enter; behind it, by line NN:
+               01  a switch: "Login:" / "Password:" (secret), "exit" -> "Login:" again
+               02  a console somebody left logged in: Enter shows "FAKE-CON:1>" only
+               03  a switch that only takes the local account admin / local123
+               04  a switch whose RADIUS server is away: the password takes 2 s
 Every invocation's argv is appended to $FAKE_SSH_ARGV (if set).
 """
 import os
@@ -15,19 +21,68 @@ import time
 
 
 def read_secret(prompt):
-    sys.stdout.write(prompt)
-    sys.stdout.flush()
     fd = sys.stdin.fileno()
     old = termios.tcgetattr(fd)
     new = termios.tcgetattr(fd)
     new[3] &= ~termios.ECHO
-    termios.tcsetattr(fd, termios.TCSADRAIN, new)
+    termios.tcsetattr(fd, termios.TCSADRAIN, new)       # echo off BEFORE the prompt, like ssh
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
     try:
         line = sys.stdin.readline()
     finally:
         termios.tcsetattr(fd, termios.TCSADRAIN, old)
     sys.stdout.write("\n")
     return line.rstrip("\r\n")
+
+
+def ask(prompt):
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
+    line = sys.stdin.readline()
+    if not line:
+        raise EOFError
+    return line.rstrip("\r\n")
+
+
+def console_cli():
+    """The switch CLI on the serial line; returns when you log out."""
+    sys.stdout.write("\nFAKE-CON:1>")
+    sys.stdout.flush()
+    for line in sys.stdin:
+        cmd = line.strip()
+        if cmd in ("exit", "logout"):
+            return
+        sys.stdout.write(("you typed: %s\n" % cmd if cmd else "") + "FAKE-CON:1>")
+        sys.stdout.flush()
+
+
+def terminal_server(user, host):
+    name, _, port = user.partition(":")
+    pw = read_secret("%s@%s's password: " % (user, host))
+    if pw != "secret" or not port.startswith("70"):
+        sys.stderr.write("%s@%s: Permission denied (password).\n" % (user, host))
+        return 255
+    line = port[2:]
+    try:
+        sys.stdin.readline()                       # the line is silent until Enter
+        if line == "02":
+            console_cli()
+            return 0
+        while True:
+            login = ask("\nLogin: ")
+            if not login:
+                continue
+            pw = read_secret("Password: ")
+            if line == "04":
+                time.sleep(2)
+            ok = (login, pw) == (("admin", "local123") if line == "03" else (name, "secret"))
+            if not ok:
+                sys.stdout.write("Login incorrect\n")
+                continue
+            console_cli()
+    except EOFError:
+        return 0
 
 
 def main():
@@ -39,6 +94,8 @@ def main():
     user = args[args.index("-l") + 1] if "-l" in args else "nobody"
     one_try = "NumberOfPasswordPrompts=1" in args
 
+    if host == "10.99.0.9":
+        return terminal_server(user, host)
     if host == "10.99.0.3":
         time.sleep(0.5)
         sys.stderr.write("ssh: connect to host %s port 22: Connection timed out\n" % host)
