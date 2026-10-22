@@ -3,7 +3,7 @@ No curses here - App draws it and feeds it keys."""
 
 from ..inventory import DataError, build_devices, data_issues, read_table
 from ..results import KINDS, STATUS_COLUMNS
-from ..search import default_order, filter_devices
+from ..search import Fields, default_order, filter_devices
 from ..sorting import next_sort, sort_devices
 
 
@@ -43,8 +43,7 @@ class SwitchList(object):
         else:
             self.load_error = None
             self.loaded, self.columns = devices, columns
-            self.fields = dict((h.lower(), h) for h in headers)
-            self.fields.update((label.lower(), h) for h, label in columns)
+            self.fields = Fields(headers, columns)
             self.issues = data_issues(devices, report["lines"], report["issues"], picked["name"])
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.loaded]))
                        for i, (_, label) in enumerate(self.columns)]

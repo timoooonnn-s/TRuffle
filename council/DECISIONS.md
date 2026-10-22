@@ -1059,3 +1059,48 @@ A second full review of the package found 13 findings; all are fixed, each with 
 - `src/truffle` 4,928 -> 4,657 lines (with the fixes of this round).  Against the 4,256 of the single
   file, the rest is what 29 modules cost (imports, module headers) plus the D44 / D45 fixes.
 - 176 tests, Python 3.8 and 3.14.
+
+## D47: The terminal server's login is always RADIUS - and now the screen says so (user, 2026-10-21)
+- User: "The terminal server itself ALWAYS has a working RADIUS, there is no local alternative."
+  The code already did exactly that - the terminal server always got your own login, only the
+  switch behind it followed `radius` / `local` / `manual` (checked end to end: `timmy:7003` +
+  the RADIUS password to the terminal server, `admin` to the switch). What was missing was the
+  screen saying it: one generic "Login" window, and a "Switch login" choice that read like it
+  could be the whole login.
+- The console window now lists both logins in the order they happen: **Terminal server - RADIUS,
+  always · timmy:7012** (not a choice), then **Switch login ‹ radius / local / manual ›**.
+- The login window asked for a terminal server is titled "your RADIUS login" and says "For the
+  terminal server ..., always RADIUS."; the local-account window says "Only the switch - the
+  terminal server always takes RADIUS."; the connect note has a line for each login.
+- No behaviour change. 176 tests.
+
+## D48: Ping results lost when the window was closed (user, 2026-10-21)
+- User: after a restart, `ping:up` / `ping:down` found nothing for switches pinged in the
+  previous session. *Not reproducible with a clean quit:* the status file is read at start and
+  the search reads the same results the PING column shows (checked on the user's own list too).
+- *Found:* the user closes the terminal or kills the tmux session instead of quitting (said so in
+  the console discussion). That is a SIGHUP, whose default kills TRuffle on the spot. Lost were
+  (a) a single ping still on screen - its verdict was only recorded when the window closed - and
+  (b) a batch ping still running - saved only when the whole batch was done. Reproduced both:
+  no status file afterwards, so the restarted TRuffle had nothing to filter on.
+- *Fix:* SIGHUP exits like SIGTERM (`sys.exit`), `App.run` saves a batch's finished pings in a
+  `finally`, and a single ping records its verdict in a `finally` around its window - the replies
+  that came are a verdict. Hosts with no answer yet keep their previous result, as on ESC.
+- *Tester:* an end-to-end test pings with the window open, kills the tmux session, restarts and
+  searches `ping:up`; it fails on 2.0.0.
+
+## D49: Searching a renamed column (user, 2026-10-21)
+- User: a column whose CSV header is "cursed" is renamed to `LOCATION` in `columns`, and searching
+  for it "doesn't really realize what I want" - `LOCATION xx` found nothing, and a shorter field
+  name did not work either. `LOCATION:xx` itself worked in every reproduction (also typed into the
+  real UI); the user's exact value is still to be seen.
+- **The start of a column's name is a field:** `loc:` = `LOCATION`, when only one column fits.
+  Labels from `columns` are asked first - with a 15-column export, `loc` also starts
+  `local_contact`, and the name you chose is the one you mean. Spaces, `_` and `-` are left out
+  when comparing, so `site_name:` reaches "Site Name". Two columns fitting = plain text, as before;
+  one letter is never a field.
+- **A field value matches like a plain word** as well as by containing it: `name:bc01` finds
+  `ber-core-01` like `bc01` does. A field now only narrows the search, it never makes it stricter.
+  Excluded (`-location:x`) and `'`exact values stay plain text (D16).
+- **A space where the colon belongs** (`LOCATION berlin`) finds nothing, as it should, but the empty
+  list now says "LOCATION is a column - did you mean LOCATION:berlin ?".

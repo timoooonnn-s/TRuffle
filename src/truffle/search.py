@@ -7,6 +7,7 @@ import fnmatch
 from .inventory import BOUNDARY, IPV4_LIKE, segments_of
 
 NO_BOUNDARY = str.maketrans("", "", BOUNDARY)
+NO_FIELD_SEP = str.maketrans("", "", " _-")
 WILDCARD = "*?"
 STATE_FIELDS = ("is", "ping", "ssh")
 
@@ -112,8 +113,45 @@ def status_term(states, value):
     return lambda d: d.host in states and states[d.host].startswith(value)
 
 
-def exact_term(token, fields, status, favorites, recent, marked=()):
-    """Every non-fuzzy term -> test function returning True / False."""
+class Fields(dict):
+    """lower-case header or label -> CSV header, for field:value.  `labels` are the
+    names from `columns` - the ones you gave the columns, so they win a short name."""
+
+    def __init__(self, headers=(), columns=()):
+        dict.__init__(self, ((h.lower(), h) for h in headers))
+        self.update((label.lower(), h) for h, label in columns)
+        self.labels = dict((label.lower(), h) for h, label in columns)
+
+
+def field_header(name, fields):
+    """The CSV header a field name means, or None.  The whole name, a header or a label
+    from `columns`; or the start of ONE column's name, spaces and _ - left out, so
+    loc: is LOCATION and site_name: is "Site Name" (D49).  Your labels are asked first;
+    a start that still fits two columns means neither - then it is plain text."""
+    if name in fields:
+        return fields[name]
+    squeezed = name.translate(NO_FIELD_SEP)
+    if len(squeezed) < 2:
+        return None
+    for names in (getattr(fields, "labels", {}), fields):
+        hits = set(h for f, h in names.items() if f.translate(NO_FIELD_SEP).startswith(squeezed))
+        if len(hits) == 1:
+            return hits.pop()
+        if hits:
+            return None
+    return None
+
+
+def field_value_match(value, cell):
+    """field:value - contained in the cell, or found like a plain word in it (bc01 in
+    ber-core-01), so a field narrows the search without making it stricter (D49)."""
+    return value in cell or fuzzy_match(value, cell) is not None
+
+
+def exact_term(token, fields, status, favorites, recent, marked=(), exact=False):
+    """Every non-fuzzy term -> test function returning True / False.  exact: the field
+    value is matched as plain text only - for 'exact, and for an exclude (D16: a
+    forgiving exclude hides far too much)."""
     name, sep, value = token.partition(":")
     if sep:
         if name == "is":
@@ -122,13 +160,15 @@ def exact_term(token, fields, status, favorites, recent, marked=()):
                 return lambda d: d.key in collection
         if name in ("ping", "ssh"):
             return status_term(status.get(name, {}), value)
-        header = fields.get(name)
+        header = field_header(name, fields)
         if header is not None:
             if not value:
                 return lambda d: not d.values.get(header)
             if has_wildcard(value):      # name:*-l1 is a pattern over that column
                 return lambda d: glob_match(d.values.get(header, "").lower(), value)
-            return lambda d: value in d.values.get(header, "").lower()
+            if exact:
+                return lambda d: value in d.values.get(header, "").lower()
+            return lambda d: field_value_match(value, d.values.get(header, "").lower())
     # plain text - also unknown "x:y" such as IPv6 addresses
     return lambda d: token in d.search
 
@@ -136,7 +176,17 @@ def exact_term(token, fields, status, favorites, recent, marked=()):
 def known_field(text, fields):
     """True when text starts with a field: prefix TRuffle knows about."""
     name, sep, _ = text.partition(":")
-    return bool(sep) and (name in STATE_FIELDS or name in (fields or {}))
+    return bool(sep) and (name in STATE_FIELDS or field_header(name, fields or {}) is not None)
+
+
+def field_hint(query, fields):
+    """'location:berlin' when the query has a column name followed by a word
+    ("LOCATION berlin" - a space where the colon belongs), else None."""
+    tokens = query.split()
+    for name, value in zip(tokens, tokens[1:]):
+        if ":" not in name and name.lower() in fields and name.lower() not in STATE_FIELDS:
+            return "%s:%s" % (name, value)
+    return None
 
 
 def alternatives(token, fields):
@@ -166,10 +216,10 @@ def compile_query(query, fields, status, favorites, recent, marked):
         alts = []
         for alt in alternatives(token, fields):
             if alt.startswith("'") and len(alt) > 1:
-                alts.append((False, exact_term(alt[1:], fields, status, favorites, recent, marked)))
+                alts.append((False, exact_term(alt[1:], fields, status, favorites, recent, marked, exact=True)))
             elif known_field(alt, fields) or (negate and not has_wildcard(alt)):
                 # an excluded word stays exact: a fuzzy exclude hides far too much (D16)
-                alts.append((False, exact_term(alt, fields, status, favorites, recent, marked)))
+                alts.append((False, exact_term(alt, fields, status, favorites, recent, marked, exact=negate)))
             elif has_wildcard(alt):
                 alts.append((False, glob_term(alt)))
             else:

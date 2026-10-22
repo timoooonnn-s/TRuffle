@@ -75,7 +75,8 @@ def ssh_flow(cfg, name, host, user, password, notes, record, back="return to TRu
                       "log out to %s, ~. force-disconnects" % back)
         else:
             notes.say("Connecting to %s (%s) as %s" % (name, host, user),
-                      "switch login: %s" % MODE_TEXT[login.mode],
+                      "terminal server: your RADIUS login (always)",
+                      "switch behind it: %s" % MODE_TEXT[login.mode],
                       "log out of the switch FIRST, then %s to %s" % (ConsoleLogin.EXIT_NAME, back),
                       "(%s while logged in leaves the console logged in for the next person)"
                       % ConsoleLogin.EXIT_NAME)

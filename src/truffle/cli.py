@@ -99,6 +99,11 @@ def parse_args(argv):
 def run_ui(cfg):
     os.environ.setdefault("ESCDELAY", "50")       # before initscr: fast ESC key
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
+    # Closing the PuTTY window or killing the tmux session sends SIGHUP.  Its default
+    # kills TRuffle on the spot - a ping running or still on screen was then never saved,
+    # and after a restart ping:down could not find those switches (D48).  As an exit, the
+    # results are saved on the way out like after Ctrl-C.
+    signal.signal(signal.SIGHUP, lambda signum, frame: sys.exit(129))
     try:
         curses.wrapper(lambda scr: App(scr, cfg).run())
     except KeyboardInterrupt:

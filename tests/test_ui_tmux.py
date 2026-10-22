@@ -149,13 +149,16 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("ts1", literal=True)
         self.keys("Enter")
         self.wait_for("Switch login")
+        self.assertIn("RADIUS, always", self.screen())          # the terminal server's login is no choice
         self.keys("1", literal=True)
-        self.wait_for("logs in as timmy:7001")
+        self.wait_for("timmy:7001")
         self.keys("Enter")
         self.wait_for("Username")
+        self.assertIn("always RADIUS", self.screen())           # the login window says what it is for
         self.keys("secret", literal=True)
         self.keys("Enter")
         self.wait_for("FAKE-CON:1>", timeout=15)
+        self.assertIn("terminal server: your RADIUS login (always)", self.screen())
         self.assertNotIn("you typed: timmy", self.screen())
         self.keys("exit", literal=True)
         self.keys("Enter")
@@ -164,7 +167,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Console closed: ab-12-ts1-01 line 1")
         self.assertIn("ab-12-ts1-01_line_1.log", self.screen())
         self.keys("Enter")                               # remembered: line 1, radius
-        self.wait_for("logs in as timmy:7001")
+        self.wait_for("timmy:7001")
         self.keys("Escape")
         self.keys("C-g")
         self.wait_for("Log files of this session")
@@ -197,6 +200,27 @@ class UiSmokeTest(unittest.TestCase):
             while width() != cols and time.time() < deadline:
                 time.sleep(0.1)
             self.assertEqual(width(), cols, self.screen())
+
+    def test_a_ping_survives_closing_the_window(self):
+        """D48: closing the PuTTY window or killing tmux (SIGHUP) with a ping still on
+        screen lost its result, so after a restart ping:up could not find the switch."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("loop;127.0.0.1;lab;Answers ping;\n")
+        self.start()
+        self.keys("loop", literal=True)
+        self.keys("Right")                               # ping
+        self.keys("Enter")
+        self.wait_for("bytes from", timeout=10)
+        tmux("kill-session", "-t", SESSION)              # the hang-up, with the ping window open
+        status = os.path.join(self.tmp, ".local", "state", "truffle", "status")
+        deadline, saved = time.time() + 5, ""
+        while "127.0.0.1\tping\tup" not in saved and time.time() < deadline:
+            time.sleep(0.2)
+            saved = open(status).read() if os.path.exists(status) else ""
+        self.assertIn("127.0.0.1\tping\tup", saved)
+        self.start()
+        self.keys("ping:up", literal=True)
+        self.wait_for("1/7 switches")
 
     def test_two_marked_switches_share_one_login(self):
         """The whole handover, end to end: one password typed in TRuffle, two panes

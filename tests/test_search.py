@@ -233,3 +233,57 @@ class TestFuzzyMatch(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRenamedColumns(unittest.TestCase):
+    """D49: a column renamed in `columns` (cursed CSV header -> LOCATION) is searched
+    by its new name, by the start of it, and its values like a plain word."""
+
+    HEADERS = ["Name", "IP", "Standort Bezeichnung (lang)", "local_contact"]
+    COLUMNS = [("Name", "Name"), ("IP", "IP"), ("Standort Bezeichnung (lang)", "LOCATION")]
+
+    def setUp(self):
+        cfg = types.SimpleNamespace(columns=self.COLUMNS)
+        rows = [{"Name": "ber-core-01", "IP": "192.0.2.1", "Standort Bezeichnung (lang)": "Berlin Mitte DC",
+                 "local_contact": "anna"},
+                {"Name": "ab-12-s34-w4", "IP": "192.0.2.2", "Standort Bezeichnung (lang)": "ZH-Altstetten",
+                 "local_contact": "bob"}]
+        self.ds = inventory.build_devices(self.HEADERS, rows, cfg)[0]
+        self.fields = search.Fields(self.HEADERS, self.COLUMNS)
+
+    def names(self, query):
+        return [d.name for d in search.filter_devices(self.ds, query, self.fields)]
+
+    def test_the_label_and_the_start_of_it(self):
+        for query in ("LOCATION:berlin", "location:berlin", "loc:berlin", "lo:berlin"):
+            self.assertEqual(self.names(query), ["ber-core-01"], query)
+
+    def test_your_label_wins_over_a_header_with_the_same_start(self):
+        self.assertEqual(self.search_header("loc"), "Standort Bezeichnung (lang)")
+        self.assertEqual(self.names("local_contact:bob"), ["ab-12-s34-w4"])      # still reachable by its name
+        self.assertEqual(self.names("localc:bob"), ["ab-12-s34-w4"])
+        self.assertEqual(self.names("standort_bez:zh"), ["ab-12-s34-w4"])         # header, spaces as _
+
+    def search_header(self, name):
+        return search.field_header(name, self.fields)
+
+    def test_a_start_that_fits_two_columns_means_neither(self):
+        fields = search.Fields(["site_a", "site_b"], [])
+        self.assertIsNone(search.field_header("site", fields))
+        self.assertIsNone(search.field_header("s", self.fields))                  # one letter: never
+
+    def test_values_match_like_a_plain_word(self):
+        self.assertEqual(self.names("location:zhalt"), ["ab-12-s34-w4"])
+        self.assertEqual(self.names("name:bc01"), ["ber-core-01"])
+        self.assertEqual(self.names("location:mitte"), ["ber-core-01"])           # contained, as before
+
+    def test_exact_and_excluded_values_stay_exact(self):
+        self.assertEqual(self.names("'location:zhalt"), [])
+        self.assertEqual(self.names("-location:zhalt"), ["ber-core-01", "ab-12-s34-w4"])
+        self.assertEqual(self.names("-location:zh-alt"), ["ber-core-01"])
+
+    def test_a_space_where_the_colon_belongs_gets_a_hint(self):
+        self.assertEqual(self.names("LOCATION berlin"), [])
+        self.assertEqual(search.field_hint("LOCATION berlin", self.fields), "LOCATION:berlin")
+        self.assertIsNone(search.field_hint("ber core", self.fields))
+        self.assertIsNone(search.field_hint("ping down", self.fields))           # a state, not a column

@@ -21,7 +21,7 @@ from ..logs import logs_since
 from ..ping import PING_ENV, BatchPing, ProcStream, ping_argv, stream_verdict
 from ..console import is_console_server
 from ..results import KINDS, STATUS_COLUMNS
-from ..search import known_field
+from ..search import field_hint, known_field
 from ..state import UserState
 from ..terminal import which
 from ..tmux import PaneSessions
@@ -190,8 +190,10 @@ class App(object):
             if lst.load_error:
                 text, attr = lst.load_error, th.err
             elif lst.devices:
-                text, attr = "No switch matches '%s'  %s  ESC clears the search" % (lst.query, sym["sep"]), \
-                    th.placeholder
+                hint = field_hint(lst.query, lst.fields)
+                text, attr = "No switch matches '%s'  %s  %s" % (
+                    lst.query, sym["sep"], "%s is a column - did you mean  %s ?" % (hint.partition(":")[0], hint)
+                    if hint else "ESC clears the search"), th.placeholder
             else:
                 text, attr = "The switch list is empty", th.placeholder
             put(scr, y_body + 1, TABLE_X, text, attr)
@@ -255,9 +257,12 @@ class App(object):
                 pass
         except KeyboardInterrupt:
             pass                                      # Ctrl-C: still save what we have
-        if self.batch:
-            self.batch.cancel()
-            self.save_results()                       # finished pings are not thrown away
+        finally:
+            # also on a hang-up or SIGTERM (SystemExit, see cli.run_ui): finished pings
+            # of a batch are not thrown away
+            if self.batch:
+                self.batch.cancel()
+                self.save_results()
 
     def step(self):
         """One screen update; keys already waiting are handled before the next draw, up
@@ -432,7 +437,14 @@ class App(object):
 
     def ping(self, dev):
         stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)), env=PING_ENV)
-        self.screen.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+        try:
+            self.screen.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+        finally:
+            # also when TRuffle is closed with the ping still on screen (D48): the
+            # replies that came are a verdict, and it is saved before TRuffle goes
+            self.record_ping(dev, stream)
+
+    def record_ping(self, dev, stream):
         verdict = stream_verdict(stream)
         if verdict is None:
             if stream.done and not stream.killed:     # cancelled early proves nothing and says nothing

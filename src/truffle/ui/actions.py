@@ -30,10 +30,11 @@ class Actions(object):
 
     # -- logins -------------------------------------------------------------------
 
-    def ask_login(self, error=None):
-        """Your own login, asked once and kept.  Returns the Login, or None on ESC."""
+    def ask_login(self, error=None, server=None):
+        """Your own login, asked once and kept.  Returns the Login, or None on ESC.
+        server: the terminal server it is asked for, so the window says what it is for."""
         if self.creds.own is None:
-            entered = login_dialog(self.screen, self.creds.last_user or self.cfg.user, error=error)
+            entered = login_dialog(self.screen, self.creds.last_user or self.cfg.user, error=error, server=server)
             if entered is None:
                 return None
             self.creds.set_own(*entered)
@@ -68,7 +69,7 @@ class Actions(object):
             return
         line, mode = choice
         self.store.save_console_choice(dev.key, line, mode)
-        if self.ask_login() is None or (mode == "local" and self.ask_local_login(dev.name) is None):
+        if self.ask_login(server=dev.name) is None or (mode == "local" and self.ask_local_login(dev.name) is None):
             self.message("Console cancelled")
             return
 
@@ -85,7 +86,7 @@ class Actions(object):
         ssh_user maps your login to the ssh user (terminal server: user:port)."""
         error = None
         while True:
-            own = self.ask_login(error)
+            own = self.ask_login(error, server=dev.name if console else None)
             if own is None:
                 self.message("%s cancelled" % ("Console" if console else "ssh"))
                 return

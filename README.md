@@ -208,7 +208,8 @@ your naming scheme — use a **pattern** with `*` and `?`.
 | `'10.1.2` | exactly this text (a leading `'` also switches the splitting off) |
 | `*-l1`, `??-??-s??-w3` | **pattern:** `*` = anything, `?` = one character, matched against a **whole** column. This is how you filter by role: `*-l1` finds `ab-12-s34-l1` and **not** `...-l11`, which a plain word can't tell apart. A name like `sw1.example.net` also matches on just `sw1`, so you don't have to write `*-l1.*` |
 | `w3\|w4` | **either one.** Space stays AND, so OR goes inside one term: `ab-* w3\|w4` = site `ab` **and** (`w3` **or** `w4`). Works with fields too: `ping:up\|wait` |
-| `type:core` | the CSV column `type` contains "core". Works for **every** column, even ones not in the table, and for table labels (`alias:munich`) |
+| `type:core` | the CSV column `type` contains "core", or matches it like a plain word (`name:bc01` finds `ber-core-01`). Works for **every** column, even ones not in the table, and for the names you gave columns in `columns` (`LOCATION:berlin`) |
+| `loc:berlin` | the **start** of a column's name is enough, as long as only one column fits: `loc:` = `LOCATION`. Your names from `columns` win over the CSV's own headers; spaces in a name are written as `_` or left out (`site_name:`, `sitename:`) |
 | `location:` | the column is empty |
 | `-test`, `-type:edge`, `-*-w4` | excludes matches. An excluded word is always exact (a split exclude would hide far too much), but an excluded pattern stays a pattern. `-w3\|w4` excludes both |
 | `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet; a bare `ping:` means the same) |
@@ -340,7 +341,12 @@ to a colleague who doesn't work in Linux every day.
 
 A terminal server is reached with ssh like a switch, but the **username carries the line**:
 `timmy:7012@ab-12-ts1-01` is line 12. Behind it, the switch on that serial line asks for its
-own login. TRuffle does both logins in one go.
+own login. TRuffle does both logins in one go:
+
+| Login | Who | Your choice |
+|---|---|---|
+| 1. the terminal server | **always your RADIUS login** — a terminal server has no local account | none |
+| 2. the switch behind it | RADIUS, its local account, or you yourself | `radius` / `local` / `manual` |
 
 **Which rows are terminal servers** is decided by their **name**, with the same `*` / `?` patterns as
 the [search](#search): `ab-12-ts1-01` is one, `ab-12-s34-w4` is not. `truffle --check` prints how many it
@@ -349,19 +355,23 @@ recognised.
 Press **Enter** (ssh) on a terminal server and TRuffle asks:
 
 ```
-  ╭─ Console · ab-12-ts1-01 ───────────────────────────────╮
-  │  Line           12    logs in as timmy:7012            │
-  │                                                        │
-  │  Switch login  ‹ radius ›                              │
-  │                your login (timmy), TRuffle types it    │
-  ╰────────────────────────────────────────────────────────╯
+  ╭─ Console · ab-12-ts1-01 ─────────────────────────────────────╮
+  │  Line               12                                       │
+  │                                                              │
+  │  Terminal server   RADIUS, always  ·  timmy:7012             │
+  │                                                              │
+  │  Switch login      ‹ radius ›                                │
+  │                    RADIUS as well (timmy), TRuffle types it  │
+  ╰──────────────────────────────────────────────────────────────╯
 ```
 
 - **Line:** type the number, `12` becomes `7012` (`console_port_base = 7000`). The last line you
   used on that terminal server is filled in — only as a suggestion, lines get re-cabled.
-- **Switch login** (`←` `→`):
-  - **radius**: your normal username and password, the ones the terminal server takes too.
-  - **local**: a switch's local account, for a switch that can't reach its RADIUS server. Asked
+- **Terminal server:** not a choice. It always gets your RADIUS login — the same one as for ssh,
+  asked once per session. The window shows the username it will send (`timmy:7012`).
+- **Switch login** (`←` `→`), only for the switch behind it:
+  - **radius**: your RADIUS login again.
+  - **local**: the switch's local account, for a switch that can't reach its RADIUS server. Asked
     once, then kept in memory like your password (same lifetime, `Ctrl-G` `p` forgets it). The
     top bar shows `local: <user>` while it is held.
   - **manual**: TRuffle logs you into the terminal server and wakes the line, you log in at the switch.
@@ -376,7 +386,7 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
 
 What TRuffle then does, in one ssh session:
 
-1. types your password for the terminal server,
+1. types your RADIUS password for the terminal server,
 2. presses **Enter** to wake the serial line,
 3. at the switch's `Login:` prompt types the username, at `Password:` the password,
 4. waits — a switch whose RADIUS server is out of reach can take **minutes**. After a few seconds
@@ -433,7 +443,12 @@ file; nothing else is worth flipping mid-day.
 
 The PING results, and your last ssh attempts with the reason they failed, each with its time, are saved per user in
 `~/.local/state/truffle/status`. After a restart they're shown again, with their [age](#screen), until the next check, and **details** shows when
-each one was taken. Several TRuffle windows merge their results, and the newest one wins.
+each one was taken — and `ping:down`, `ssh:failed` and the other [status searches](#search) find them right away.
+Several TRuffle windows merge their results, and the newest one wins.
+
+They're saved as soon as you have them, and also when TRuffle is closed the hard way — the PuTTY
+window closed or the tmux session killed with a ping still on screen or still running: what had
+answered by then is kept. Switches that hadn't answered yet keep their previous result.
 
 ## Data check
 
