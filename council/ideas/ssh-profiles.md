@@ -1,7 +1,15 @@
-# Per-device ssh option profiles
+# Device-group settings (was: per-device ssh option profiles)
 
-**Status: PARKED (user, 2026-10-04) - "currently no, probably not needed short term."**
-Written down so it is not lost. Deliberately kept short; expand it only if it gets picked up.
+**Status: PARKED (user, 2026-10-25).** Not needed today: the only non-switch devices in the list are
+the terminal servers, which are their own case. Picked up only if **load balancers and other device
+types** join the list - that is under discussion in the team.
+
+**The shape changed in the feature review (2026-10-25): per device GROUP, not per device.** A group
+(`switch`, `loadbalancer`, ...) is selected by a CSV column value and carries its settings in
+`truffle.conf` - ssh options, maybe another user, maybe "no ssh at all, ping only". The security rule
+below stays: the shared CSV only ever holds the group's name.
+
+The original note (2026-10-04) follows.
 
 ## The problem it would solve
 `ssh_options` is global, so one old switch that needs `+diffie-hellman-group14-sha1` or

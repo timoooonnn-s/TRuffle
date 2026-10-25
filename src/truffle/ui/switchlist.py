@@ -3,7 +3,7 @@ No curses here - App draws it and feeds it keys."""
 
 from ..inventory import DataError, build_devices, data_issues, read_table
 from ..results import KINDS, STATUS_COLUMNS
-from ..search import default_order, filter_devices
+from ..search import Fields, default_order, filter_devices
 from ..sorting import next_sort, sort_devices
 
 
@@ -17,6 +17,7 @@ class SwitchList(object):
         self.columns = list(cfg.columns)
         self.widths = []
         self.fields = {}               # lower-case header / label -> CSV header (for field:value)
+        self.headers, self.delimiter = [], ";"     # of the CSV, for the export
         self.issues = []
         self.load_error = None
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
@@ -43,8 +44,8 @@ class SwitchList(object):
         else:
             self.load_error = None
             self.loaded, self.columns = devices, columns
-            self.fields = dict((h.lower(), h) for h in headers)
-            self.fields.update((label.lower(), h) for h, label in columns)
+            self.headers, self.delimiter = headers, report["delimiter"]
+            self.fields = Fields(headers, columns)
             self.issues = data_issues(devices, report["lines"], report["issues"], picked["name"])
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.loaded]))
                        for i, (_, label) in enumerate(self.columns)]
@@ -74,9 +75,9 @@ class SwitchList(object):
         keep = keep or self.selected()
         self.found = {}
         view = filter_devices(self.devices, self.query, self.fields, self.results.states,
-                              self.store.favorites, self.store.recent, self.found, marked=self.marked)
+                              self.store.recent, self.found, marked=self.marked)
         if self.sort_col is None:
-            view = default_order(view, self.query, self.store.favorites, self.store.recent, self.found)
+            view = default_order(view, self.query, self.store.recent, self.found)
         self.view = view
         self.cursor = next((i for i, d in enumerate(view) if d is keep), 0)
 
@@ -98,7 +99,7 @@ class SwitchList(object):
 
     def status_changed(self, keep=None, force=False):
         """New ping / ssh results: keep a status sort and ping: / ssh: searches up to
-        date.  force also covers is:recent and favourites after a session."""
+        date.  force also covers is:recent after a session."""
         if self.sort_col is not None and self.sort_col >= len(self.columns):
             self.apply_sort(keep)                       # includes a refilter
         elif force or "ping:" in self.query.lower() or "ssh:" in self.query.lower():

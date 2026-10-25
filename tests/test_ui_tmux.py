@@ -149,13 +149,16 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("ts1", literal=True)
         self.keys("Enter")
         self.wait_for("Switch login")
+        self.assertIn("RADIUS, always", self.screen())          # the terminal server's login is no choice
         self.keys("1", literal=True)
-        self.wait_for("logs in as timmy:7001")
+        self.wait_for("timmy:7001")
         self.keys("Enter")
         self.wait_for("Username")
+        self.assertIn("always RADIUS", self.screen())           # the login window says what it is for
         self.keys("secret", literal=True)
         self.keys("Enter")
         self.wait_for("FAKE-CON:1>", timeout=15)
+        self.assertIn("terminal server: your RADIUS login (always)", self.screen())
         self.assertNotIn("you typed: timmy", self.screen())
         self.keys("exit", literal=True)
         self.keys("Enter")
@@ -164,7 +167,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Console closed: ab-12-ts1-01 line 1")
         self.assertIn("ab-12-ts1-01_line_1.log", self.screen())
         self.keys("Enter")                               # remembered: line 1, radius
-        self.wait_for("logs in as timmy:7001")
+        self.wait_for("timmy:7001")
         self.keys("Escape")
         self.keys("C-g")
         self.wait_for("Log files of this session")
@@ -174,7 +177,7 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Escape")
         self.keys("Escape")
         self.keys("Left", "Enter")
-        self.wait_for("Log files written while TRuffle was open")
+        self.wait_for("Files written while TRuffle was open")
         self.assertIn("_ab-12-ts1-01_line_1.log", self.screen().replace("\n", ""))   # the shell wraps it
 
     def test_the_screen_follows_a_resize_also_after_an_ssh_session(self):
@@ -197,6 +200,63 @@ class UiSmokeTest(unittest.TestCase):
             while width() != cols and time.time() < deadline:
                 time.sleep(0.1)
             self.assertEqual(width(), cols, self.screen())
+
+    def test_a_ping_survives_closing_the_window(self):
+        """D48: closing the PuTTY window or killing tmux (SIGHUP) with a ping still on
+        screen lost its result, so after a restart ping:up could not find the switch."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("loop;127.0.0.1;lab;Answers ping;\n")
+        self.start()
+        self.keys("loop", literal=True)
+        self.keys("Right")                               # ping
+        self.keys("Enter")
+        self.wait_for("bytes from", timeout=10)
+        tmux("kill-session", "-t", SESSION)              # the hang-up, with the ping window open
+        status = os.path.join(self.tmp, ".local", "state", "truffle", "status")
+        deadline, saved = time.time() + 5, ""
+        while "127.0.0.1\tping\tup" not in saved and time.time() < deadline:
+            time.sleep(0.2)
+            saved = open(status).read() if os.path.exists(status) else ""
+        self.assertIn("127.0.0.1\tping\tup", saved)
+        self.start()
+        self.keys("ping:up", literal=True)
+        self.wait_for("1/7 devices")
+
+    def test_mark_all_export_and_the_esc_hint(self):
+        """D50: Ctrl-A marks the whole view (again: unmarks it), Ctrl-E writes it to a
+        CSV in the home folder, and the footer says what the next ESC does."""
+        import glob
+        self.keys("fake", literal=True)                  # fake-good, fake-two, fake-dead
+        self.wait_for("ESC clear search")
+        self.keys("C-a")
+        self.wait_for("Marked the 3 devices")
+        self.keys("C-e")
+        self.wait_for("Exported 3 devices to ~/truffle-export-")
+        files = glob.glob(os.path.join(self.tmp, "truffle-export-*.csv"))
+        self.assertEqual(len(files), 1)
+        with open(files[0], encoding="utf-8-sig") as f:
+            self.assertEqual(len(f.read().splitlines()), 4)                  # header + 3 devices
+        self.keys("C-a")
+        self.wait_for("Unmarked the 3 devices")
+        self.keys("C-a")
+        self.keys("C-u")
+        self.wait_for("ESC clear 3 marks", timeout=12)
+        self.keys("Escape")
+        self.wait_for("Marks cleared")
+
+    def test_pinging_hundreds_asks_first(self):
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            for i in range(210):
+                f.write("bulk-%03d;10.98.%d.%d;lab;;\n" % (i, i // 200, i % 200 + 1))
+        self.start()
+        self.keys("bulk", literal=True)
+        self.keys("C-a")
+        self.wait_for("Marked the 210 devices")
+        self.keys("Right")                               # ping
+        self.keys("Enter")
+        self.wait_for("Ping 210 devices at once?")
+        self.keys("n", literal=True)
+        self.wait_for("Ping not started")
 
     def test_two_marked_switches_share_one_login(self):
         """The whole handover, end to end: one password typed in TRuffle, two panes
@@ -221,7 +281,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("2 marked")
         self.keys("C-u")
         self.keys("zzzz", literal=True)
-        self.wait_for("No switch matches")
+        self.wait_for("No device matches")
         self.keys("Enter")
         self.wait_for("Username")
         self.keys("secret", literal=True)
@@ -344,7 +404,7 @@ class UiSmokeTest(unittest.TestCase):
         self.assertNotIn("Press any key", self.screen())    # you stopped it yourself: no extra key
         self.keys("C-u")
         self.keys("is:recent", literal=True)
-        self.wait_for("No switch matches")
+        self.wait_for("No device matches")
 
     def test_closing_the_session_keeps_the_failures_of_its_panes(self):
         """D44: a pane recorded its result only after "Press any key", so Ctrl-K killed
@@ -362,12 +422,12 @@ class UiSmokeTest(unittest.TestCase):
         session = self.wait_for_session()
         self.wait_in_panes(session, "Press any key")
         self.keys("C-k")
-        self.wait_for("Close switch sessions")
+        self.wait_for("Close tmux sessions")
         self.keys("y", literal=True)
         self.wait_for("Closed 1 tmux session")
         self.keys("C-u")
         self.keys("ssh:failed", literal=True)
-        self.wait_for("2/6 switches")
+        self.wait_for("2/6 devices")
         screen = self.screen()
         self.assertIn("fake-dead", screen)
         self.assertIn("slow-mac", screen)
@@ -384,7 +444,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("ssh cancelled")
         self.keys("C-u")
         self.keys("ssh:failed", literal=True)
-        self.wait_for("1/6 switches")
+        self.wait_for("1/6 devices")
         self.assertIn("fake-good", self.screen())
 
     def test_failed_connection_pauses(self):

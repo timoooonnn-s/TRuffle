@@ -26,16 +26,22 @@ def edit_field(text, key, keep=None, limit=None):
     return (text + added)[:limit] if limit else text + added
 
 
-def login_dialog(screen, user, local_for=None, error=None):
+def login_dialog(screen, user, local_for=None, error=None, server=None):
     """Ask user + password.  Returns (user, password or None) or None on ESC.
-    local_for: the terminal server name - then it asks for a switch's local account."""
+    local_for: the terminal server name - then it asks for a switch's local account.
+    server: the terminal server this RADIUS login is asked for - it always takes that
+    one, there is no local login on a terminal server."""
     entry = [user or "", ""]
     field = 1 if entry[0] else 0
     scr, th, sym = screen.scr, screen.th, screen.sym
+    which = ("Only the switch - the terminal server always takes RADIUS." if local_for
+             else "For the terminal server %s, always RADIUS." % server if server else "")
     while True:
-        bw, bh = min(62, scr.getmaxyx()[1] - 6), 13
+        bw, bh = min(66, scr.getmaxyx()[1] - 6), 14 if which else 13
         if local_for:
             y0, x0 = screen.draw_window("Local account", "switch behind %s" % local_for, bh, bw)
+        elif server:
+            y0, x0 = screen.draw_window("Login", "your RADIUS login", bh, bw)
         else:
             y0, x0 = screen.draw_window("Login", "asked once per session", bh, bw)
         fw = max(6, bw - 18)
@@ -55,7 +61,9 @@ def login_dialog(screen, user, local_for=None, error=None):
             th.win_hint)
         put(scr, y0 + 9, x0 + 3, ("Empty password: you type it at the switch" if local_for
                                   else "Empty password: ssh asks at every login")[:bw - 6], th.win_hint)
-        screen.draw_keys(y0 + 11, x0 + 3, (("Enter", "OK"), ("Tab", "next field"), ("ESC", "cancel")))
+        if which:
+            put(scr, y0 + 10, x0 + 3, which[:bw - 6], th.win_hint)
+        screen.draw_keys(y0 + bh - 2, x0 + 3, (("Enter", "OK"), ("Tab", "next field"), ("ESC", "cancel")))
         scr.refresh()
 
         key = screen.read_key(-1)
@@ -84,26 +92,29 @@ def console_dialog(screen, cfg, name, line, mode, user, local_user):
     scr, th, sym = screen.scr, screen.th, screen.sym
     while True:
         mode = CONSOLE_MODES[mi]
-        bw, bh = min(66, scr.getmaxyx()[1] - 6), 13
+        bw, bh = min(70, scr.getmaxyx()[1] - 6), 15
         y0, x0 = screen.draw_window("Console", name, bh, bw)
         put(scr, y0 + 2, x0 + 3, "Line", th.win_label)
-        put(scr, y0 + 2, x0 + 17, " " + text.ljust(4), th.field)
-        put(scr, y0 + 2, x0 + 18 + len(text), " ", th.cursor)
+        put(scr, y0 + 2, x0 + 21, " " + text.ljust(4), th.field)
+        put(scr, y0 + 2, x0 + 22 + len(text), " ", th.cursor)
+        # The two logins, in the order they happen.  The first one is not a choice: a
+        # terminal server only knows RADIUS.
         n = parse_console_line(cfg, text) if text else None
-        if n:
-            put(scr, y0 + 2, x0 + 24, ("logs in as %s" % console_user(cfg, user, n))[:bw - 27], th.win_hint)
-        put(scr, y0 + 4, x0 + 3, "Switch login", th.win_label)
-        put(scr, y0 + 4, x0 + 17, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]), th.field)
-        what = {"radius": "your login (%s), TRuffle types it" % user,
-                "local": ("local account %s, TRuffle types it" % local_user) if local_user
-                         else "a local account - asked once, then kept",
+        put(scr, y0 + 4, x0 + 3, "Terminal server", th.win_label)
+        put(scr, y0 + 4, x0 + 21, ("RADIUS, always  %s  %s" % (sym["sep"], console_user(cfg, user, n) if n
+                                                             else "%s:<port>" % user))[:bw - 24], th.win_hint)
+        put(scr, y0 + 6, x0 + 3, "Switch login", th.win_label)
+        put(scr, y0 + 6, x0 + 21, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]), th.field)
+        what = {"radius": "RADIUS as well (%s), TRuffle types it" % user,
+                "local": ("its local account %s, TRuffle types it" % local_user) if local_user
+                         else "its local account - asked once, then kept",
                 "manual": "you log in at the switch yourself"}[mode]
-        put(scr, y0 + 5, x0 + 17, what[:bw - 20], th.win_hint)
+        put(scr, y0 + 7, x0 + 21, what[:bw - 24], th.win_hint)
         if error:
-            put(scr, y0 + 7, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
-        put(scr, y0 + 9, x0 + 3, ("Line = the port on the terminal server: 12 -> %d"
-                                  % (cfg.console_port_base + 12))[:bw - 6], th.win_hint)
-        screen.draw_keys(y0 + 11, x0 + 3, (("Enter", "connect"), (sym["lr"], "switch login"), ("ESC", "cancel")))
+            put(scr, y0 + 9, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
+        put(scr, y0 + 11, x0 + 3, ("Line = the port on the terminal server: 12 -> %d"
+                                   % (cfg.console_port_base + 12))[:bw - 6], th.win_hint)
+        screen.draw_keys(y0 + 13, x0 + 3, (("Enter", "connect"), (sym["lr"], "switch login"), ("ESC", "cancel")))
         scr.refresh()
 
         key = screen.read_key(-1)

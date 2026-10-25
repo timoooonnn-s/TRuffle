@@ -20,7 +20,7 @@ The code side lives in `PALETTE` in `truffle`. This page is the reference for bo
 
 | Name | Terminal | Used for |
 |---|---|---|
-| **Highlight Orange** | 214 `#ffaf00` | favourite star `*` |
+| **Highlight Orange** | 214 `#ffaf00` | not in use (it was the favourite star, cut in D50) - kept for the next small highlight |
 | Up | 78 `#5fd787` | `● up`, `● ok` |
 | Down | 203 `#ff5f5f` | `● down`, `● failed`, errors |
 | Wait | 179 `#d7af5f` | `● wait`, "running" |
@@ -38,7 +38,7 @@ The code side lives in `PALETTE` in `truffle`. This page is the reference for bo
 - **Full-screen views** (ping, details, help) reuse the same top bar and footer.
 - **Symbols:** Unicode only for characters in common Windows terminal fonts:
   `─ │ ╭ ╮ ╰ ╯ ▌ ● › ‹ ▲ ▼ · ← → ↑ ↓ • …`. Every one has an ASCII fallback (`--ascii`).
-- **Text:** short, lower-case labels (`run`, `sort`, `favourite`). Column headers are UPPERCASE.
+- **Text:** short, lower-case labels (`run`, `sort`, `export`). Column headers are UPPERCASE.
   Messages start with `●`.
 
 ## Fallbacks

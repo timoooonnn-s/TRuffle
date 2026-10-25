@@ -1,6 +1,6 @@
 """The per-user files in ~/.local/state/truffle (0600 in 0700, replaced atomically):
 
-    favorites   device key per line         recent    time TAB key
+    recent      time TAB key
     status      host TAB kind TAB state TAB time [TAB detail]
     console     server TAB line TAB login   authfail  time TAB host (from a tmux pane)
 
@@ -19,7 +19,7 @@ CONSOLE_MODES = ("radius", "local", "manual")
 
 
 class UserState(object):
-    """Favourites, history, saved results and console choices of the current user.
+    """History, saved results and console choices of the current user.
     A file that cannot be read or written sets `error`; TRuffle keeps working in memory."""
 
     MAX_RECENT = 200
@@ -27,7 +27,6 @@ class UserState(object):
 
     def __init__(self, directory):
         self.dir = directory
-        self.favorites = set()
         self.recent = {}               # device key -> time of the last successful connection
         self.error = None
         self.load()
@@ -81,10 +80,9 @@ class UserState(object):
             except OSError:
                 pass
 
-    # -- favourites and history -----------------------------------------------------
+    # -- history (is:recent) - favourites were cut in the feature review (D50) ----------
 
     def load(self):
-        self.favorites = set(line.strip() for line in self._read("favorites") if line.strip())
         self.recent = {}
         for line in self._read("recent"):
             stamp, _, key = line.rstrip("\n").partition("\t")
@@ -93,16 +91,6 @@ class UserState(object):
                     self.recent[key] = max(float(stamp), self.recent.get(key, 0))
             except ValueError:
                 pass
-
-    def toggle_favorite(self, key):
-        with self._locked():
-            self.load()                        # another TRuffle of the same user may have changed it
-            if key in self.favorites:
-                self.favorites.discard(key)
-            else:
-                self.favorites.add(key)
-            self._write("favorites", sorted(self.favorites))
-        return key in self.favorites
 
     def touch(self, key):
         """`key` was just connected to."""

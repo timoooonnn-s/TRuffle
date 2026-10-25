@@ -13,7 +13,8 @@ from .config import ConfigError, load_config
 from .console import is_console_server
 from .credentials import minutes_text
 from .inventory import DataError, build_devices, data_issues, read_table
-from .logs import list_logs, log_sink, logs_since
+from .export import exports_since
+from .logs import keep_text, list_logs, log_sink, logs_since
 from .pane import pane_main
 from .session import raw_mode_visible
 from .terminal import bracketed_paste, harden_process, which
@@ -27,20 +28,20 @@ def check(cfg):
     ok, no_warnings = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
-    print("switch list  : %s" % cfg.data)
+    print("device list  : %s" % cfg.data)
     try:
         report = {}
         headers, rows = read_table(cfg.data, report)
         devices, columns, warns, picked = build_devices(headers, rows, cfg)
-        print("switches     : %d" % len(devices))
+        print("devices      : %d" % len(devices))
         print("columns      : %s" % ", ".join("%s (%s)" % c for c in columns))
         # Which column is which is the thing you cannot see from the table, so say it.
-        print("switch name  : %s" % picked["name"])
+        print("device name  : %s" % picked["name"])
         print("ssh target   : %s" % picked["host"])
         print("headers found: %s" % ", ".join(headers))
         if devices:
             first = devices[0]
-            print("first switch : name %r  ssh to %r" % (first.values.get(picked["name"], ""), first.host))
+            print("first device : name %r  ssh to %r" % (first.values.get(picked["name"], ""), first.host))
         consoles = [d for d in devices if is_console_server(cfg, d)]
         print("term. servers: %d  (console_hosts = %s)%s" % (
             len(consoles), " ".join(cfg.console_hosts) or "off",
@@ -67,6 +68,7 @@ def check(cfg):
               "               session, so every login would be recorded as failed")
     print("state dir    : %s" % cfg.state_dir)
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
+    print("old logs     : %s" % keep_text(cfg))
     print("password     : %s" % ("forgotten %s after you type it, sessions untouched"
                                  % minutes_text(cfg.password_lifetime) if cfg.password_lifetime
                                  else "kept until TRuffle exits (password_lifetime = 0)"))
@@ -76,16 +78,16 @@ def check(cfg):
 
 
 def parse_args(argv):
-    parser = argparse.ArgumentParser(prog="truffle", description=TITLE + " - connect to your switches over SSH.")
+    parser = argparse.ArgumentParser(prog="truffle", description=TITLE + " - connect to your network devices over SSH.")
     parser.add_argument("--data", metavar="CSV",
-                        help="switch list (default: 'data' in truffle.conf, else data.csv next to truffle)")
+                        help="device list (default: 'data' in truffle.conf, else data.csv next to truffle)")
     parser.add_argument("--config", metavar="FILE", help="additional config file")
     parser.add_argument("--log", action="store_true", help="record ssh sessions to log files")
     parser.add_argument("--debug", action="store_true",
                         help="write what happens around each ssh login to debug.log in the state "
                              "directory (truffle --check prints the path)")
     parser.add_argument("--ascii", action="store_true", help="plain ASCII screen (if lines/symbols look garbled)")
-    parser.add_argument("--check", action="store_true", help="check config and switch list, then exit")
+    parser.add_argument("--check", action="store_true", help="check config and device list, then exit")
     parser.add_argument("--logs", action="store_true",
                         help="show where the log files are and the newest ones, then exit")
     parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
@@ -99,6 +101,11 @@ def parse_args(argv):
 def run_ui(cfg):
     os.environ.setdefault("ESCDELAY", "50")       # before initscr: fast ESC key
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
+    # Closing the PuTTY window or killing the tmux session sends SIGHUP.  Its default
+    # kills TRuffle on the spot - a ping running or still on screen was then never saved,
+    # and after a restart ping:down could not find those switches (D48).  As an exit, the
+    # results are saved on the way out like after Ctrl-C.
+    signal.signal(signal.SIGHUP, lambda signum, frame: sys.exit(129))
     try:
         curses.wrapper(lambda scr: App(scr, cfg).run())
     except KeyboardInterrupt:
@@ -111,13 +118,13 @@ def run_ui(cfg):
         # terminal must not keep a mode we switched on.
         bracketed_paste(False)
     print("TRuffle closed - credentials forgotten.")
-    written = logs_since(cfg, cfg.started)
+    written = logs_since(cfg, cfg.started) + exports_since(cfg.started)
     if written:
-        print("Log files written while TRuffle was open:")
+        print("Files written while TRuffle was open (logs, exports):")
         for path in written:
             print("  %s" % path)
     for session in truffle_sessions():
-        print("  note: tmux session %s is still running (logged-in switches):  tmux attach -t %s"
+        print("  note: tmux session %s is still running (logged-in devices):  tmux attach -t %s"
               % (session, session))
     return 0
 

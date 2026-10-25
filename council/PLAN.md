@@ -1,116 +1,24 @@
 # Current Plan (Drafter)
 
-## Milestone 1: working tool. DONE (2026-10-02)
-1. [x] `truffle` single file: config, CSV loading, search, sort
-2. [x] curses UI matching V-Li: title, command bar, search, table, status line
-3. [x] Own key parser (PuTTY `ESC[11~`, xterm `ESC OP`, Linux console `ESC[[A`)
-4. [x] Popups: ping (streamed), traceroute/tracepath (streamed), details, help
-5. [x] Batch ping: thread pool (64), ESC cancels, `Ping` column, F6 sorts DOWN first
-6. [x] Credential dialog, pty ssh relay, handling of auth failures and changed host keys
-7. [x] Optional session log (0600, never contains the password)
-8. [x] Tests: 36 (logic, ssh relay against `tests/fake_ssh.py` through a pty, tmux UI smoke test); Python 3.8/3.9/3.11/3.14
-9. [x] README, `data.example.csv`, `truffle.conf.example`, `.gitignore`, `.gitattributes`
+What is open and what comes next - nothing else.  **What was built and why is in
+[DECISIONS.md](DECISIONS.md)** (D1-D50); ideas that are not planned are in
+[ideas/README.md](ideas/README.md).  Until 2026-10-25 this file also listed every finished
+milestone; that was a second copy of the decision log, and the stale boxes in it (a "batch ping"
+that no longer exists, checks done weeks ago) are how settled topics came back up.
 
-## Milestone 1b: review fixes + redesign. DONE (2026-10-02)
-- [x] All 10 review findings fixed (see code-review), 38 tests
-- [x] Redesign per D11; verified in 256 colours, 8 colours and ASCII
-- [x] Restored `.gitignore` / `.gitattributes` (missing from the first push!)
+## Now: field test of 2.1.0 (D50)
+- [ ] `Ctrl-A` + ping over the whole inventory on the server (the confirmation above 200)
+- [ ] `Ctrl-E` after a sweep: open the CSV in Excel - umlauts, columns, delimiter
+- [ ] The first start after the update deletes nothing younger than 180 days (`log_keep_days`)
+- [ ] The two newcomers: is the search section's "four you need" enough to start with?
 
-## Milestone 1c: brainstorm picks #1 + #2. DONE (2026-10-02)
-- [x] Search filters (D12), highlighted in the search line, documented in help + README
-- [x] Favourites (Ctrl-F, pinned, `is:fav`) and history (`is:recent`, "Last connected" in details)
-- [x] 46 tests
+## Still to confirm on RHEL
+- [ ] `truffle --check` prints `ssh results : ok` (the session detection of D45 / D46)
 
-## Milestone 1d: transport without GitHub. DONE (2026-10-02)
-- [x] `tools/make-bundle.py` -> one self-extracting text file (checksum, safe paths, keeps data.csv / truffle.conf, survives CRLF)
+## Next
+Nothing planned.  Candidates from the feature review ([REVIEW-features.md](REVIEW-features.md)),
+none decided: "down since" next to the age (M7), copy an IP to the clipboard (M8).
 
-## Milestone 1e: review round 3 + data check, export, saved results, mouse. DONE (2026-10-02)
-
-## Milestone 1f: review round 5 + the idle timeout. DONE (2026-10-04)
-- [x] Standing rules written down: R1 (as few dependencies as possible), R2 (RHEL is the target,
-      macOS is only a test bench) - see [COUNCIL.md](COUNCIL.md#standing-rules), D25
-- [x] All 7 findings and 6 observations fixed (D26): the save_status crash, the unreported pane
-      login failure, the lying "N marked" counter, the blocked multi-ssh, Ctrl-K/Ctrl-T on foreign
-      sessions, the wrong ESC chain in help + README
-- [x] Idle password timeout built (`password_timeout`, 15 min) - the Warden's condition for
-      background tmux sessions is finally met
-- [x] 92 tests, incl. two tmux end-to-end runs: two marked switches share one login, and a pane
-      that cannot log in makes TRuffle forget the password
-
-## Milestone 1g: paste safety, latency, failure reasons. DONE (2026-10-04)
-- [x] Password lifetime: 10 h **absolute**, one variable (`PASSWORD_LIFETIME_MINUTES`), never
-      touches a running session or tmux pane (D28)
-- [x] Bracketed paste: a pasted newline can no longer start an ssh session (D28)
-- [x] `MS` column: round-trip time, sortable slowest-first, `LC_ALL=C` (D28)
-- [x] Why a ssh attempt failed: saved, survives a restart, in details + export (D28)
-- [x] `TMUX-SECURITY.md` for the other engineers; switch idle timeout (900 s) recorded as fact
-- [x] 102 tests
-- [ ] **PuTTY: confirm bracketed paste with Ruffy** - until then it is a Tabby-only win
-
-## Milestone 1h: review round 6. DONE (2026-10-04)
-- [x] 11 findings fixed, incl. two in the paste feature built the same day: an oversized paste
-      leaked 87 Enter presses, and the terminal kept our paste mode after exit (D29)
-- [x] Stale latency on a down host, and 0.0 ms sorting as "never measured" - both with
-      regression tests that were checked to FAIL on the old code
-- [x] **Mouse support removed** (user): it cost Shift-to-select every day for a rarely used click
-- [x] **Settings page on `Ctrl-G`**: session log, debug log, tmux, symbols, forget password now.
-      `Ctrl-O` was built first and silently did nothing - `^O` is the tty discard character
-- [x] Old-config back-compat (`OBSOLETE`) and `BIND_GRACE` deleted
-- [x] 108 tests, VERSION 1.3.0-tmux
-
-## Milestone 1i: Infoblox export + renamed to TRuffle. DONE (2026-10-05)
-- [x] The column **label** decides the job: `columns = PRIMARY_DN_CODE:Name, ADDRESS:IP` makes the
-      real Infoblox export work with no code change (D30). `--check` prints which column it picked
-- [x] The silent "first column is the name" fallback warns now - it was making every switch in a
-      subnet share one identity
-- [x] **Renamed TRee-Li → TRuffle** (D31): script, config, config section, state dir, tmux session
-      names, exports, bundles, tests, banner
-- [x] Every trace of the real inventory removed from the repo (no company name, no real hostnames,
-      no real subnets); examples use the same shape with documentation addresses
-- [x] 111 tests, bundle builds and self-extracts under the new name, VERSION 1.3.1-tmux
-- [ ] **On the server:** rename `tree-li.conf` → `truffle.conf` with `[truffle]`, and move
-      `~/.local/state/tree-li` → `~/.local/state/truffle` (or let it start empty)
-- [ ] `command -v truffle` on the target box - an npm tool of that name exists
-
-## Milestone 1j: cut-down review. DONE (2026-10-07)
-- [x] Dead code and doubled logic removed, no feature or security fix lost (D38): `truffle` 3,536 -> 3,469 lines
-- [x] One behaviour fix: 2+ marks connect even when the search shows nothing, with an end-to-end test
-- [x] The pane's "forget the password" line now actually drops every copy
-- [x] README only describes what exists; 119 tests, VERSION 1.6.2-tmux
-
-## Milestone 1k: segment search, tmux goes live. DONE (2026-10-09)
-- [x] Search splits a word only at the separators (D39)
-- [x] tmux panes are no longer experimental (D40); VERSION 1.7.0
-- [x] Review round 9: one search early-out, one session check, an honest tmux-off message
-
-## Milestone 1l: session log for running tmux panes. DONE (2026-10-13)
-- [x] `Ctrl-G` -> `l` starts/stops recording panes that are already logged in (D41), VERSION 1.8.0
-
-## Milestone 1m: review round 10 + the package layout. DONE (2026-10-20)
-- [x] All 13 findings of D44 fixed (D45), each with a test; the field bug with tests checked to fail on 1.10
-- [x] `src/truffle/` package, `truffle` launcher, tests per module, private tmux server for the tests
-- [x] VERSION 2.0.0, 166 tests on Python 3.8 and 3.14
-- [ ] **On RHEL: `truffle --debug`, one ssh login - the debug log must say "session started".**  If it
-      does not, every attempt there is recorded as failed (the raw-mode check, D45 #1)
-- [ ] Commit `src/` and `tests/` before building a bundle (the bundle ships tracked files only)
-
-## Milestone 1n: review of 2.0 + cut down. DONE (2026-10-20)
-- [x] 13 findings fixed (D46), short help page, comments trimmed, 4,657 lines, 176 tests
-- [ ] On RHEL: `truffle --check` must print "ssh results  : ok"
-
-## Milestone 2: field test (needs the user)
-- [x] `./truffle --check` on the RHEL server: works (2026-10-02)
-- [x] ssh into a real Extreme Fabric Engine switch: password prompt detected, logout returns to the menu
-- [x] Wrong password: one attempt only, then asked again
-- [x] Dead host: ssh gives up after `connect_timeout`, then back in the menu (user likes it)
-- [x] Tabby: tested by the user, works (2026-10-04)
-- [x] PuTTY: tested and approved by Ruffy, the second engineer (2026-10-04)
-- [ ] Batch ping + ssh over all ~700 switches: still waiting for the full inventory.
-      **The last open item of this milestone.**
-
-## Ideas
-All open ideas, including the parked tmux pane feature: [ideas/README.md](ideas/README.md).
-
-## Backlog (only if asked)
-- Extra CSV columns (location, ...): configure `columns`, no code change needed
-- Change the username mid-session (today: restart TRuffle)
+## Delivery
+- Server: the internal git, updated with the bundle (`tools/make-bundle.py`) for big changes.
+- Bump `VERSION` in `src/truffle/__init__.py` before building a bundle whose contents changed.

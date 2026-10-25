@@ -1,27 +1,29 @@
 """The main screen: the switch list, its keys, and the commands of the command bar.
 
- TRuffle  Switch Manager                          timmy · 2/29 switches   top bar
+ TRuffle  Device Manager                          timmy · 2/29 devices    top bar
 ───────────────────────────────────────────────────────────────────────  rule
   ssh   ping   details   help   exit                                      commands
   ›  ber core                                                              search
    NAME          IP           ...                        PING     SSH     table head
    ─────────────────────────────────────────────────────────────────      rule
- ▌* ber-core-01  192.0.2.1    ...                        ● up 5m  ● ok 2h rows
+ ▌+ ber-core-01  192.0.2.1    ...                        ● up 5m  ● ok 2h rows
 ───────────────────────────────────────────────────────────────────────  rule
- Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  footer
+ ESC clear search  Enter run  ←→ command  Tab mark  ^A all  F1-F7 sort   footer
 """
 
+import os
 import re
 import time
 
 from .. import CREDIT
 from ..credentials import Credentials
 from ..inventory import valid_host
-from ..logs import logs_since
+from ..logs import logs_since, prune_logs
 from ..ping import PING_ENV, BatchPing, ProcStream, ping_argv, stream_verdict
 from ..console import is_console_server
+from ..export import export_csv, export_path
 from ..results import KINDS, STATUS_COLUMNS
-from ..search import known_field
+from ..search import field_hint, known_field
 from ..state import UserState
 from ..terminal import which
 from ..tmux import PaneSessions
@@ -32,15 +34,16 @@ from .pages import COMMANDS, details_lines, help_lines, log_lines
 from .screen import Screen
 from .switchlist import SwitchList
 
-TABLE_X = 5          # column 1: selection marker, 2: favourite star, 3: multi-ssh mark
+TABLE_X = 4          # column 1: selection marker, 2: the + of a marked device
 KEY_BATCH = 30       # queued keys handled per screen update (see run)
 SCREEN_POLL_MS = 250
 
-# Ctrl-G: what you may want to flip mid-day - (key, label, Config attribute).
+PING_CONFIRM = 200    # pinging more devices than this at once asks first (D50)
+
+# Ctrl-G: what you may want to flip mid-day - (key, label, Config attribute).  tmux and the
+# screen symbols are set in truffle.conf only (D50: nobody switched them for an hour).
 TOGGLES = [("l", "Session log", "session_log"),
-           ("d", "Debug log", "debug"),
-           ("t", "Several switches at once (tmux)", "tmux")]
-CHARSET_ORDER = ["auto", "unicode", "ascii"]
+           ("d", "Debug log", "debug")]
 
 
 class App(object):
@@ -62,8 +65,12 @@ class App(object):
         self.screen.set_cursor(False)
         self.screen.resume()           # bracketed paste on
         self.load()
-        if self.store.error:
-            self.message(self.store.error, error=True, seconds=15)
+        pruned, prune_error = prune_logs(cfg)
+        if self.store.error or prune_error:
+            self.message(self.store.error or prune_error, error=True, seconds=15)
+        elif pruned and not self.list.load_error and not self.list.issues:
+            self.message("Deleted %d session log%s older than %d days (log_keep_days in truffle.conf)"
+                         % (pruned, "" if pruned == 1 else "s", cfg.log_keep_days), seconds=10)
         elif self.results.checked and not self.list.load_error and not self.list.issues:
             self.message("Ping / SSH results from the last check (%s) - ping refreshes them"
                          % time.strftime("%Y-%m-%d %H:%M", time.localtime(self.results.newest())), seconds=8)
@@ -79,7 +86,7 @@ class App(object):
             self.message("; ".join(warns), error=True, seconds=15)
         elif self.list.issues:
             n = len(self.list.issues)
-            self.message("%d warning%s in the switch list - run: truffle --check" % (n, "" if n == 1 else "s"),
+            self.message("%d warning%s in the device list - run: truffle --check" % (n, "" if n == 1 else "s"),
                          error=True, seconds=15)
 
     def save_results(self):
@@ -114,7 +121,7 @@ class App(object):
 
     def draw_frame(self):
         th, sym, lst = self.screen.th, self.screen.sym, self.list
-        right = "%d/%d switches" % (len(lst.view), len(lst.devices))
+        right = "%d/%d devices" % (len(lst.view), len(lst.devices))
         if self.creds.own:
             right = "%s %s %s" % (self.creds.own.user, sym["sep"], right)
         if self.creds.local:
@@ -123,17 +130,20 @@ class App(object):
             right = "%d marked %s %s" % (len(lst.marked), sym["sep"], right)
         if self.panes.mine:
             right = "%d tmux %s %s" % (len(self.panes.mine), sym["sep"], right)
-        hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^F", "favourite"),
-                 ("F1-F%d" % lst.ncols(), "sort"), ("^G", "settings"), ("^R", "reload"), ("^C", "quit")]
+        hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^A", "all"), ("^E", "export"),
+                 ("^G", "settings"), ("F1-F%d" % lst.ncols(), "sort"), ("^C", "quit")]
         if self.panes.mine:
             hints[3:3] = [("^T", "back to tmux"), ("^K", "close tmux")]
+        esc = self.escape_step()
+        if esc:                    # what the next ESC does - it depends on what is set (D50)
+            hints.insert(0, ("ESC", esc[1]))
         if self.ping_running():
             footer, attr = "ping %d%%" % self.batch.percent, th.wait
-            if not lst.query:
-                footer += " %s ESC cancels" % sym["sep"]
         else:
-            footer, attr = CREDIT, th.placeholder
-        self.screen.draw_frame("Switch Manager", right, hints=hints, footer_right=footer, footer_attr=attr)
+            # the credit only where it costs no key hint
+            room = self.screen.scr.getmaxyx()[1] - 2 - sum(len(k) + len(t) + 3 for k, t in hints)
+            footer, attr = (CREDIT if room >= len(CREDIT) + 2 else ""), th.placeholder
+        self.screen.draw_frame("Device Manager", right, hints=hints, footer_right=footer, footer_attr=attr)
 
     def draw_commands(self, y, w):
         scr, th, sym = self.screen.scr, self.screen.th, self.screen.sym
@@ -167,7 +177,7 @@ class App(object):
                 x += len(text)
         put(scr, y, x, " ", th.cursor)
         if not query:
-            put(scr, y, 7, "type to search %s 'exact  *-w4  w3|w4  type:core  -test  is:fav" % sym["sep"],
+            put(scr, y, 7, "type to search %s bc01  *-w4  w3|w4  type:core  ping:down  -test" % sym["sep"],
                 th.placeholder)
 
     def draw_table(self, y_head, h, w):
@@ -190,10 +200,12 @@ class App(object):
             if lst.load_error:
                 text, attr = lst.load_error, th.err
             elif lst.devices:
-                text, attr = "No switch matches '%s'  %s  ESC clears the search" % (lst.query, sym["sep"]), \
-                    th.placeholder
+                hint = field_hint(lst.query, lst.fields)
+                text, attr = "No device matches '%s'  %s  %s" % (
+                    lst.query, sym["sep"], "%s is a column - did you mean  %s ?" % (hint.partition(":")[0], hint)
+                    if hint else "ESC clears the search"), th.placeholder
             else:
-                text, attr = "The switch list is empty", th.placeholder
+                text, attr = "The device list is empty", th.placeholder
             put(scr, y_body + 1, TABLE_X, text, attr)
         now = time.time()
         for row, d in enumerate(lst.view[self.top:self.top + body_h]):
@@ -214,10 +226,8 @@ class App(object):
         if sel:
             put(scr, y, 1, sym["marker"], th.marker)
             put(scr, y, 2, " " * (w - 4), th.sel)
-        if d.key in self.store.favorites:
-            put(scr, y, 2, "*", th.fav_sel if sel else th.fav)
         if d.key in self.list.marked:
-            put(scr, y, 3, "+", th.mark_sel if sel else th.mark)
+            put(scr, y, 2, "+", th.mark_sel if sel else th.mark)
         x = TABLE_X
         marks = self.list.found.get(d, (0, {}))[1]
         for i, value in enumerate(d.cells):
@@ -255,9 +265,12 @@ class App(object):
                 pass
         except KeyboardInterrupt:
             pass                                      # Ctrl-C: still save what we have
-        if self.batch:
-            self.batch.cancel()
-            self.save_results()                       # finished pings are not thrown away
+        finally:
+            # also on a hang-up or SIGTERM (SystemExit, see cli.run_ui): finished pings
+            # of a batch are not thrown away
+            if self.batch:
+                self.batch.cancel()
+                self.save_results()
 
     def step(self):
         """One screen update; keys already waiting are handled before the next draw, up
@@ -323,8 +336,10 @@ class App(object):
             lst.set_query(" ".join(words[:-1]) + (" " if len(words) > 1 else ""))
         elif key == "ESC":
             self.escape()
-        elif key == "CTRL_F":
-            self.toggle_favorite()
+        elif key == "CTRL_A":
+            self.mark_all()
+        elif key == "CTRL_E":
+            self.export()
         elif key == "CTRL_T":
             self.actions.reattach()
         elif key == "CTRL_K":
@@ -334,7 +349,7 @@ class App(object):
         elif key == "CTRL_R":
             self.load()
             if not lst.load_error:
-                self.message("Switch list reloaded: %d switches" % len(lst.devices))
+                self.message("Device list reloaded: %d devices" % len(lst.devices))
         elif key == "CTRL_L":
             self.screen.sync_size()
         elif len(key) == 1:
@@ -358,33 +373,73 @@ class App(object):
         elif key == "TAB":
             lst.move(1)
 
-    def escape(self):
-        """One step per ESC: search, running ping, marks, sort."""
+    def escape_step(self):
+        """What the next ESC does, as (step, footer text), or None: search, running ping,
+        marks, sort - one step per ESC.  The ping comes before the marks: a ping needs 2+
+        marks, so they are ALWAYS set while one runs, and clearing them first made the
+        footer's "ESC cancels" a lie."""
         lst = self.list
         if lst.query:
+            return "search", "clear search"
+        if self.ping_running():
+            return "ping", "cancel ping"
+        if lst.marked:
+            return "marks", "clear %d mark%s" % (len(lst.marked), "" if len(lst.marked) == 1 else "s")
+        if lst.sort_col is not None:
+            return "sort", "clear sort"
+        return None
+
+    def escape(self):
+        step = self.escape_step()
+        lst = self.list
+        if step is None:
+            return
+        if step[0] == "search":
             lst.set_query("")
-        elif self.ping_running():
-            # Before the marks: a ping needs 2+ marks, so the marks are ALWAYS set while
-            # one runs - clearing them first made the footer's "ESC cancels" a lie.
+        elif step[0] == "ping":
             self.batch.cancel()
             self.message("Ping cancelled")
-        elif lst.marked:
+        elif step[0] == "marks":
             lst.marked.clear()
             self.message("Marks cleared")
-        elif lst.sort_col is not None:
+        else:
             lst.set_sort(None, desc=False)
             self.message("Original order")
 
-    def toggle_favorite(self):
-        dev = self.list.selected()
-        if dev is None:
+    def mark_all(self):
+        """Ctrl-A: mark every device in the current view - or, when they all are marked
+        already, unmark them (D50: the sweep was done by holding Tab).  Marks elsewhere stay."""
+        lst = self.list
+        if not lst.view:
+            self.message("Nothing to mark - the search shows no device")
             return
-        added = self.store.toggle_favorite(dev.key)
-        if self.store.error:
-            self.message(self.store.error, error=True, seconds=10)
+        if all(d.key in lst.marked for d in lst.view):
+            for d in lst.view:
+                lst.marked.pop(d.key, None)
+            self.message("Unmarked the %d devices of this view - %d still marked" % (len(lst.view), len(lst.marked)))
         else:
-            self.message("%s %s favourites" % (dev.name, "added to" if added else "removed from"))
-        self.list.refilter(dev)
+            for d in lst.view:
+                lst.marked.setdefault(d.key, True)
+            self.message("Marked the %d devices of this view - %d marked, ESC clears them"
+                         % (len(lst.view), len(lst.marked)))
+        if "is:marked" in lst.query.lower():
+            lst.refilter()
+
+    def export(self):
+        """Ctrl-E: the devices in the current view, with their results, as a CSV in your
+        home folder (D50)."""
+        lst = self.list
+        if not lst.view:
+            self.message("Nothing to export - the search shows no device")
+            return
+        try:
+            path = export_csv(export_path(), lst.view, lst.headers, lst.delimiter, self.results)
+        except OSError as e:
+            self.message("cannot write the export: %s" % (e.strerror or e), error=True, seconds=12)
+            return
+        home = os.path.expanduser("~")
+        shown = "~" + path[len(home):] if path.startswith(home + os.sep) else path
+        self.message("Exported %d devices to %s" % (len(lst.view), shown), seconds=15)
 
     # -- commands -----------------------------------------------------------------------
 
@@ -400,7 +455,7 @@ class App(object):
             return True
         dev = self.list.selected()
         if dev is None:
-            self.message("No switch selected", error=True)
+            self.message("No device selected", error=True)
         elif command == "details":
             self.show_details(dev)
         elif not valid_host(dev.host):
@@ -432,7 +487,14 @@ class App(object):
 
     def ping(self, dev):
         stream = ProcStream(ping_argv(dev.host, 4, max(2, self.cfg.ping_timeout)), env=PING_ENV)
-        self.screen.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+        try:
+            self.screen.show_text("ping %s (%s)" % (dev.name, dev.host), stream=stream)
+        finally:
+            # also when TRuffle is closed with the ping still on screen (D48): the
+            # replies that came are a verdict, and it is saved before TRuffle goes
+            self.record_ping(dev, stream)
+
+    def record_ping(self, dev, stream):
         verdict = stream_verdict(stream)
         if verdict is None:
             if stream.done and not stream.killed:     # cancelled early proves nothing and says nothing
@@ -446,18 +508,24 @@ class App(object):
     def start_batch(self, devices):
         """ping the marked switches at once, into the PING column (D35)."""
         if self.ping_running():
-            self.message("A ping is already running (ESC with an empty search cancels it)")
+            self.message("A ping is already running (ESC cancels it once the search is empty)")
             return
         if not which("ping"):
             self.message("'ping' is not installed", error=True)
             return
         hosts = list(dict.fromkeys(d.host for d in devices))     # each address once, in order
+        if len(hosts) > PING_CONFIRM and not self.screen.confirm(
+                "Ping", "Ping %d devices at once?" % len(hosts),
+                ("About %d s with %d at a time. ESC with an empty search cancels it."
+                 % (len(hosts) // BatchPing.MAX_THREADS * (self.cfg.ping_timeout + 1) + 1, BatchPing.MAX_THREADS),)):
+            self.message("Ping not started - %d devices stay marked" % len(devices))
+            return
         self.batch = BatchPing(hosts, self.cfg.ping_timeout, self.results)
-        self.message("Pinging %d marked switches - ESC cancels" % len(hosts))
+        self.message("Pinging %d marked devices - ESC cancels" % len(hosts))
 
     def show_details(self, dev):
-        lines = details_lines(self.screen.th, dev, self.results, dev.key in self.store.favorites,
-                              self.store.recent.get(dev.key), self.screen.scr.getmaxyx()[1])
+        lines = details_lines(self.screen.th, dev, self.results, self.store.recent.get(dev.key),
+                              self.screen.scr.getmaxyx()[1])
         self.screen.show_text("details %s %s" % (self.screen.sym["sep"], dev.name), lines=lines)
 
     def show_logs(self):
@@ -476,11 +544,6 @@ class App(object):
             option = next((option for k, _, option in TOGGLES if k == key), None)
             if option:
                 self.toggle(option)
-            elif key == "c":
-                setting = CHARSET_ORDER[(CHARSET_ORDER.index(self.cfg.charset_setting) + 1) % len(CHARSET_ORDER)]
-                self.cfg.charset_setting = setting
-                self.screen.set_charset(self.cfg.charset)
-                self.message("Screen symbols: %s" % setting)
             elif key == "p":
                 if self.creds.held:
                     self.actions.forget_logins("you asked")
@@ -496,8 +559,6 @@ class App(object):
             on = getattr(cfg, option)
             extra = {"session_log": cfg.log_dir, "debug": cfg.debug_log}.get(option, "") if on else ""
             rows.append((key, label, "on" if on else "off", extra))
-        rows.append(("c", "Screen symbols", cfg.charset_setting +
-                     ("" if cfg.charset_setting != "auto" else " (%s)" % cfg.charset), ""))
         rows.append(("p", "Forget the stored password now", "held" if self.creds.held else "not held",
                      "+ local account" if self.creds.local else ""))
         written = logs_since(cfg, cfg.started)

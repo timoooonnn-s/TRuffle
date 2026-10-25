@@ -60,8 +60,8 @@ def ping_once(host, timeout):
 
 
 class BatchPing(object):
-    """Pings the marked switches at once, straight into `results`.  No rate limit: it only
-    covers the handful you marked (D35)."""
+    """Pings the marked devices at once, straight into `results` - a handful, or the whole
+    inventory after Ctrl-A (D50; more than PING_CONFIRM asks first)."""
 
     MAX_THREADS = 16
 

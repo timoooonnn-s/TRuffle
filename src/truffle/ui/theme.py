@@ -35,10 +35,8 @@ PALETTE = {
     "wait_sel":    ((223, 25, ""),  ("yellow", "blue", "")),
     "age":         ((67, -1, ""),   (-1, -1, "d")),       # "3h" after a result, and a stale result
     "age_sel":     ((189, 25, ""),  ("white", "blue", "")),
-    "fav":         ((214, -1, "b"), ("yellow", -1, "b")),
     "mark":        ((120, -1, "b"), ("green", -1, "b")),
     "mark_sel":    ((120, 25, "b"), ("green", "blue", "b")),
-    "fav_sel":     ((214, 25, "b"), ("yellow", "blue", "b")),
     "match":       ((111, -1, "bu"), ("cyan", -1, "bu")),
     "match_sel":   ((189, 25, "bu"), ("white", "blue", "bu")),
     "key":         ((111, -1, "b"), ("cyan", -1, "b")),
@@ -65,7 +63,7 @@ PALETTE = {
 }
 # Without colours: attributes only.
 MONO = {
-    "mark": "b", "mark_sel": "r", "match": "bu", "match_sel": "rbu", "fav": "b", "fav_sel": "r",
+    "mark": "b", "mark_sel": "r", "match": "bu", "match_sel": "rbu",
     "brand": "b", "info": "d", "tab_active": "r", "prompt": "b", "cursor": "r",
     "placeholder": "d", "head": "b", "sort": "b", "sel": "r", "marker": "b", "up": "b", "down": "b",
     "up_sel": "r", "down_sel": "r", "wait_sel": "r", "age": "d", "age_sel": "r", "key": "b", "hint": "d",

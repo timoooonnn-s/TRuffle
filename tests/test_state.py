@@ -13,17 +13,23 @@ from truffle.results import PING_UP, WAIT, Results
 
 
 class TestUserState(TempDir):
-    def test_favorites_and_recent_persist(self):
+    def test_recent_persists(self):
         st = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertTrue(st.toggle_favorite("sw1"))
         st.touch("sw2")
         again = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertEqual(again.favorites, {"sw1"})
         self.assertIn("sw2", again.recent)
-        self.assertFalse(again.toggle_favorite("sw1"))
-        self.assertEqual(state.UserState(os.path.join(self.tmp, "state")).favorites, set())
-        mode = os.stat(os.path.join(self.tmp, "state", "favorites")).st_mode & 0o777
+        mode = os.stat(os.path.join(self.tmp, "state", "recent")).st_mode & 0o777
         self.assertEqual(mode, 0o600)
+
+    def test_an_old_favorites_file_is_ignored(self):
+        """Favourites were cut (D50); a file left from before must not break anything."""
+        d = os.path.join(self.tmp, "state")
+        os.makedirs(d)
+        with open(os.path.join(d, "favorites"), "w") as f:
+            f.write("sw1\n")
+        st = state.UserState(d)
+        self.assertIsNone(st.error)
+        self.assertFalse(hasattr(st, "favorites"))
 
     def test_history_is_trimmed_and_tolerates_garbage(self):
         d = os.path.join(self.tmp, "state")
@@ -119,7 +125,8 @@ class TestUserState(TempDir):
         original, state.fcntl.flock = state.fcntl.flock, refuse
         try:
             st = state.UserState(os.path.join(self.tmp, "state"))
-            self.assertTrue(st.toggle_favorite("sw1"))
+            st.touch("sw1")
+            self.assertIn("sw1", st.recent)
             r = Results()
             r.set("ssh", "10.0.0.1", "ok", 100)
             st.save_results(r)
@@ -158,9 +165,9 @@ class TestUserState(TempDir):
         blocker = os.path.join(self.tmp, "file")
         open(blocker, "w").close()
         st = state.UserState(os.path.join(blocker, "state"))     # a file is in the way
-        st.toggle_favorite("sw1")
+        st.touch("sw1")
         self.assertIsNotNone(st.error)
-        self.assertEqual(st.favorites, {"sw1"})               # still works in memory
+        self.assertIn("sw1", st.recent)                       # still works in memory
 
 
 if __name__ == "__main__":

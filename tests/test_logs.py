@@ -125,3 +125,57 @@ class TestLogFiles(TempDir):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestLogCleanup(TempDir):
+    """D50: session logs are deleted after log_keep_days, debug.log rotates at 1 MB."""
+
+    def cfg(self, days=180):
+        cfg = log_cfg(self.tmp)
+        cfg.log_keep_days = days
+        os.makedirs(cfg.log_dir, exist_ok=True)
+        return cfg
+
+    def old(self, path, days):
+        stamp = 1_000_000_000 - days * 86400
+        os.utime(path, (stamp, stamp))
+        return path
+
+    def test_only_truffles_own_old_logs_go(self):
+        cfg = self.cfg()
+        now = 1_000_000_000
+        gone = self.old(self.write("logs/20250101-090000_ab-12-s34-w4.log", "x"), 200)
+        fresh = self.old(self.write("logs/20261001-090000_ab-12-s34-w4.log", "x"), 10)
+        mine = self.old(self.write("logs/my-notes.log", "x"), 400)            # not a TRuffle name
+        kept_elsewhere = self.old(self.write("kept/20250101-090000_sw.log", "x"), 400)
+        target = self.old(self.write("elsewhere.txt", "x"), 400)
+        os.symlink(target, os.path.join(cfg.log_dir, "20250101-090000_link.log"))
+        self.assertEqual(logs.prune_logs(cfg, now=now), (1, None))
+        self.assertFalse(os.path.exists(gone))
+        for path in (fresh, mine, kept_elsewhere, target):
+            self.assertTrue(os.path.exists(path), path)
+        self.assertTrue(os.path.islink(os.path.join(cfg.log_dir, "20250101-090000_link.log")))
+
+    def test_zero_keeps_everything_and_a_missing_folder_is_fine(self):
+        cfg = self.cfg(days=0)
+        self.old(self.write("logs/20200101-090000_sw.log", "x"), 3000)
+        self.assertEqual(logs.prune_logs(cfg, now=1_000_000_000), (0, None))
+        cfg = self.cfg()
+        cfg.log_dir = os.path.join(self.tmp, "missing")
+        self.assertEqual(logs.prune_logs(cfg), (0, None))
+
+    def test_the_default_is_half_a_year(self):
+        self.assertEqual(config.load_config(args()).log_keep_days, 180)
+        for bad in ("lots", "-1", "4000"):
+            with self.assertRaises(config.ConfigError):
+                config.load_config(args(config=self.write("c.conf", "[truffle]\nlog_keep_days = %s\n" % bad)))
+
+    def test_the_debug_log_rotates_instead_of_growing(self):
+        path = self.write("debug.log", "x" * 2000)
+        logs.rotate_debug_log(path, limit=1000)
+        self.assertFalse(os.path.exists(path))
+        self.assertTrue(os.path.exists(path + ".1"))
+        self.write("debug.log", "small")
+        logs.rotate_debug_log(path, limit=1000)
+        self.assertTrue(os.path.exists(path))
+        logs.rotate_debug_log(os.path.join(self.tmp, "none.log"))           # no file: nothing to do

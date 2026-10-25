@@ -4,9 +4,15 @@ and finding them again.  Every file is created 0600 in a 0700 folder (D8)."""
 import os
 import re
 import shlex
+import stat
 import time
 
 from .session import EscapeStripper
+
+
+# What session_log_path names a file - the only files the cleanup ever deletes.
+SESSION_LOG_NAME = re.compile(r"^[0-9]{8}-[0-9]{6}_[A-Za-z0-9_.-]+\.log$")
+DEBUG_LOG_MAX = 1 << 20      # debug.log is support data: over 1 MB it moves to debug.log.1
 
 
 def session_log_path(cfg, name, host):
@@ -88,12 +94,58 @@ def write_debug_report(cfg, name, host, argv, password, result):
     path = cfg.debug_log
     try:
         os.makedirs(cfg.state_dir, mode=0o700, exist_ok=True)
+        rotate_debug_log(path)
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW, 0o600)
         with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n")
         return None
     except OSError as e:
         return "cannot write %s: %s" % (path, e.strerror or e)
+
+
+def rotate_debug_log(path, limit=DEBUG_LOG_MAX):
+    """debug.log over `limit` becomes debug.log.1 (replacing the previous one), so it never
+    grows without end - one rotation is plenty for a support file (D50)."""
+    try:
+        if os.lstat(path).st_size > limit:
+            os.replace(path, path + ".1")
+    except FileNotFoundError:
+        pass
+
+
+def prune_logs(cfg, now=None):
+    """Delete the session logs nobody has written to for log_keep_days (D50; 0 = never).
+    Only files named like a session log, directly in log_dir, plain files (a symlink is left
+    alone); a log a running tmux pane still writes is fresh and stays.  A log you want to
+    keep goes out of the folder.  Returns (deleted, error text or None)."""
+    if not cfg.log_keep_days:
+        return 0, None
+    cutoff = (time.time() if now is None else now) - cfg.log_keep_days * 86400
+    try:
+        names = os.listdir(cfg.log_dir)
+    except FileNotFoundError:
+        return 0, None
+    except OSError as e:
+        return 0, "cannot clean up %s: %s" % (cfg.log_dir, e.strerror or e)
+    deleted, error = 0, None
+    for name in names:
+        if not SESSION_LOG_NAME.match(name):
+            continue
+        path = os.path.join(cfg.log_dir, name)
+        try:
+            st = os.lstat(path)
+            if stat.S_ISREG(st.st_mode) and st.st_mtime < cutoff:
+                os.unlink(path)
+                deleted += 1
+        except OSError as e:
+            error = "cannot delete the old log %s: %s" % (path, e.strerror or e)
+    return deleted, error
+
+
+def keep_text(cfg):
+    if not cfg.log_keep_days:
+        return "kept forever (log_keep_days = 0)"
+    return "deleted after %d days without a change (log_keep_days)" % cfg.log_keep_days
 
 
 def log_note(result):
@@ -125,6 +177,7 @@ def list_logs(cfg, newest=10):
     """truffle --logs: where the logs are, and the newest ones - from any shell."""
     print("session logs : %s  (%s)" % (cfg.log_dir, "on" if cfg.session_log else "off unless --log / Ctrl-G l"))
     print("debug log    : %s" % cfg.debug_log)
+    print("old logs     : %s" % keep_text(cfg))
     files = logs_since(cfg, 0)[-newest:]
     if files:
         print("newest       :")

@@ -1,4 +1,4 @@
-"""TRuffle: Switch Manager - a curses switch manager for use over plain SSH sessions.
+"""TRuffle: Device Manager - a curses manager for network devices for use over plain SSH sessions.
 
 Python 3.8+, standard library only (R1).  The `truffle` file next to `src/` starts it.
 
@@ -21,8 +21,8 @@ How the package is cut, from the bottom up - a module only imports the ones abov
 
 import os
 
-VERSION = "2.0.0"           # bump before building a bundle
-TITLE = "TRuffle: Switch Manager"
+VERSION = "2.1.0"           # bump before building a bundle
+TITLE = "TRuffle: Device Manager"
 CREDIT = "by Timmy & Ruffy"
 
 # The install folder: the one holding the `truffle` launcher, truffle.conf and data.csv.

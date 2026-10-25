@@ -1059,3 +1059,98 @@ A second full review of the package found 13 findings; all are fixed, each with 
 - `src/truffle` 4,928 -> 4,657 lines (with the fixes of this round).  Against the 4,256 of the single
   file, the rest is what 29 modules cost (imports, module headers) plus the D44 / D45 fixes.
 - 176 tests, Python 3.8 and 3.14.
+
+## D47: The terminal server's login is always RADIUS - and now the screen says so (user, 2026-10-21)
+- User: "The terminal server itself ALWAYS has a working RADIUS, there is no local alternative."
+  The code already did exactly that - the terminal server always got your own login, only the
+  switch behind it followed `radius` / `local` / `manual` (checked end to end: `timmy:7003` +
+  the RADIUS password to the terminal server, `admin` to the switch). What was missing was the
+  screen saying it: one generic "Login" window, and a "Switch login" choice that read like it
+  could be the whole login.
+- The console window now lists both logins in the order they happen: **Terminal server - RADIUS,
+  always · timmy:7012** (not a choice), then **Switch login ‹ radius / local / manual ›**.
+- The login window asked for a terminal server is titled "your RADIUS login" and says "For the
+  terminal server ..., always RADIUS."; the local-account window says "Only the switch - the
+  terminal server always takes RADIUS."; the connect note has a line for each login.
+- No behaviour change. 176 tests.
+
+## D48: Ping results lost when the window was closed (user, 2026-10-21)
+- User: after a restart, `ping:up` / `ping:down` found nothing for switches pinged in the
+  previous session. *Not reproducible with a clean quit:* the status file is read at start and
+  the search reads the same results the PING column shows (checked on the user's own list too).
+- *Found:* the user closes the terminal or kills the tmux session instead of quitting (said so in
+  the console discussion). That is a SIGHUP, whose default kills TRuffle on the spot. Lost were
+  (a) a single ping still on screen - its verdict was only recorded when the window closed - and
+  (b) a batch ping still running - saved only when the whole batch was done. Reproduced both:
+  no status file afterwards, so the restarted TRuffle had nothing to filter on.
+- *Fix:* SIGHUP exits like SIGTERM (`sys.exit`), `App.run` saves a batch's finished pings in a
+  `finally`, and a single ping records its verdict in a `finally` around its window - the replies
+  that came are a verdict. Hosts with no answer yet keep their previous result, as on ESC.
+- *Tester:* an end-to-end test pings with the window open, kills the tmux session, restarts and
+  searches `ping:up`; it fails on 2.0.0.
+
+## D49: Searching a renamed column (user, 2026-10-21)
+- User: a column whose CSV header is "cursed" is renamed to `LOCATION` in `columns`, and searching
+  for it "doesn't really realize what I want" - `LOCATION xx` found nothing, and a shorter field
+  name did not work either. `LOCATION:xx` itself worked in every reproduction (also typed into the
+  real UI); the user's exact value is still to be seen.
+- **The start of a column's name is a field:** `loc:` = `LOCATION`, when only one column fits.
+  Labels from `columns` are asked first - with a 15-column export, `loc` also starts
+  `local_contact`, and the name you chose is the one you mean. Spaces, `_` and `-` are left out
+  when comparing, so `site_name:` reaches "Site Name". Two columns fitting = plain text, as before;
+  one letter is never a field.
+- **A field value matches like a plain word** as well as by containing it: `name:bc01` finds
+  `ber-core-01` like `bc01` does. A field now only narrows the search, it never makes it stricter.
+  Excluded (`-location:x`) and `'`exact values stay plain text (D16).
+- **A space where the colon belongs** (`LOCATION berlin`) finds nothing, as it should, but the empty
+  list now says "LOCATION is a column - did you mean LOCATION:berlin ?".
+
+## D50: Feature review - cut, kept, and four things added (user, 2026-10-25)
+The first feature review ([REVIEW-features.md](REVIEW-features.md)): every feature ranked against
+how TRuffle is actually used (two daily users, two learning; ssh, search, ping, tmux, session
+logging, terminal servers daily; favourites never). Council: Drafter, Operator, Critic, Warden and a
+**Newcomer** seat for the two engineers learning it.
+
+### Cut
+- **Favourites** (`Ctrl-F`, the `*` column, "pinned on top", `is:fav`, the `favorites` file). Never used
+  in three weeks, and its ordering rule made the list order harder to predict. `is:recent` does the job
+  by itself. An old `favorites` file is simply ignored. The `+` of a mark moved into the star's column.
+- **`Ctrl-G` `t` and `c`** (tmux on/off, cycling the screen symbols): set in `truffle.conf` only.
+- **The console idea for down switches (M3): dropped.** The user: below 10 locations have console
+  servers, most in the data centre, where the first two name blocks hardly vary - "rather useless with
+  our naming concept". Nothing built.
+- `truffle bc01` from the shell: not needed.
+
+### Kept, on purpose
+- **The bundle** - the server reaches only the internal git, and big changes travel as a bundle.
+- **The tmux login handover**, **`is:recent`** ("I see the vision behind it"), the search language
+  (only the README changed: the four basics first, then "all of it").
+
+### Added
+- **`Ctrl-A` marks every device of the current view**; again = unmark them. *Partly reverses D35*, which
+  removed the same key on a scale *assumption* - this time the user did the sweep (by holding `Tab`).
+  Marks from other searches stay. *Warden:* ssh still opens at most 9 panes; **ping asks first above 200
+  devices** (`PING_CONFIRM`), with the expected time.
+- **`Ctrl-E` exports the current view** - *reverses D35's "not needed"*: the sweep showed how many dead
+  hosts the IPAM carries, and that list has to reach its owners. Every CSV column + Ping / Ping checked /
+  SSH last try / SSH tried / SSH reason, the list's own delimiter, UTF-8 with BOM, 0600, never over an
+  existing file, to `~/truffle-export-<date>-<time>.csv` (user's choice: the home folder). *Warden:* a
+  cell starting with `=` `+` `@` gets a `'` - the IPAM and a switch's ssh output are not trusted to
+  stay out of Excel's formulas. The help-page test no longer bans "export".
+- **The ESC hint**: the footer's first hint says what the next `ESC` does (`clear search`, `cancel ping`,
+  `clear 12 marks`, `clear sort`) - one `escape_step()` decides both, so they cannot drift apart.
+- **Log cleanup**: session logs not written for **`log_keep_days = 180`** days are deleted at start
+  (user: "not too low" - logs were taken ~5 times, before migrations, "if shit hits the fan"); `0` = never.
+  Only files named like a session log, directly in `log_dir`, plain files (a symlink stays). Keeping one
+  = moving it out. `debug.log` rotates to `debug.log.1` over 1 MB. `--check`, `--logs` and `Ctrl-G` `f`
+  say the rule; the exit list now names exports too.
+- **"Device" instead of "switch"** in every text about the list: the title is **"TRuffle: Device
+  Manager"**, "29/29 devices", "No device matches". Texts about the switch behind a terminal server keep
+  "switch" - there it is one. Code names (`SwitchList`) stay.
+
+### Parked
+- Sorting PING / SSH beyond `F12` (today 7 columns), and **device-group settings** (was per-device ssh
+  profiles) for load balancers and other types, if they come - both in the ideas list.
+- **PLAN.md** cut down to what is open; the finished milestones live here.
+
+`VERSION` 2.1.0. 194 tests.

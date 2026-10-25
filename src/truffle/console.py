@@ -15,8 +15,8 @@ LOGIN_REFUSED = re.compile(r"login incorrect|authentication failed|incorrect pas
 CONSOLE_QUIET = 1.0          # the terminal server says nothing for this long: it let us in
 CONSOLE_WAKE = 5.0           # seconds for the line to show its login prompt after Enter
 CONSOLE_WAITING_NOTE = 8.0   # no answer this long after the password: say why it takes so long
-MODE_TEXT = {"radius": "your login, TRuffle types it",
-             "local": "the local account, TRuffle types it",
+MODE_TEXT = {"radius": "your RADIUS login as well, TRuffle types it",
+             "local": "the switch's local account, TRuffle types it",
              "manual": "you type it"}
 
 
