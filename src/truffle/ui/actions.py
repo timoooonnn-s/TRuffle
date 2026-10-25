@@ -143,7 +143,7 @@ class Actions(object):
     def many(self, devices):
         """One tmux session, a pane per switch, one login.  True when it was opened."""
         if not self.cfg.tmux or not which("tmux"):
-            self.message("%s - connecting to several switches at once needs it. "
+            self.message("%s - connecting to several devices at once needs it. "
                          "Marks still decide what ping checks; ESC (empty search) clears them to ssh one."
                          % ("tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux
                             else "tmux is not installed"), error=True, seconds=12)
@@ -182,7 +182,7 @@ class Actions(object):
             self.message("%stmux session %s started, but could not show it: %s" % (lead, session, error),
                          error=True, seconds=15)
             return True
-        note = lead + "%d switch%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "es", session)
+        note = lead + "%d device%s in tmux session %s" % (len(devices), "" if len(devices) == 1 else "s", session)
         if not got_logins:
             note += " - some panes had to ask for the password themselves"
         if extra > 0:
@@ -209,7 +209,7 @@ class Actions(object):
             return
         sessions = self.panes.refresh()
         if not sessions:
-            self.message("No open switch session - mark 2 or more switches with Tab, then run ssh", seconds=10)
+            self.message("No open tmux session - mark 2 or more devices with Tab, then run ssh", seconds=10)
             return
         session = sessions[-1]              # the newest one
         if self.panes.foreign and not self.screen.confirm(
@@ -235,13 +235,13 @@ class Actions(object):
         """Ctrl-K: close the switch sessions without hunting for a tmux key."""
         sessions = self.panes.refresh()
         if not sessions:
-            self.message("No open switch session", seconds=8)
+            self.message("No open tmux session", seconds=8)
             return
         detail = ["  " + s for s in sessions]
         if self.panes.foreign:           # not ours: say so before logging anyone out
             detail += ["", "  NOT started by this TRuffle window - another", "  TRuffle of yours may be using them."]
-        if not self.screen.confirm("Close switch sessions",
-                                   "Close %d tmux session%s and log out of every switch in them?"
+        if not self.screen.confirm("Close tmux sessions",
+                                   "Close %d tmux session%s and log out of every device in them?"
                                    % (len(sessions), "" if len(sessions) == 1 else "s"), detail=detail):
             self.message("Nothing closed")
             return
@@ -257,7 +257,7 @@ class Actions(object):
     def reload_results(self):
         """Pick up results another TRuffle - or one of our tmux panes - has written."""
         self.results.merge_newer(self.store.load_results())
-        self.store.load()                   # favourites and the recent list too
+        self.store.load()                   # the recent list too
         self.check_pane_auth_failure()
         self.lst.status_changed(force=True)
 

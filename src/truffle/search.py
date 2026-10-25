@@ -148,14 +148,14 @@ def field_value_match(value, cell):
     return value in cell or fuzzy_match(value, cell) is not None
 
 
-def exact_term(token, fields, status, favorites, recent, marked=(), exact=False):
+def exact_term(token, fields, status, recent, marked=(), exact=False):
     """Every non-fuzzy term -> test function returning True / False.  exact: the field
     value is matched as plain text only - for 'exact, and for an exclude (D16: a
     forgiving exclude hides far too much)."""
     name, sep, value = token.partition(":")
     if sep:
         if name == "is":
-            collection = {"fav": favorites, "recent": recent, "marked": marked}.get(value)
+            collection = {"recent": recent, "marked": marked}.get(value)
             if collection is not None:
                 return lambda d: d.key in collection
         if name in ("ping", "ssh"):
@@ -203,7 +203,7 @@ def alternatives(token, fields):
 
 # -- the whole query -----------------------------------------------------------
 
-def compile_query(query, fields, status, favorites, recent, marked):
+def compile_query(query, fields, status, recent, marked):
     """The query -> [(negate, [(fuzzy, test), ...])]: one entry per term, ALL must hold,
     and inside a term ANY alternative."""
     terms = []
@@ -216,10 +216,10 @@ def compile_query(query, fields, status, favorites, recent, marked):
         alts = []
         for alt in alternatives(token, fields):
             if alt.startswith("'") and len(alt) > 1:
-                alts.append((False, exact_term(alt[1:], fields, status, favorites, recent, marked, exact=True)))
+                alts.append((False, exact_term(alt[1:], fields, status, recent, marked, exact=True)))
             elif known_field(alt, fields) or (negate and not has_wildcard(alt)):
                 # an excluded word stays exact: a fuzzy exclude hides far too much (D16)
-                alts.append((False, exact_term(alt, fields, status, favorites, recent, marked, exact=negate)))
+                alts.append((False, exact_term(alt, fields, status, recent, marked, exact=negate)))
             elif has_wildcard(alt):
                 alts.append((False, glob_term(alt)))
             else:
@@ -251,11 +251,11 @@ def match_device(d, terms):
     return score, marks
 
 
-def filter_devices(devices, query, fields=None, status=None, favorites=(), recent=None, found=None,
+def filter_devices(devices, query, fields=None, status=None, recent=None, found=None,
                    marked=()):
     """The devices matching every term, in their order.  status: {"ping": {host: state}, ...};
     found (a dict) receives device -> (score, {column: positions}) of fuzzy words."""
-    terms = compile_query(query, fields or {}, status or {}, favorites, recent or {}, marked)
+    terms = compile_query(query, fields or {}, status or {}, recent or {}, marked)
     if not terms:
         return list(devices)
     out = []
@@ -269,12 +269,11 @@ def filter_devices(devices, query, fields=None, status=None, favorites=(), recen
     return out
 
 
-def default_order(view, query, favorites, recent, found=None):
-    """Order without a chosen sort column: newest first for is:recent; otherwise
-    favourites pinned on top, and with fuzzy words the best matches first."""
+def default_order(view, query, recent, found=None):
+    """Order without a chosen sort column: newest first for is:recent; with fuzzy words
+    the best matches first; otherwise the CSV order."""
     if "is:recent" in query.lower().split():
         return sorted(view, key=lambda d: recent.get(d.key, 0), reverse=True)
-    view = [d for d in view if d.key in favorites] + [d for d in view if d.key not in favorites]
     if found:
-        view.sort(key=lambda d: -found.get(d, (0,))[0])    # stable: favourites win ties
+        view = sorted(view, key=lambda d: -found.get(d, (0,))[0])    # stable: CSV order on ties
     return view

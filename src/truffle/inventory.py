@@ -96,11 +96,11 @@ def read_table(path, report=None):
         hint = ""
         if os.path.isfile(os.path.join(INSTALL_DIR, "data.example.csv")):
             hint = " - copy data.example.csv to data.csv to start"
-        raise DataError("switch list not found: %s%s" % (path, hint))
+        raise DataError("device list not found: %s%s" % (path, hint))
     text = read_text(path)
     first = next((line for line in text.splitlines() if line.strip()), None)
     if first is None:
-        raise DataError("switch list is empty: %s" % path)
+        raise DataError("device list is empty: %s" % path)
     delimiter = detect_delimiter(first)
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)
     headers, rows = None, []
@@ -122,7 +122,7 @@ def read_table(path, report=None):
     except csv.Error as e:
         raise DataError("%s, line %d: %s" % (path, reader.line_num, e))
     if headers is None:
-        raise DataError("switch list has no header line: %s" % path)
+        raise DataError("device list has no header line: %s" % path)
     return headers, rows
 
 
@@ -152,7 +152,7 @@ def build_devices(headers, rows, cfg):
     for key, label in cfg.columns:
         h = find_header(headers, key)
         if h is None:
-            warns.append("column '%s' not found in the switch list" % key)
+            warns.append("column '%s' not found in the device list" % key)
         else:
             columns.append((h, label))
             by_label.setdefault(label.strip().lower(), h)
@@ -161,19 +161,19 @@ def build_devices(headers, rows, cfg):
     for alt in ("ip", "host", "hostname", "address", "ip address"):
         host_h = host_h or find_header(headers, alt)
     if host_h is None:
-        raise DataError("no 'IP' column in the switch list (found: %s)"
+        raise DataError("no 'IP' column in the device list (found: %s)"
                         "  - label one with  columns = <header>:IP" % ", ".join(headers))
     name_h = by_label.get("name") or find_header(headers, "name")
     if name_h is None:
         # Said out loud: silently, a SUBNET first column gave a whole subnet one identity.
         name_h = headers[0]
-        warns.append("no 'Name' column: using '%s' as the switch name"
+        warns.append("no 'Name' column: using '%s' as the device name"
                      " - set it with  columns = <header>:Name" % name_h)
     # Under two columns found: `columns` is for another list - show name and address (D32).
     if len(columns) < 2:
         if columns:
             warns.append("only %d of the configured columns exist in this list, so the table "
-                         "falls back to the switch name and its address - set 'columns' to "
+                         "falls back to the device name and its address - set 'columns' to "
                          "match your list" % len(columns))
         columns = [(name_h, "Name"), (host_h, "IP")]
 

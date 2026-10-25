@@ -99,7 +99,7 @@ class TestCsv(TempDir):
         self.assertEqual([c[1] for c in columns], ["Name", "IP"])
         self.assertEqual(columns[1][0], "ADDRESS")            # the switch address, not SUBNET
         self.assertEqual(devices[0].cells[1], "192.0.2.98")
-        self.assertTrue(any("falls back to the switch name and its address" in w for w in warns), warns)
+        self.assertTrue(any("falls back to the device name and its address" in w for w in warns), warns)
 
     def test_rows_with_an_empty_name_column_are_reported(self):
         """Field bug: the Name column was recognised but stayed empty.  The switch itself

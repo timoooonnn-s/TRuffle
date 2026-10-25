@@ -24,9 +24,6 @@ class Screen(object):
     def sym(self):
         return self.th.sym
 
-    def set_charset(self, charset):
-        self.th = Theme(charset)          # rebuilt: the symbols change at once
-
     def notes(self):
         """How TRuffle talks while ssh has the terminal, in this screen's symbols."""
         return terminal.Notes(bool(self.th.colors), self.sym["gt"])

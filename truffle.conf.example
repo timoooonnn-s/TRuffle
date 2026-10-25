@@ -9,7 +9,7 @@
 
 [truffle]
 
-# Switch list. Relative paths are relative to THIS config file
+# Device list. Relative paths are relative to THIS config file
 # (never to the directory you start truffle from).
 # Can also be set with --data.
 #data = data.csv
@@ -35,7 +35,7 @@
 #ssh_command = ssh
 #ssh_options =
 
-# Seconds to wait for a switch to answer the ssh connection.
+# Seconds to wait for a device to answer the ssh connection.
 #connect_timeout = 10
 
 # Record ssh sessions (what you see on screen, never the password).
@@ -44,8 +44,12 @@
 #session_log = no
 # A relative path is relative to THIS config file, like `data`.
 #log_dir = ~/.local/state/truffle/logs
+# Session logs nobody has written to for this many days are deleted when TRuffle starts.
+# Only TRuffle's own log files in log_dir; move a log elsewhere to keep it. 0 = keep forever.
+# (debug.log is not counted: over 1 MB it moves to debug.log.1.)
+#log_keep_days = 180
 
-# Where your favourites and connection history are kept (per user).
+# Where your connection history and saved results are kept (per user).
 # Default: $XDG_STATE_HOME/truffle or ~/.local/state/truffle.  Relative = to this file.
 #state_dir =
 
@@ -60,8 +64,8 @@
 # running, and tmux panes keep running and stay logged in.
 #password_lifetime = 600
 
-# Several switches at once: mark with Tab, then ssh opens one tmux pane per switch
-# and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
+# Several devices at once: mark with Tab (Ctrl-A: all of this search), then ssh opens
+# one tmux pane per device and logs them all in with one password.  Needs tmux.  "no" = always one at a time.
 #tmux = yes
 
 # Terminal servers: recognised by NAME, with the same * / ? patterns as the search
@@ -69,7 +73,7 @@
 # for the line and logs in as console_login, with {port} = console_port_base + line:
 #   line 12  ->  timmy:7012@ab-12-ts1-01
 # Another login scheme only needs another template, e.g. "{user}:port{port}" with
-# console_port_base = 0.  The template lives here, never in the switch list.
+# console_port_base = 0.  The template lives here, never in the device list.
 #console_hosts = *-*-ts?-*
 #console_login = {user}:{port}
 #console_port_base = 7000

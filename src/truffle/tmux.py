@@ -156,7 +156,7 @@ def open_panes(cfg, devices, handover):
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
     tmux_try("set-option", "-t", session, "status-left", "[TRuffle]  ")
     tmux_try("set-option", "-t", session, "status-right",
-             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one switch ")
+             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one device ")
     tmux_try("set-option", "-t", session, "status-right-length", "80")
     return session, panes
 

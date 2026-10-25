@@ -48,7 +48,8 @@ class TestHelpPage(TempDir):
         for gone in ("ssh check", "traceroute", "tracepath", "no-answer", "ping + ssh",
                      "next / previous sort column",      # Tab sorts no longer, it marks
                      "batch ping",                       # merged into ping (D35)
-                     "ctrl-e", "export",                 # CSV export removed (D35)
+                     "^f", "favourite", "is:fav",          # favourites cut (D50)
+                     "screen symbols",                     # Ctrl-G c cut (D50)
                      "round-trip", "slowest"):           # MS column removed (D36)
             self.assertNotIn(gone, text, "help page still mentions the removed '%s'" % gone)
 
@@ -57,7 +58,7 @@ class TestHelpPage(TempDir):
         text = self.text()
         self.assertIn(cfg.data, text)
         self.assertIn(cfg.state_dir, text)
-        self.assertIn("42 switches", text)
+        self.assertIn("42 devices", text)
 
 
 class TestTheme(unittest.TestCase):

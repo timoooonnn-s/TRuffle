@@ -1104,3 +1104,53 @@ A second full review of the package found 13 findings; all are fixed, each with 
   Excluded (`-location:x`) and `'`exact values stay plain text (D16).
 - **A space where the colon belongs** (`LOCATION berlin`) finds nothing, as it should, but the empty
   list now says "LOCATION is a column - did you mean LOCATION:berlin ?".
+
+## D50: Feature review - cut, kept, and four things added (user, 2026-10-25)
+The first feature review ([REVIEW-features.md](REVIEW-features.md)): every feature ranked against
+how TRuffle is actually used (two daily users, two learning; ssh, search, ping, tmux, session
+logging, terminal servers daily; favourites never). Council: Drafter, Operator, Critic, Warden and a
+**Newcomer** seat for the two engineers learning it.
+
+### Cut
+- **Favourites** (`Ctrl-F`, the `*` column, "pinned on top", `is:fav`, the `favorites` file). Never used
+  in three weeks, and its ordering rule made the list order harder to predict. `is:recent` does the job
+  by itself. An old `favorites` file is simply ignored. The `+` of a mark moved into the star's column.
+- **`Ctrl-G` `t` and `c`** (tmux on/off, cycling the screen symbols): set in `truffle.conf` only.
+- **The console idea for down switches (M3): dropped.** The user: below 10 locations have console
+  servers, most in the data centre, where the first two name blocks hardly vary - "rather useless with
+  our naming concept". Nothing built.
+- `truffle bc01` from the shell: not needed.
+
+### Kept, on purpose
+- **The bundle** - the server reaches only the internal git, and big changes travel as a bundle.
+- **The tmux login handover**, **`is:recent`** ("I see the vision behind it"), the search language
+  (only the README changed: the four basics first, then "all of it").
+
+### Added
+- **`Ctrl-A` marks every device of the current view**; again = unmark them. *Partly reverses D35*, which
+  removed the same key on a scale *assumption* - this time the user did the sweep (by holding `Tab`).
+  Marks from other searches stay. *Warden:* ssh still opens at most 9 panes; **ping asks first above 200
+  devices** (`PING_CONFIRM`), with the expected time.
+- **`Ctrl-E` exports the current view** - *reverses D35's "not needed"*: the sweep showed how many dead
+  hosts the IPAM carries, and that list has to reach its owners. Every CSV column + Ping / Ping checked /
+  SSH last try / SSH tried / SSH reason, the list's own delimiter, UTF-8 with BOM, 0600, never over an
+  existing file, to `~/truffle-export-<date>-<time>.csv` (user's choice: the home folder). *Warden:* a
+  cell starting with `=` `+` `@` gets a `'` - the IPAM and a switch's ssh output are not trusted to
+  stay out of Excel's formulas. The help-page test no longer bans "export".
+- **The ESC hint**: the footer's first hint says what the next `ESC` does (`clear search`, `cancel ping`,
+  `clear 12 marks`, `clear sort`) - one `escape_step()` decides both, so they cannot drift apart.
+- **Log cleanup**: session logs not written for **`log_keep_days = 180`** days are deleted at start
+  (user: "not too low" - logs were taken ~5 times, before migrations, "if shit hits the fan"); `0` = never.
+  Only files named like a session log, directly in `log_dir`, plain files (a symlink stays). Keeping one
+  = moving it out. `debug.log` rotates to `debug.log.1` over 1 MB. `--check`, `--logs` and `Ctrl-G` `f`
+  say the rule; the exit list now names exports too.
+- **"Device" instead of "switch"** in every text about the list: the title is **"TRuffle: Device
+  Manager"**, "29/29 devices", "No device matches". Texts about the switch behind a terminal server keep
+  "switch" - there it is one. Code names (`SwitchList`) stay.
+
+### Parked
+- Sorting PING / SSH beyond `F12` (today 7 columns), and **device-group settings** (was per-device ssh
+  profiles) for load balancers and other types, if they come - both in the ideas list.
+- **PLAN.md** cut down to what is open; the finished milestones live here.
+
+`VERSION` 2.1.0. 194 tests.

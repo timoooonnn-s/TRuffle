@@ -1,4 +1,4 @@
-# TRuffle: Switch Manager
+# TRuffle: Device Manager
 
 ```
  _____  ____           __   __  _
@@ -10,8 +10,9 @@
 
 *by Timmy & Ruffy*
 
-Search your switch list, ssh into a switch, log out, and you're back in the list,
+Search your device list, ssh into a switch, log out, and you're back in the list,
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
+Switches, terminal servers and whatever else your IPAM export holds.
 
 - **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle).
 - **Password asked once per session.** It stays in memory only and is forgotten when TRuffle exits.
@@ -40,15 +41,15 @@ git clone <repo-url> ~/truffle
 Any directory works, for example a [shared team folder](#team-setup).
 No git on the server? Use the [single-file bundle](#single-file-bundle) instead.
 
-### 3. Add your switches
+### 3. Add your devices
 
 ```bash
 cd ~/truffle
 cp data.example.csv data.csv
 ```
 
-Then put your switches into `data.csv`: one line per switch, at least `Name` and `IP`
-([format](#switch-list-datacsv)). Check it, including a [data check](#data-check) for duplicates and typos:
+Then put your devices into `data.csv`: one line per device, at least `Name` and `IP`
+([format](#device-list-datacsv)). Check it, including a [data check](#data-check) for duplicates and typos:
 
 ```bash
 ./truffle --check
@@ -69,14 +70,16 @@ echo "alias truffle='$HOME/truffle/truffle'" >> ~/.bashrc
 ### 5. Use it
 
 1. **Type** to filter the list. A few letters are enough: `bc01` finds `ber-core-01`.
-2. Pick a switch with **↑ ↓**. **ssh** is already selected, so press **Enter**.
-3. Enter your username and password **once**. TRuffle logs you in, now and for every following switch.
+2. Pick a device with **↑ ↓**. **ssh** is already selected, so press **Enter**.
+3. Enter your username and password **once**. TRuffle logs you in, now and for every following device.
 4. **Log out** of the switch, and you're back in the list.
 5. **← →** selects the other commands (ping, details, help, exit).
-6. Several switches at once: **`Tab`** marks them (`+`), and marks are kept while you search for more.
-   With two or more marked, **ssh** opens one [tmux pane per switch](#several-switches-at-once-tmux).
+6. Several devices at once: **`Tab`** marks them (`+`), **`Ctrl-A`** marks everything the search shows,
+   and marks are kept while you search for more. With two or more marked, **ssh** opens one
+   [tmux pane per device](#several-devices-at-once-tmux) and **ping** pings them all.
 7. A **terminal server** (a name like `ab-12-ts1-01`): **Enter** asks for the line, then TRuffle logs
    you into the [console](#terminal-servers-console) of the switch behind it. **`Ctrl-Q`** brings you back.
+8. **`is:recent`** lists the devices you connected to, newest first - TRuffle remembers them by itself.
 
 Filtering by a naming scheme — all the `-l1` switches, or the `w3` and `w4` ones — is what
 [patterns and `|`](#search) are for: `*-l1`, `w3|w4`.
@@ -91,13 +94,14 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 - [Keys](#keys)
 - [Commands](#commands)
 - [Search](#search)
-- [Several switches at once (tmux)](#several-switches-at-once-tmux)
+- [Several devices at once (tmux)](#several-devices-at-once-tmux)
 - [Terminal servers (console)](#terminal-servers-console)
 - [Settings](#settings)
-- [Favourites and recent switches](#favourites-and-recent-switches)
+- [Recent devices](#recent-devices)
 - [Saved check results](#saved-check-results)
+- [Export](#export)
 - [Data check](#data-check)
-- [Switch list (`data.csv`)](#switch-list-datacsv)
+- [Device list (`data.csv`)](#device-list-datacsv)
 - [Configuration](#configuration)
 - [Team setup](#team-setup)
 - [Single-file bundle](#single-file-bundle)
@@ -112,37 +116,36 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 ## Screen
 
 ```
-  TRuffle  Switch Manager                                    2 marked · timmy · 2/29 switches
+  TRuffle  Device Manager                                     2 marked · timmy · 2/29 devices
 ───────────────────────────────────────────────────────────────────────────────────────────────
 
    ssh   ping   details   help   exit
 
   ›  ber core
 
-     NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲      SSH
-     ─────────────────────────────────────────────────────────────────────────────────────────
- ▌*+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down now  ● failed 2h
-   + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up 5m     ● ok 3d
+    NAME          IP            SUBNET    ALIAS                COMMENT    PING ▲      SSH
+    ─────────────────────────────────────────────────────────────────────────────────────────
+ ▌+ ber-core-01   192.0.2.1     ber       Core switch Berlin   5520       ● down now  ● failed 2h
+  + ber-core-02   192.0.2.7     ber       Core switch Berlin   VSP7400    ● up 5m     ● ok 3d
 
 ───────────────────────────────────────────────────────────────────────────────────────────────
-  Enter run  ←→ command  Tab mark  ^F favourite  F1-F7 sort  ^G settings  ^C quit
+  ESC clear search  Enter run  ←→ command  Tab mark  ^A all  F1-F7 sort  ^E export  ^G settings
 ```
 
 From top to bottom:
-- **Top bar:** your login user once you've connected, how many switches are shown, and — when there
-  are any — how many switches you've [marked](#several-switches-at-once-tmux), how many
-  [tmux sessions](#several-switches-at-once-tmux) are still running, and `local: <user>` while a
+- **Top bar:** your login user once you've connected, how many devices are shown, and — when there
+  are any — how many devices you've [marked](#several-devices-at-once-tmux), how many
+  [tmux sessions](#several-devices-at-once-tmux) are still running, and `local: <user>` while a
   switch's [local account](#terminal-servers-console) is stored.
 - **Command tabs.**
 - **Search line.**
 - **Table:**
   - `▌` marks the selected row.
-  - `*` marks a [favourite](#favourites-and-recent-switches).
-  - `+` marks a switch you picked with `Tab` for [several at once](#several-switches-at-once-tmux).
+  - `+` marks a device you picked with `Tab` or `Ctrl-A` for [several at once](#several-devices-at-once-tmux).
     Marks are kept when you search for something else, so you can collect them from several searches.
   - `▲`/`▼` shows the sorted column.
   - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
-    changes nothing - TRuffle says so instead of calling the switch `down`.
+    changes nothing - TRuffle says so instead of calling the device `down`.
   - **SSH** shows how your last real ssh attempt went: `ok` only when ssh actually got you logged in,
     otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C`, or the password was refused.
   - **Both say how old they are:** `now`, `5m`, `2h` (up to two days), then `3d`. A result older than
@@ -151,26 +154,28 @@ From top to bottom:
     TRuffle never tests SSH on its own, so there's no extra traffic. When it failed, **details**
     tells you *why* — `Connection timed out` is a different job from `Permission denied`.
   - Letters matching the [search](#search) are underlined.
-- **Footer:** key hints, or a message for a few seconds.
+- **Footer:** key hints, or a message for a few seconds. When `ESC` has something to undo, the first
+  hint says what the next `ESC` does: `ESC clear search`, `ESC cancel ping`, `ESC clear 12 marks`, `ESC clear sort`.
 
 ## Keys
 
 | Key | Action |
 |---|---|
-| `↑` `↓` `PgUp` `PgDn` `Home` `End` | select a switch |
+| `↑` `↓` `PgUp` `PgDn` `Home` `End` | select a device |
 | `←` `→` | select a command |
-| `Enter` | run the selected command on the selected switch |
+| `Enter` | run the selected command on the selected device |
 | just type | [search](#search) |
 | `Backspace` / `Ctrl-W` / `Ctrl-U` | delete a character / a word / the whole search |
 | paste | pasted text goes into the search as **text** — a newline in it no longer runs `ssh` |
-| `ESC` | step by step: 1. clears the search, 2. cancels a running ping, 3. clears the marks, 4. clears the sort |
+| `ESC` | step by step: 1. clears the search, 2. cancels a running ping, 3. clears the marks, 4. clears the sort. The footer says which step is next |
 | `F1` … `F7` | sort by that column: ▲ ascending → ▼ descending → original order |
-| `Ctrl-F` | mark / unmark the selected switch as a [favourite](#favourites-and-recent-switches) |
-| `Tab` / `Shift-Tab` | mark / unmark a switch for [several at once](#several-switches-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
-| `Ctrl-T` | back into the running [tmux session](#several-switches-at-once-tmux) |
+| `Tab` / `Shift-Tab` | mark / unmark a device for [several at once](#several-devices-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
+| `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay |
+| `Ctrl-E` | [export](#export) what the search shows, with the PING / SSH results, to a CSV in your home folder |
+| `Ctrl-T` | back into the running [tmux session](#several-devices-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
-| `Ctrl-G` | [settings](#settings) for this session: session log, debug log, tmux, symbols, forget password, log files |
-| `Ctrl-R` | reload the switch list |
+| `Ctrl-G` | [settings](#settings) for this session: session log, debug log, forget password, log files |
+| `Ctrl-R` | reload the device list |
 | `Ctrl-L` | redraw the screen |
 | `Ctrl-C` | quit |
 | `Ctrl-Q` | in a [terminal server](#terminal-servers-console) session: back to TRuffle (log out of the switch first) |
@@ -184,13 +189,26 @@ normally — no Shift needed.
 
 | Command | What it does |
 |---|---|
-| **ssh** | Connects to the selected switch. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. On a [terminal server](#terminal-servers-console) it asks for the line first. |
-| **ping** | Checks whether the switches you're working with still answer. **One switch** (nothing marked): `ping -c 4` with live output. **Two or more marked**: all of them at once, no live output, straight into the PING column — you can keep working while it runs, and `ESC` (with an empty search) cancels it. `ESC` during a live ping keeps the replies that already arrived; stopping before any reply leaves the old result alone. |
-| **details** | All CSV fields of the switch, plus ping/SSH result with time, favourite and last connection. |
+| **ssh** | Connects to the selected device. The first time, TRuffle asks for username and password (see [Security](#security)). Log out to come back; `~.` at the start of a line force-closes a hanging session. On a [terminal server](#terminal-servers-console) it asks for the line first. |
+| **ping** | Checks whether the devices you're working with still answer. **One device** (nothing marked): `ping -c 4` with live output. **Two or more marked**: all of them at once, no live output, straight into the PING column — you can keep working while it runs, and `ESC` (with an empty search) cancels it. A sweep: search, `Ctrl-A`, ping; more than 200 devices ask first. `ESC` during a live ping keeps the replies that already arrived; stopping before any reply leaves the old result alone. |
+| **details** | All CSV fields of the device, plus ping/SSH result with time, and when you last connected. |
 | **help** | Keys, search syntax, and the file paths in use. |
 | **exit** | Quits and forgets the password. |
 
 ## Search
+
+**The four you need.** Everything after this table is for when they aren't enough:
+
+| You type | Finds |
+|---|---|
+| `bc01` | a **word**: `bc01` finds `ber-core-01` - letters may skip only at `-` `.` `_` |
+| `*-w4` | a **pattern** over a whole name: every name ending in `-w4` |
+| `location:berlin` | **one column** - the start of its name is enough (`loc:berlin`) |
+| `ping:down` | **by result**: `ping:up`, `ping:down`, `ssh:failed`, ... |
+
+Several words narrow the list: **every one must match** (`ab-12 *-w4 ping:down`).
+
+### All of it
 
 Case doesn't matter, and **every term separated by a space must match** — that's what narrows a long list
 down (`ab-* s34 -ping:down`). For "either/or", put the alternatives in **one** term with `|` (`w3|w4`).
@@ -213,9 +231,8 @@ your naming scheme — use a **pattern** with `*` and `?`.
 | `location:` | the column is empty |
 | `-test`, `-type:edge`, `-*-w4` | excludes matches. An excluded word is always exact (a split exclude would hide far too much), but an excluded pattern stays a pattern. `-w3\|w4` excludes both |
 | `ping:down` | ping state: `up`, `down`, `wait`, or `none` (not checked yet; a bare `ping:` means the same) |
-| `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that switch, or `none` (never tried) |
-| `is:fav` | your favourites |
-| `is:recent` | switches you connected to, newest first |
+| `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that device, or `none` (never tried) |
+| `is:recent` | devices you connected to, newest first ([more](#recent-devices)) |
 | `is:marked` | everything you've picked with `Tab` so far, from any search |
 
 ### Tips & tricks
@@ -260,8 +277,8 @@ responsible:timmy   everything Timmy owns
 location:           rows where location was never filled in
 ```
 
-**Collect switches across several searches.** Marks (`Tab`) survive a new search, so you can gather from
-different corners of the list and then act on all of them at once:
+**Collect devices across several searches.** Marks (`Tab`, or `Ctrl-A` for all the search shows) survive a
+new search, so you can gather from different corners of the list and then act on all of them at once:
 
 ```
 ab-*  → Tab Tab      mark two here
@@ -269,13 +286,14 @@ cd-*  → Tab          search again, mark another
 is:marked            see the pile — then ssh opens them all (see below)
 ```
 
-**After pinging marked switches, let the result drive the next search.** `ping:down` is the follow-up list, and
-`ssh:failed` is the "I tried and it didn't work" list — **details** shows the reason for each.
+**Sweep, then let the result drive the next search.** Search, `Ctrl-A`, **ping** - then `ping:down` is the
+follow-up list (`Ctrl-A`, ping again to re-check just those), and `ssh:failed` is the "I tried and it didn't
+work" list — **details** shows the reason for each, and `Ctrl-E` [exports](#export) the list for whoever has to act on it.
 
 **`'` turns a word back into plain text** (`'10.1.2`), and **ESC steps back one layer at a time**: first the
 search, then a running ping, then the marks, then the sort.
 
-## Several switches at once (tmux)
+## Several devices at once (tmux)
 
 > Needs `tmux` on the server. Turn it off with `tmux = no`.
 
@@ -283,13 +301,14 @@ search, then a running ping, then the marks, then the sort.
 more — then run **ssh** and you connect to all of them. `is:marked` shows the collection so far,
 and the top bar counts it. `ESC` (with an empty search) clears it.
 
-Mark switches with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
-own tmux session with **one pane per switch**, up to **9**. You type your password **once** and every pane
-logs in by itself.
+Mark devices with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
+own tmux session with **one pane per device**, up to **9** - with more marked, it opens the first 9 and
+says how many it left out. You type your password **once** and every pane logs in by itself.
 
 | You want | Press |
 |---|---|
-| mark / unmark a switch | `Tab` (`Shift-Tab` marks the one above) |
+| mark / unmark a device | `Tab` (`Shift-Tab` marks the one above) |
+| mark everything the search shows | `Ctrl-A` (again: unmark them) |
 | see what you've marked | search `is:marked` |
 | clear all marks | `ESC` (with an empty search) |
 | **back to TRuffle**, panes keep running | `Ctrl-b d` |
@@ -297,13 +316,13 @@ logs in by itself.
 | **close them all**, from TRuffle | `Ctrl-K` (asks first) |
 | switch between panes | `Ctrl-b o`, or `Ctrl-b` and an arrow key |
 | make one pane full screen (and back) | `Ctrl-b z` |
-| log out of one switch | `exit` in that pane; its pane closes |
+| log out of one device | `exit` in that pane; its pane closes |
 
 `Ctrl-K` in TRuffle is the reliable way to close everything: it needs no tmux key and works on any keyboard
 layout. tmux's own `Ctrl-b &` does the same from inside, but the `&` is awkward on some layouts.
 
 When the last pane is gone the tmux session ends by itself and you are back in TRuffle.
-The tmux status bar shows these keys while you are in the session, and each pane border carries its switch name.
+The tmux status bar shows these keys while you are in the session, and each pane border carries its device name.
 
 **From any shell**, the sessions are normal tmux sessions named `truffle-HHMMSS`:
 
@@ -314,7 +333,7 @@ tmux kill-session -t truffle-143052  # close one and its logins
 ```
 
 **They keep running after you detach.** That is the point — a dropped PuTTY connection does not lose your
-sessions — but it also means switches stay logged in. TRuffle shows `N tmux` in the top bar while any of
+sessions — but it also means devices stay logged in. TRuffle shows `N tmux` in the top bar while any of
 its sessions are alive, and names them again when you quit.
 
 **How the single login works, and what it costs:** panes are started by tmux, so their command line is
@@ -326,7 +345,7 @@ Anything running as *your* user could still ask for it during those seconds — 
 single login. Set `tmux = no` if you would rather type the password per pane.
 
 **If a pane can't log in,** it says so in that pane and tells TRuffle, which drops the stored password and
-asks you again. A mistyped password therefore costs you the panes you opened, not every switch you visit
+asks you again. A mistyped password therefore costs you the panes you opened, not every device you visit
 afterwards. The password is also forgotten 10 hours after you typed it (see [Security](#security)); that
 only clears it inside TRuffle and leaves running panes alone.
 
@@ -404,7 +423,7 @@ back the switch's `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q go
 TRuffle."* **`Ctrl-Q`** ends the session at any time. **Log out of the switch first**: `Ctrl-Q`
 while you're still logged in leaves the console logged in for the next person.
 
-- Terminal servers open **one at a time**, not in [tmux panes](#several-switches-at-once-tmux).
+- Terminal servers open **one at a time**, not in [tmux panes](#several-devices-at-once-tmux).
 - The **SSH** column of a terminal server says whether the terminal server let you in.
 - If the login on your terminal server misbehaves, `truffle --debug` records both logins'
   prompts (never a password) — see [Debug log](#debug-log).
@@ -413,15 +432,13 @@ while you're still logged in leaves the console logged in for the next person.
 
 ## Settings
 
-Some things you only want for the next hour — recording a change window, or chasing one switch
+Some things you only want for the next hour — recording a change window, or chasing one device
 that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 
 | Key | Setting | What it does |
 |---|---|---|
 | `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
-| `t` | Several at once (tmux) | turn the [multi-switch panes](#several-switches-at-once-tmux) on or off |
-| `c` | Screen symbols | `auto` → `unicode` → `ascii`, applied at once if lines look garbled |
 | `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local account](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
 | `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
 | `ESC` | | close |
@@ -429,15 +446,15 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 Changes apply to **this TRuffle only** and take effect on the next connection (the session log also on running tmux panes) — put them in
 [`truffle.conf`](#configuration) to make them permanent.
 
-Everything else (columns, paths, password lifetime) is set once in the configuration
-file; nothing else is worth flipping mid-day.
+Everything else (columns, paths, password lifetime, tmux on or off, the screen symbols) is set once in the
+configuration file; nothing else is worth flipping mid-day.
 
-## Favourites and recent switches
+## Recent devices
 
-- `Ctrl-F` marks a switch as a favourite (`*`). Favourites are listed first as long as no column is sorted.
-  During a search, better matches come first and favourites only win ties.
-- Every successful login is remembered. Find those switches with `is:recent`, or see "Last connected" in **details**.
-- Both are stored **per user** in `~/.local/state/truffle/` (only readable by you), never in the shared folder or the CSV.
+Every login that actually got you in (ssh or a console) is remembered with its time - you don't do anything
+for it. **`is:recent`** lists those devices, newest first, so the ones you work on all the time are always
+one search away; **details** shows "Last connected". The last 200 are kept **per user** in
+`~/.local/state/truffle/recent` (only readable by you), never in the shared folder or the CSV.
 
 ## Saved check results
 
@@ -448,11 +465,27 @@ Several TRuffle windows merge their results, and the newest one wins.
 
 They're saved as soon as you have them, and also when TRuffle is closed the hard way — the PuTTY
 window closed or the tmux session killed with a ping still on screen or still running: what had
-answered by then is kept. Switches that hadn't answered yet keep their previous result.
+answered by then is kept. Devices that hadn't answered yet keep their previous result.
+
+## Export
+
+**`Ctrl-E`** writes what the search shows to a CSV in your home folder, `~/truffle-export-<date>-<time>.csv` -
+for example the dead hosts of a sweep, to hand to whoever cleans up the IPAM:
+
+```
+ping:down  →  Ctrl-E   →  ~/truffle-export-20261025-141233.csv
+```
+
+- **Every column** of your device list, also the ones not in the table, then `Ping`, `Ping checked`,
+  `SSH last try`, `SSH tried` and `SSH reason`.
+- In the **same delimiter** as your `data.csv`, UTF-8 with a BOM so Excel shows umlauts right.
+- **Readable only by you**, and never over an existing file (a second export in the same second gets `-2`).
+- A value starting with `=`, `+` or `@` gets a `'` in front, so Excel never runs it as a formula.
+- The log cleanup never touches it. When TRuffle exits it lists the exports with the log files.
 
 ## Data check
 
-`truffle --check` checks the switch list and shows the CSV line of every problem:
+`truffle --check` checks the device list and shows the CSV line of every problem:
 - rows with more or fewer fields than the header (often a `;` inside a comment, which shifts the columns)
 - names or IPs that appear more than once
 - missing IPs, unusable hosts, invalid IPv4 addresses (`10.0.0.300`), leading zeros (`010.0.0.5`, which ping reads as octal)
@@ -468,14 +501,14 @@ An unknown or retired option in `truffle.conf` stops TRuffle at startup and name
 | Code | Meaning |
 |---|---|
 | `0` | everything fine |
-| `1` | warnings: the switch list (duplicates, bad addresses, shifted columns), or `ssh results` not reliable |
-| `2` | cannot run: switch list missing or unreadable, or `ssh` / `ping` not installed |
+| `1` | warnings: the device list (duplicates, bad addresses, shifted columns), or `ssh results` not reliable |
+| `2` | cannot run: device list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
-./truffle --check || echo "please fix the switch list"
+./truffle --check || echo "please fix the device list"
 ```
 
-## Switch list (`data.csv`)
+## Device list (`data.csv`)
 
 ```csv
 Name;IP;subnet;aliases;comment;type;id;responsible;aix_server
@@ -526,7 +559,7 @@ data check   : ok
 ```
 
 Without the labels it warns instead of guessing silently — using the first column as the name would
-give every switch in a subnet the same identity, and favourites and history go by that name.
+give every device in a subnet the same identity, and the history and marks go by that name.
 It also tells you when:
 
 - **fewer than two of your `columns` exist in the list** — the table then falls back to showing the
@@ -545,12 +578,12 @@ TRuffle reads these files in order, and later ones win:
 
 | Command line | Effect |
 |---|---|
-| `--data CSV` | use another switch list |
+| `--data CSV` | use another device list |
 | `--debug` | write what happens around each ssh login to a [debug log](#debug-log) |
 | `--log` | turn on [session logging](#session-logging) |
 | `--ascii` | plain ASCII instead of lines and symbols ([why](#colours-and-symbols)) |
-| `--check` | check config, switch list ([data check](#data-check)) and required tools, then exit |
-| `--logs` | show where the log files are and the newest ones, then exit ([details](#where-the-log-files-are)) |
+| `--check` | check config, device list ([data check](#data-check)) and required tools, then exit |
+| `--logs` | show where the log files are, how long they are kept, and the newest ones, then exit ([details](#where-the-log-files-are)) |
 | `--version` | show the version |
 
 `--debug` writes to `debug.log` in the state directory; `truffle --check` and `truffle --logs` print that path.
@@ -559,7 +592,7 @@ TRuffle reads these files in order, and later ones win:
 
 No system-wide install is needed. Put the TRuffle directory where your colleagues can read it, e.g.
 `/srv/netops/truffle`, together with one `data.csv` and an optional `truffle.conf` for team defaults.
-Everyone runs the same `truffle`. Passwords, favourites, history and logs stay per user.
+Everyone runs the same `truffle`. Passwords, history, results and logs stay per user.
 
 ## Single-file bundle
 
@@ -599,7 +632,7 @@ git status                         # if it's a git checkout: review, commit, pus
 
 Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRuffle when
 you want it just for the next session (a change window, say). Each ssh session is written to
-`~/.local/state/truffle/logs/<date>-<time>_<switch>.log` (a console:
+`~/.local/state/truffle/logs/<date>-<time>_<device>.log` (a console:
 `..._<terminal server>_line_<n>.log`), readable only by you. [Where the log files are](#where-the-log-files-are)
 shows how to find them again.
 The log contains what was on screen, never the password TRuffle typed. Commands like
@@ -610,9 +643,15 @@ back to TRuffle, `Ctrl-G` → `l`, `Ctrl-T` back in. From then on every pane thi
 its own log file, until you switch it off the same way or the pane closes (quitting TRuffle does not
 stop it; sessions from before a restart are named, not recorded). tmux records only what a pane shows.
 
+**Old logs are deleted after half a year.** When TRuffle starts, it deletes the session logs nobody has
+written to for **180 days** (`log_keep_days` in [`truffle.conf`](#configuration); `0` keeps them forever)
+and says how many. It only ever touches its own files - named like a session log, directly in the log
+folder. **A log you want to keep** (the state before a migration, say) you move out of that folder.
+`debug.log` is support data, not a record: over 1 MB it moves to `debug.log.1`.
+
 ## Debug log
 
-`truffle --debug` — or **`Ctrl-G`** inside TRuffle, when a switch starts misbehaving and you don't
+`truffle --debug` — or **`Ctrl-G`** inside TRuffle, when a device starts misbehaving and you don't
 want to restart — appends a short report of every ssh login to `~/.local/state/truffle/debug.log`
 (readable only by you):
 - the ssh command
@@ -621,7 +660,7 @@ want to restart — appends a short report of every ssh login to `~/.local/state
 - on a [terminal server](#terminal-servers-console): each step of the switch's login — the prompts it
   saw, what it typed (never the password itself) and why it handed over
 - whether the session started (ssh switched the terminal to raw mode), the exit code and the reason for a failure
-- the switch's output **before** the login (banner, prompts)
+- the device's output **before** the login (banner, prompts)
 
 The password and the session itself are never in it.
 
@@ -636,12 +675,13 @@ A full path is far too long for TRuffle's footer, so:
 
 ```
 TRuffle closed - credentials forgotten.
-Log files written while TRuffle was open:
+Files written while TRuffle was open (logs, exports):
   /home/timmy/.local/state/truffle/logs/20261020-141233_ab-12-ts1-01_line_12.log
   /home/timmy/.local/state/truffle/debug.log
+  /home/timmy/truffle-export-20261020-143005.csv
 ```
 
-- **`truffle --logs`** from any shell: the log folder, the debug log and the newest log files.
+- **`truffle --logs`** from any shell: the log folder, the debug log, how long logs are kept and the newest log files.
 
 A second TRuffle window of yours that logs at the same time shows up in the list too — they share the folder.
 
@@ -665,7 +705,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
   and says so afterwards, so you always know whether the auto-login fired.
 - **Wrong password:** ssh is stopped right away instead of retrying, the stored password is wiped,
   and you're asked again. This protects a central (TACACS+/RADIUS) account from lockouts.
-  A [tmux pane](#several-switches-at-once-tmux) that can't log in reports it back, so one mistyped
+  A [tmux pane](#several-devices-at-once-tmux) that can't log in reports it back, so one mistyped
   password is not spent on switch after switch.
   A switch behind a [terminal server](#terminal-servers-console) that refuses the login is different:
   the terminal server has just accepted the password, so it is kept, and you log in by hand.
@@ -679,7 +719,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 - **Terminal servers:** the switch's login is typed only at a `Login:` / `Password:` prompt TRuffle
   recognises, once, and never into a console that is still logged in. A switch's **local account** is
   kept like your password: in memory only, forgotten with it.
-- **Host keys:** new switches are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
+- **Host keys:** new devices are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
   TRuffle asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.
 - **CSV values** never pass through a shell, and hosts that look like command-line options (`-o...`) are rejected.
 
@@ -687,7 +727,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 
 | Problem | Fix |
 |---|---|
-| `switch list not found` | `cp data.example.csv data.csv`, or set `data =` in `truffle.conf` |
+| `device list not found` | `cp data.example.csv data.csv`, or set `data =` in `truffle.conf` |
 | `python3\r: No such file or directory` or `Permission denied` after copying via Windows | `sed -i 's/\r$//' truffle; chmod +x truffle`, or start it with `python3 truffle` |
 | Old switch: `no matching key exchange method` / `host key type` | e.g. `ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`. On RHEL 9 the system crypto policy may also need to allow SHA-1 |
 | Lines or symbols look like `â”€` or `?` | `--ascii` / `charset = ascii`, or PuTTY *Window → Translation* → UTF-8 |
@@ -708,7 +748,7 @@ python3 -m unittest discover -s tests -v
 ```
 
 - The `truffle` file is only a launcher; the code is the package in `src/truffle/`, one module per job.
-  Its docstring (`src/truffle/__init__.py`) maps them: the lower modules (config, switch list, search,
+  Its docstring (`src/truffle/__init__.py`) maps them: the lower modules (config, device list, search,
   results, ssh in a pty, tmux, ...) never import the curses screens in `src/truffle/ui/`, so they are
   tested without a terminal. Python 3.8+ and the standard library only.
 - `tests/fake_ssh.py` acts as a switch (password `secret`, a changed host key, timeouts, a connect that

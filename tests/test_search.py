@@ -93,9 +93,8 @@ class TestSearchSyntax(unittest.TestCase):
         ssh = {"status": {"ssh": {"10.0.0.1": results.SSH_OK, "10.0.0.2": results.SSH_FAILED}}}
         self.assertEqual(self.names("ssh:failed", **ssh), ["ber-edge-01"])
         self.assertEqual(self.names("ssh:none", **ssh), ["muc-core-01", "ber-test-01"])
-        self.assertEqual(self.names("is:fav", favorites={"ber-test-01"}), ["ber-test-01"])
         self.assertEqual(self.names("is:recent", recent={"muc-core-01": 5}), ["muc-core-01"])
-        self.assertEqual(self.names("is:favs", favorites={"ber-test-01"}), [])  # no hidden aliases
+        self.assertEqual(self.names("is:fav"), [])                            # favourites are gone (D50)
         self.assertEqual(self.names("ping:wait", status={"ping": {"10.0.0.4": results.WAIT}}), ["ber-test-01"])
         # a bare "ping:" means the same as "ping:none", exactly like an empty "location:"
         self.assertEqual(self.names("ping:", **ping), self.names("ping:none", **ping))
@@ -112,16 +111,16 @@ class TestSearchSyntax(unittest.TestCase):
     def test_fuzzy_ranking_and_marks(self):
         found = {}
         view = search.filter_devices(self.devices, "core", self.fields, found=found)
-        order = [d.name for d in search.default_order(view, "core", set(), {}, found)]
+        order = [d.name for d in search.default_order(view, "core", {}, found)]
         self.assertEqual(order, ["ber-core-01", "muc-core-01"])
         d = next(d for d in view if d.name == "ber-core-01")
         self.assertEqual(found[d][1], {0: {4, 5, 6, 7}})                      # "core" in the Name column
 
     def test_default_order(self):
-        favorites, recent = {"muc-core-01"}, {"ber-edge-01": 10, "ber-test-01": 20}
-        order = [d.name for d in search.default_order(self.devices, "", favorites, recent)]
-        self.assertEqual(order[0], "muc-core-01")                              # favourites pinned
-        order = [d.name for d in search.default_order(self.devices, "is:recent", favorites, recent)]
+        recent = {"ber-edge-01": 10, "ber-test-01": 20}
+        order = [d.name for d in search.default_order(self.devices, "", recent)]
+        self.assertEqual(order, [d.name for d in self.devices])                # the CSV order
+        order = [d.name for d in search.default_order(self.devices, "is:recent", recent)]
         self.assertEqual(order[:2], ["ber-test-01", "ber-edge-01"])            # newest first
 
 
