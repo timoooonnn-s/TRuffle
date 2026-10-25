@@ -1154,3 +1154,39 @@ logging, terminal servers daily; favourites never). Council: Drafter, Operator, 
 - **PLAN.md** cut down to what is open; the finished milestones live here.
 
 `VERSION` 2.1.0. 194 tests.
+
+## D51: Several consoles at once, also next to ssh panes (user, 2026-10-25)
+User: "Consoles can be multiple, also for setup procedures and lab work - especially there you'd like
+multiple sessions at once."  D42 had kept terminal servers out of tmux; that was a scoping choice for
+the first version, not a limit, and the idea file said so.
+
+### The user's choices
+1. **Which lines:** several lines of one terminal server in its window (`3 7 12`, `3-5`), AND lines of
+   several terminal servers - "if tmux for console, then the right way". Several marked terminal
+   servers get one window with a lines field each.
+2. **One switch login for all consoles**; a switch that refuses it is the user's to type by hand.
+3. **The local account may travel through the handover** - to console panes only.
+4. **A loud `Ctrl-K` warning** when console panes are among the sessions.
+5. *Asked by the user:* why not ssh and console panes in one session?  *Drafter:* no good reason - it
+   was a simplification, and with choice 1 it comes almost free. So **marks may mix** switches and
+   terminal servers: one tmux session, an ssh pane per switch, a console pane per line.
+
+### How
+- `parse_console_lines` (order kept, each line once, ranges up to 100); the console choice remembers
+  a list of lines - old single-line entries still read.  One dialog for one or many terminal servers.
+- One line of one unmarked terminal server still runs in this window, as before; anything more opens
+  panes.  Panes are `PaneTarget`s (a device, or a device + line); the 9-pane cap is shared, and what is
+  left out is named.
+- `pane_command` adds `--pane-console LINE LOGIN` - the line and the choice, never an account.  The pane
+  runs the same `ConsoleLogin` as the main screen; `Ctrl-Q` closes a console pane.
+- *Warden:* `Handover.issue(host, switch=True)` marks a console pane's ticket; only such an answer
+  carries `switch_user` / `switch_password` - an ssh pane in the same session never gets the local
+  account (tested). TMUX-SECURITY.md has the paragraph.
+- *Warden/Operator:* killing a console pane leaves the switch console logged in. `Ctrl-K` then says so
+  in capitals, names the console panes, and asks "Close anyway?".  TRuffle still never types `logout`
+  itself (D42: it cannot know what is on the line).
+- *Tester:* end to end with the fake terminal server - two lines of one server in two panes (titles,
+  the loud `Ctrl-K`, the remembered lines), and a switch + a terminal-server line with the local account
+  (the fake's line 3 takes only that account, so reaching its prompt proves it arrived).
+
+Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dialog was replaced, not extended).  Tests +116.  `VERSION` 2.2.0.  200 tests.

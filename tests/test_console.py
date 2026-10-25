@@ -50,17 +50,37 @@ class TestConsole(TempDir):
             with self.assertRaises(config.ConfigError, msg=body):
                 config.load_config(args(config=self.write("c.conf", "[truffle]\n" + body)))
 
-    def test_last_line_and_login_are_remembered_per_terminal_server(self):
+    def test_last_lines_and_login_are_remembered_per_terminal_server(self):
         st = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertEqual(st.console_choice("ab-12-ts1-01"), (None, "radius"))
-        st.save_console_choice("ab-12-ts1-01", 12, "local")
-        st.save_console_choice("ab-12-ts2-01", 3, "manual")
-        st.save_console_choice("ab-12-ts1-01", 14, "radius")
+        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([], "radius"))
+        st.save_console_choice("ab-12-ts1-01", [12], "local")
+        st.save_console_choice("ab-12-ts2-01", [3, 7, 12], "manual")
+        st.save_console_choice("ab-12-ts1-01", [14], "radius")
         again = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertEqual(again.console_choice("ab-12-ts1-01"), (14, "radius"))
-        self.assertEqual(again.console_choice("ab-12-ts2-01"), (3, "manual"))
+        self.assertEqual(again.console_choice("ab-12-ts1-01"), ([14], "radius"))
+        self.assertEqual(again.console_choice("ab-12-ts2-01"), ([3, 7, 12], "manual"))
         with open(os.path.join(self.tmp, "state", "console")) as f:
             self.assertEqual(len(f.readlines()), 2)
+
+    def test_a_saved_single_line_from_before_still_reads(self):
+        d = os.path.join(self.tmp, "state")
+        os.makedirs(d)
+        with open(os.path.join(d, "console"), "w") as f:
+            f.write("ab-12-ts1-01\t12\tlocal\nab-12-ts2-01\tx y\tradius\n")
+        st = state.UserState(d)
+        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([12], "local"))
+        self.assertEqual(st.console_choice("ab-12-ts2-01"), ([], "radius"))         # garbage: ignored
+
+    def test_several_lines(self):
+        cfg = config.load_config(args())
+        for text, lines in (("12", [12]), ("3 7 12", [3, 7, 12]), ("3,7, 12", [3, 7, 12]),
+                            ("3-5 12", [3, 4, 5, 12]), ("12 3 12", [12, 3]), (" 4-4 ", [4])):
+            self.assertEqual(console.parse_console_lines(cfg, text), (lines, None), text)
+        for bad in ("", " ", "abc", "5-3", "0", "3 x", "1-200", "-4", "3--5"):
+            lines, why = console.parse_console_lines(cfg, bad)
+            self.assertIsNone(lines, bad)
+            self.assertTrue(why, bad)
+        self.assertEqual(console.lines_text([3, 7, 12]), "3 7 12")
 
 
 class TestConsoleLogin(unittest.TestCase):

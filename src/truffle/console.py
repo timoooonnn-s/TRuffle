@@ -34,6 +34,31 @@ def parse_console_line(cfg, text):
     return int(text) if cfg.console_port_base + int(text) <= 65535 else None
 
 
+def parse_console_lines(cfg, text):
+    """'3 7 12', '3,7,12' or '3-5 12' -> ([3, 7, 12], None) in the order typed, each once;
+    or (None, why).  Several lines open one tmux pane each (D51)."""
+    lines = []
+    for token in re.split(r"[\s,;]+", text.strip()):
+        if not token:
+            continue
+        first, dash, last = token.partition("-")
+        a = parse_console_line(cfg, first)
+        b = parse_console_line(cfg, last) if dash else a
+        if a is None or b is None or b < a:
+            return None, "'%s' is not a line number (e.g. 12, or 3-5)" % token
+        if b - a >= 100:
+            return None, "'%s' is far too many lines" % token
+        lines += [n for n in range(a, b + 1) if n not in lines]
+    if not lines:
+        return None, "Please enter the line number, e.g. 12 - several: 3 7 12"
+    return lines, None
+
+
+def lines_text(lines):
+    """[3, 7, 12] -> '3 7 12', for the dialog and the saved choice."""
+    return " ".join(str(n) for n in lines or ())
+
+
 def console_user(cfg, user, line):
     """The username for the terminal server: timmy + line 12 -> timmy:7012.
     str.replace, not str.format: the template cannot reach anything but these two."""

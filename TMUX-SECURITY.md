@@ -141,6 +141,7 @@ message a client can send to claim a different identity, the way an HTTP client 
            tmux reported for THAT ticket (or its direct parent)
         |
         |  -> sends user + password, once
+        |     (a console pane's ticket: also the switch login, see below)
         v
     socket closed and deleted as soon as every pane has its login
 ```
@@ -149,6 +150,24 @@ Then each pane runs `ssh` and types the password at the switch's prompt — exac
 by hand, and exactly what TRuffle already does for a single switch.
 
 Note condition 5. It is the one that does the real work, and it is explained next.
+
+### Console panes carry one more login (since 2.2, D51)
+
+A pane can also be one **line of a terminal server**: it logs into the terminal server with your
+password, then into the switch behind it. For that switch you can choose your own login again,
+**the switch's local account**, or typing it yourself. With the local account, that account is
+handed over too - by exactly the same ticket, under exactly the same five conditions:
+
+- it is in the answer **only for a console pane's ticket**. An ssh pane in the same session gets
+  your login and nothing else - the ticket says which kind of pane it is, decided by TRuffle when
+  it creates the pane, not by anything the pane sends;
+- the pane's command line carries the line number and the *choice* (`--pane-console 7 local`),
+  never an account or a password;
+- nothing else changes: one use, 15 seconds, your user, the exact process tmux started.
+
+What it does mean: during those seconds, the socket can hand out **two** secrets instead of one,
+and a local account is often shared between switches - so the same trade-off below applies to it.
+If that is not acceptable, choose `manual` for the switch login and type it in each pane.
 
 ---
 

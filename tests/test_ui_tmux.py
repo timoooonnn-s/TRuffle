@@ -258,6 +258,69 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("n", literal=True)
         self.wait_for("Ping not started")
 
+    def add_terminal_server(self):
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("ab-12-ts1-01;10.99.0.9;lab;Terminal server;\n")
+        self.start()
+
+    def test_several_lines_of_one_terminal_server_open_console_panes(self):
+        """D51: "1 4" in the line window opens one tmux pane per line, both logged in at
+        the switch behind them - and Ctrl-K warns loudly that consoles stay logged in."""
+        self.add_terminal_server()
+        self.keys("ts1", literal=True)
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("1 4", literal=True)
+        self.wait_for("2 tmux panes")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        self.wait_in_panes(session, "FAKE-CON:1>", timeout=20)
+        titles = tmux("list-panes", "-t", "=" + session, "-F", "#{pane_title}")
+        self.assertIn("ab-12-ts1-01 line 1", titles)
+        self.assertIn("ab-12-ts1-01 line 4", titles)
+        self.keys("C-k")
+        self.wait_for("2 CONSOLES")
+        self.assertIn("does NOT log you out", self.screen())
+        self.keys("y", literal=True)
+        self.wait_for("Closed 1 tmux session")
+        self.keys("Enter")                               # remembered: lines 1 4
+        self.wait_for("2 tmux panes")
+
+    def test_marked_devices_and_a_terminal_server_share_one_session(self):
+        """D51: a marked switch gets an ssh pane, the marked terminal server's line a
+        console pane - here with the switch's local account, which travels to the
+        console pane only."""
+        self.add_terminal_server()
+        self.keys("fake-good", literal=True)
+        self.keys("Tab")
+        self.keys("C-u")
+        self.keys("ts1", literal=True)
+        self.keys("Tab")
+        self.wait_for("2 marked")
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("3", literal=True)
+        self.keys("Right")                               # radius -> local
+        self.wait_for("1 of them ssh")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("Local account")
+        self.keys("C-u")
+        self.keys("admin", literal=True)
+        self.keys("Tab")
+        self.keys("local123", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        self.wait_in_panes(session, ":1>", timeout=20)  # FAKE-SW:1> and FAKE-CON:1>
+        seen = [tmux("capture-pane", "-p", "-t", p) for p in self.panes(session)]
+        self.assertEqual(sorted("FAKE-CON" in s for s in seen), [False, True])
+        self.assertFalse(any("Login incorrect" in s for s in seen))
+
     def test_two_marked_switches_share_one_login(self):
         """The whole handover, end to end: one password typed in TRuffle, two panes
         logged in by themselves, no password on any command line."""
