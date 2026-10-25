@@ -14,14 +14,14 @@ Search your device list, ssh into a switch, log out, and you're back in the list
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
 Switches, terminal servers and whatever else your IPAM export holds.
 
-- **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle).
-- **Password asked once per session.** It stays in memory only and is forgotten when TRuffle exits.
+- **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle) if needed ;)
+- **Password asked once per session.** It stays in memory only, and is forgotten 10 hours after you typed it or when TRuffle exits, whichever comes first.
 - **After you log out of a switch, you're back in TRuffle.**
 
 Inspired by [V-Li: Switch Manager](https://github.com/seismicindustries/switch-manager).
 TRuffle keeps its menu, but runs ssh inside your terminal instead of a new desktop window.
 
-**[Quick start](#quick-start)**: up and running in five minutes.
+**[Quick start](#quick-start)**: up and running in five minutes. <br>
 **[Reference](#reference)**: everything in detail.
 
 ---
@@ -35,7 +35,7 @@ On the server: Linux, **Python 3.8 or newer** (`python3 --version`), the OpenSSH
 ### 2. Get TRuffle
 
 ```bash
-git clone <repo-url> ~/truffle
+git clone <repo-url> ~/git/truffle
 ```
 
 Any directory works, for example a [shared team folder](#team-setup).
@@ -44,7 +44,7 @@ No git on the server? Use the [single-file bundle](#single-file-bundle) instead.
 ### 3. Add your devices
 
 ```bash
-cd ~/truffle
+cd ~/git/truffle
 cp data.example.csv data.csv
 ```
 
@@ -52,19 +52,19 @@ Then put your devices into `data.csv`: one line per device, at least `Name` and 
 ([format](#device-list-datacsv)). Check it, including a [data check](#data-check) for duplicates and typos:
 
 ```bash
-./truffle --check
+python3 truffle --check
 ```
 
 ### 4. Start it
 
 ```bash
-./truffle
+python3 truffle
 ```
 
-To start it from anywhere with just `truffle`, add an alias:
+**Recommended:** To start it from anywhere with just `truffle`, add an alias:
 
 ```bash
-echo "alias truffle='$HOME/truffle/truffle'" >> ~/.bashrc
+echo "alias truffle='python3 $HOME/git/truffle/truffle'" >> ~/.bashrc
 ```
 
 ### 5. Use it
@@ -168,7 +168,7 @@ From top to bottom:
 | `Backspace` / `Ctrl-W` / `Ctrl-U` | delete a character / a word / the whole search |
 | paste | pasted text goes into the search as **text** — a newline in it no longer runs `ssh` |
 | `ESC` | step by step: 1. clears the search, 2. cancels a running ping, 3. clears the marks, 4. clears the sort. The footer says which step is next |
-| `F1` … `F7` | sort by that column: ▲ ascending → ▼ descending → original order |
+| `F1` … `F12` | sort by that column: ▲ ascending → ▼ descending → original order |
 | `Tab` / `Shift-Tab` | mark / unmark a device for [several at once](#several-devices-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
 | `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay |
 | `Ctrl-E` | [export](#export) what the search shows, with the PING / SSH results, to a CSV in your home folder |
@@ -270,7 +270,7 @@ ab-* -test          site ab, without the test boxes
 ```
 
 **Search columns that aren't on the screen.** Any CSV column works as `field:value`, even one you don't
-display — and a bare `field:` finds the rows where it is *empty*, which is handy for spotting gaps:
+display — and a bare `field:` finds the rows where it is *empty*, which is handy for spotting gaps. For example:
 
 ```
 responsible:timmy   everything Timmy owns
@@ -302,7 +302,8 @@ more — then run **ssh** and you connect to all of them. `is:marked` shows the 
 and the top bar counts it. `ESC` (with an empty search) clears it.
 
 Mark devices with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
-own tmux session with **one pane per device**, up to **9** - with more marked, it opens the first 9 and
+own tmux session with **one pane per device** (a marked terminal server: one per line, see
+[Several consoles at once](#several-consoles-at-once)), up to **9** - with more marked, it opens the first 9 and
 says how many it left out. You type your password **once** and every pane logs in by itself.
 
 | You want | Press |
@@ -375,7 +376,7 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
 
 ```
   ╭─ Console · ab-12-ts1-01 ─────────────────────────────────────╮
-  │  Line               12                                       │
+  │  Lines             12                                        │
   │                                                              │
   │  Terminal server   RADIUS, always  ·  timmy:7012             │
   │                                                              │
@@ -384,8 +385,9 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
   ╰──────────────────────────────────────────────────────────────╯
 ```
 
-- **Line:** type the number, `12` becomes `7012` (`console_port_base = 7000`). The last line you
-  used on that terminal server is filled in — only as a suggestion, lines get re-cabled.
+- **Lines:** type the number, `12` becomes `7012` (`console_port_base = 7000`). **Several lines**
+  (`3 7 12`, or `3-5 12`) open [one tmux pane per line](#several-consoles-at-once). The lines you
+  used last on that terminal server are filled in — only as a suggestion, lines get re-cabled.
 - **Terminal server:** not a choice. It always gets your RADIUS login — the same one as for ssh,
   asked once per session. The window shows the username it will send (`timmy:7012`).
 - **Switch login** (`←` `→`), only for the switch behind it:
@@ -397,11 +399,11 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
 
 | You want | Press |
 |---|---|
-| choose the line | type its number (`Backspace` / `Ctrl-U` deletes) |
+| choose the line | type its number (`Backspace` / `Ctrl-U` deletes); several: `3 7 12` or `3-5` |
 | choose who logs in at the switch | `←` `→` |
 | connect | `Enter` |
 | cancel | `ESC` |
-| **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the switch |
+| **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the switch (in a tmux pane: closes that pane) |
 
 What TRuffle then does, in one ssh session:
 
@@ -423,12 +425,51 @@ back the switch's `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q go
 TRuffle."* **`Ctrl-Q`** ends the session at any time. **Log out of the switch first**: `Ctrl-Q`
 while you're still logged in leaves the console logged in for the next person.
 
-- Terminal servers open **one at a time**, not in [tmux panes](#several-devices-at-once-tmux).
 - The **SSH** column of a terminal server says whether the terminal server let you in.
 - If the login on your terminal server misbehaves, `truffle --debug` records both logins'
   prompts (never a password) — see [Debug log](#debug-log).
 - Another login scheme (another prefix than `70`, a word before the port): `console_login` and
   `console_port_base` in [`truffle.conf.example`](truffle.conf.example).
+
+### Several consoles at once
+
+For setup and lab work: several lines - of one terminal server, of several, and next to normal ssh
+sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#several-devices-at-once-tmux)).
+
+| You want | Do |
+|---|---|
+| several lines of **one** terminal server | `Lines: 3 7 12` (or `3-5`) in its window |
+| lines of **several** terminal servers | mark them with `Tab`, then **ssh**: one window, a lines field per terminal server (`Tab` / `↑` `↓` moves between them) |
+| consoles **and** normal ssh sessions together | mark the switches and the terminal servers, then **ssh**: the switches get an ssh pane, every line a console pane |
+
+```
+  ╭─ Consoles · 2 terminal servers ──────────────────────────────────╮
+  │  ab-12-ts1-01      3 7 12                    3 panes             │
+  │  cd-34-ts2-01      5                                             │
+  │                                                                  │
+  │  Terminal server   RADIUS, always  ·  timmy:7003                 │
+  │                                                                  │
+  │  Switch login      ‹ local  ›                                    │
+  │                    its local account admin, TRuffle types it     │
+  │                                                                  │
+  │  5 tmux panes (1 of them ssh), one switch login for all consoles │
+  ╰──────────────────────────────────────────────────────────────────╯
+```
+
+- **One switch login for all consoles** (`radius` / `local` / `manual`). Where a switch refuses it,
+  that pane hands over and you log in there by hand - the others are not affected. The ssh panes
+  always use your RADIUS login.
+- With `local`, the local account travels to the **console panes only**, through the same one-time,
+  your-user-only login handover as your password - an ssh pane next to them never receives it
+  ([TMUX-SECURITY.md](TMUX-SECURITY.md)).
+- Every pane is titled `ab-12-ts1-01 line 7`. In a console pane, log out of the switch, then **`Ctrl-Q`**
+  closes that pane.
+- More than 9 panes: the first 9 are opened, and TRuffle names the ones it left out.
+
+**`Ctrl-K` with consoles asks louder.** Closing a console pane only ends the ssh to the terminal
+server - **the switch console behind it stays logged in** for the next person on that line. When the
+sessions you close hold console panes, the window says so in capitals and names them: log out of
+those switches first, then `Ctrl-Q`.
 
 ## Settings
 
@@ -505,7 +546,7 @@ An unknown or retired option in `truffle.conf` stops TRuffle at startup and name
 | `2` | cannot run: device list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
-./truffle --check || echo "please fix the device list"
+python3 truffle --check || echo "please fix the device list"
 ```
 
 ## Device list (`data.csv`)
@@ -609,14 +650,14 @@ existing bundle that has different contents and tells you to bump; `--force` ove
 On the server, copy the bundle into the folder you want to update and run it there:
 
 ```bash
-cd ~/truffle                       # e.g. your git checkout
+cd ~/git/truffle                    # e.g. your git checkout
 python3 truffle-bundle-<version>.py
-git status                         # if it's a git checkout: review, commit, push
+git status                          # if it's a git checkout: review, commit, push
 ```
 
 | Run | Effect |
 |---|---|
-| `python3 truffle-bundle-<version>.py` | inside an existing TRuffle folder: **updates it in place**; anywhere else: unpacks into `./truffle` |
+| `python3 truffle-bundle-<version>.py` | inside an existing TRuffle folder: **updates it in place**; anywhere else: unpacks into a new `truffle` folder |
 | `python3 truffle-bundle-<version>.py DIR` | unpacks / updates exactly in `DIR` |
 | `python3 truffle-bundle-<version>.py --list` | only shows what's inside |
 
@@ -728,7 +769,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | Problem | Fix |
 |---|---|
 | `device list not found` | `cp data.example.csv data.csv`, or set `data =` in `truffle.conf` |
-| `python3\r: No such file or directory` or `Permission denied` after copying via Windows | `sed -i 's/\r$//' truffle; chmod +x truffle`, or start it with `python3 truffle` |
+| `python3\r: No such file or directory` or `Permission denied` after copying via Windows | Start it with `python3 truffle` (or the alias from the [Quick start](#4-start-it)) - then Windows line endings and a missing execute bit don't matter |
 | Old switch: `no matching key exchange method` / `host key type` | e.g. `ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa`. On RHEL 9 the system crypto policy may also need to allow SHA-1 |
 | Lines or symbols look like `â”€` or `?` | `--ascii` / `charset = ascii`, or PuTTY *Window → Translation* → UTF-8 |
 | Only a few colours in PuTTY | PuTTY *Connection → Data → Terminal-type string* → `xterm-256color` |

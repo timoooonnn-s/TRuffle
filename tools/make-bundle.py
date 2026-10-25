@@ -10,7 +10,7 @@ whose contents changed - otherwise two different bundles would share one file na
 On the target machine:
 
     python3 truffle-bundle-<version>.py               # inside an existing copy / git checkout:
-                                                      # update it in place; elsewhere: ./truffle
+                                                      # update it in place; elsewhere: a new truffle folder
     python3 truffle-bundle-<version>.py /srv/truffle  # or into a directory of your choice
     python3 truffle-bundle-<version>.py --list        # only show what is inside
 
@@ -44,7 +44,7 @@ EXTRACTOR = r'''#!/usr/bin/env python3
 """TRuffle %(version)s - self-extracting bundle, created %(created)s.
 
     python3 %(name)s              in a folder that already holds TRuffle (e.g. your git
-                                  checkout): update it in place; anywhere else: unpack into ./truffle
+                                  checkout): update it in place; anywhere else: unpack into a new truffle folder
     python3 %(name)s TARGET_DIR   unpack / update exactly there
     python3 %(name)s --list       show the contents only
 

@@ -50,9 +50,10 @@ def help_sections(cfg, ncols, switches):
         ("item", "Ctrl-b d  ^T  ^K", "back here, back into tmux, close the sessions"),
         ("item", "^G l", "session log on/off, also for running panes"),
         ("section", "Terminal servers (%s)" % (", ".join(cfg.console_hosts) or "off")),
-        ("item", "Enter (ssh)", "asks the line (12 = port %d) and who logs in at the switch"
+        ("item", "Enter (ssh)", "asks the lines (12 = port %d; several: 3 7 12 = one tmux pane each)"
                                 % (cfg.console_port_base + 12)),
-        ("item", ConsoleLogin.EXIT_NAME, "back to TRuffle - log out of the switch FIRST"),
+        ("item", "Tab + ssh", "mark terminal servers (and other devices): one tmux session for all"),
+        ("item", ConsoleLogin.EXIT_NAME, "back to TRuffle / close a console pane - log out of the switch FIRST"),
         ("section", "Setup"),
         ("item", "Device list", "%s  (%d devices)" % (cfg.data, switches)),
         ("item", "Config files", ", ".join(cfg.files) or "none (defaults)"),

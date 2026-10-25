@@ -126,7 +126,7 @@ These came up before and were decided; they are listed so the discussion does no
 | Free-form ssh options in the CSV | never (ssh-profiles.md): command execution for anyone who can write the CSV |
 | Switch-to-console mapping in the inventory | rejected (D42, option A): too much inventory work, lines move. M3 is the name-based alternative |
 | Terminal server login | always RADIUS, not a choice (D47) |
-| Delivery format | the folder with `./truffle`; the package layout stays (D45) |
+| Delivery format | the folder, started with `python3 truffle`; the package layout stays (D45) |
 | Dependencies / platform | R1 standard library only, R2 RHEL first (COUNCIL.md) |
 
 ## Questions for the user

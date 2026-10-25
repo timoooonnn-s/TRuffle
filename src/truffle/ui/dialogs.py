@@ -4,7 +4,7 @@ Screen, reads keys until it is done and returns what was chosen - no TRuffle sta
 import textwrap
 
 from ..config import valid_user
-from ..console import console_user, parse_console_line
+from ..console import console_user, parse_console_lines
 from ..state import CONSOLE_MODES
 from .draw import fit, put
 
@@ -83,54 +83,83 @@ def login_dialog(screen, user, local_for=None, error=None, server=None):
             entry[field] = entry[field] if edited is None else edited
 
 
-def console_dialog(screen, cfg, name, line, mode, user, local_user):
-    """Line number and switch login for a terminal server.  Digits type the line,
-    Left / Right choose the login.  Returns (line, mode) or None on ESC."""
-    text = str(line) if line else ""
-    mi = CONSOLE_MODES.index(mode) if mode in CONSOLE_MODES else 0
-    error = None
+def console_dialog(screen, cfg, servers, mode, user, local_user, others=0):
+    """Lines and switch login for one or more terminal servers (D51).  servers: [(name,
+    lines text)]; others: marked devices that get an ssh pane next to them.  Digits type
+    the lines ("3 7 12", "3-5"), Tab / Up / Down move between the servers, Left / Right
+    choose the login.  Returns ([[line, ...] per server], mode) or None on ESC."""
+    texts = [text for _, text in servers]
+    field, mi, error = 0, (CONSOLE_MODES.index(mode) if mode in CONSOLE_MODES else 0), None
     scr, th, sym = screen.scr, screen.th, screen.sym
+    many = len(servers) > 1
     while True:
         mode = CONSOLE_MODES[mi]
-        bw, bh = min(70, scr.getmaxyx()[1] - 6), 15
-        y0, x0 = screen.draw_window("Console", name, bh, bw)
-        put(scr, y0 + 2, x0 + 3, "Line", th.win_label)
-        put(scr, y0 + 2, x0 + 21, " " + text.ljust(4), th.field)
-        put(scr, y0 + 2, x0 + 22 + len(text), " ", th.cursor)
-        # The two logins, in the order they happen.  The first one is not a choice: a
-        # terminal server only knows RADIUS.
-        n = parse_console_line(cfg, text) if text else None
-        put(scr, y0 + 4, x0 + 3, "Terminal server", th.win_label)
-        put(scr, y0 + 4, x0 + 21, ("RADIUS, always  %s  %s" % (sym["sep"], console_user(cfg, user, n) if n
-                                                             else "%s:<port>" % user))[:bw - 24], th.win_hint)
-        put(scr, y0 + 6, x0 + 3, "Switch login", th.win_label)
-        put(scr, y0 + 6, x0 + 21, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]), th.field)
+        bw = min(74, scr.getmaxyx()[1] - 6)
+        bh = 12 + len(servers)
+        title = "Consoles" if many else "Console"
+        y0, x0 = screen.draw_window(title, "%d terminal servers" % len(servers) if many else servers[0][0], bh, bw)
+        parsed = [parse_console_lines(cfg, t)[0] if t.strip() else None for t in texts]
+        for i, (name, _) in enumerate(servers):
+            y = y0 + 2 + i
+            put(scr, y, x0 + 3, fit(name if many else "Lines", 17).rstrip(), th.win_label if i == field else th.win)
+            put(scr, y, x0 + 21, " " + texts[i][-22:].ljust(23), th.field if i == field else th.field_idle)
+            if i == field:
+                put(scr, y, x0 + 22 + len(texts[i][-22:]), " ", th.cursor)
+            if parsed[i] and len(parsed[i]) > 1:
+                put(scr, y, x0 + 46, ("%d panes" % len(parsed[i]))[:bw - 49], th.win_hint)
+        y = y0 + 3 + len(servers)
+        # The two logins, in the order they happen; the first one is no choice (D47).
+        first = next((ls[0] for ls in parsed if ls), None)
+        put(scr, y, x0 + 3, "Terminal server", th.win_label)
+        put(scr, y, x0 + 21, ("RADIUS, always  %s  %s" % (sym["sep"], console_user(cfg, user, first) if first
+                                                         else "%s:<port>" % user))[:bw - 24], th.win_hint)
+        put(scr, y + 2, x0 + 3, "Switch login", th.win_label)
+        put(scr, y + 2, x0 + 21, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]), th.field)
         what = {"radius": "RADIUS as well (%s), TRuffle types it" % user,
                 "local": ("its local account %s, TRuffle types it" % local_user) if local_user
                          else "its local account - asked once, then kept",
                 "manual": "you log in at the switch yourself"}[mode]
-        put(scr, y0 + 7, x0 + 21, what[:bw - 24], th.win_hint)
+        put(scr, y + 3, x0 + 21, what[:bw - 24], th.win_hint)
+        panes = sum(len(ls) for ls in parsed if ls) + others
         if error:
-            put(scr, y0 + 9, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
-        put(scr, y0 + 11, x0 + 3, ("Line = the port on the terminal server: 12 -> %d"
-                                   % (cfg.console_port_base + 12))[:bw - 6], th.win_hint)
-        screen.draw_keys(y0 + 13, x0 + 3, (("Enter", "connect"), (sym["lr"], "switch login"), ("ESC", "cancel")))
+            info, attr = sym["dot"] + " " + error, th.win_err
+        elif panes > 1:
+            info, attr = "%d tmux panes%s, one switch login for all consoles" % (
+                panes, " (%d of them ssh)" % others if others else ""), th.win_hint
+        else:
+            info, attr = "Line = the port on the terminal server: 12 -> %d. Several: 3 7 12" % (
+                cfg.console_port_base + 12), th.win_hint
+        put(scr, y + 5, x0 + 3, info[:bw - 6], attr)
+        keys = (("Enter", "connect"), (sym["lr"], "switch login"), ("ESC", "cancel"))
+        if many:
+            keys = (("Enter", "connect"), ("Tab", "next server"), (sym["lr"], "login"), ("ESC", "cancel"))
+        screen.draw_keys(y + 7, x0 + 3, keys)
         scr.refresh()
 
         key = screen.read_key(-1)
         if key == "ESC":
             return None
-        if key in ("LEFT", "RIGHT", "TAB", "BTAB"):
-            mi = (mi + (-1 if key in ("LEFT", "BTAB") else 1)) % len(CONSOLE_MODES)
+        if key in ("LEFT", "RIGHT"):
+            mi = (mi + (-1 if key == "LEFT" else 1)) % len(CONSOLE_MODES)
+        elif key in ("TAB", "DOWN", "BTAB", "UP"):
+            if many:
+                field = (field + (-1 if key in ("BTAB", "UP") else 1)) % len(servers)
+            elif key in ("TAB", "BTAB"):     # one server: Tab still cycles the login, as before
+                mi = (mi + (-1 if key == "BTAB" else 1)) % len(CONSOLE_MODES)
         elif key == "ENTER":
-            n = parse_console_line(cfg, text)
-            if n is not None:
-                return n, CONSOLE_MODES[mi]
-            error = "Please enter the line number, e.g. 12."
+            chosen = []
+            for i, text in enumerate(texts):
+                lines, why = parse_console_lines(cfg, text)
+                if lines is None:
+                    field, error = i, ("%s: %s" % (servers[i][0], why)) if many else why
+                    break
+                chosen.append(lines)
+            else:
+                return chosen, CONSOLE_MODES[mi]
         else:
-            edited = edit_field(text, key, keep=str.isdigit, limit=3)
+            edited = edit_field(texts[field], key, keep=lambda c: c.isdigit() or c in " ,-", limit=40)
             if edited is not None:
-                text, error = edited, None
+                texts[field], error = edited, None
 
 
 def settings_window(screen, rows):

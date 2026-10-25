@@ -9,7 +9,7 @@ Every idea is measured against the standing rules in [COUNCIL.md](../COUNCIL.md#
 |---|---|---|
 | **Several switches in tmux panes** (mark with Tab, one pane per switch, single login via a handover) | **BUILT and live** (D40, 2026-10-09) | [tmux-panes.md](tmux-panes.md) |
 | **Serial multi-connect** (mark N switches, connect one after another, no tmux) | **under discussion with the user** (2026-10-04) | [serial-connect.md](serial-connect.md) |
-| **Terminal server / console access** (`user:70XX@terminalserver`, XX = line number, then the switch's own login) | **BUILT and live** (D42, D47): used on the real terminal servers, "worked great" (user, 2026-10-25) | [terminal-server.md](terminal-server.md) |
+| **Terminal server / console access** (`user:70XX@terminalserver`, XX = line number, then the switch's own login) | **BUILT and live** (D42, D47): used on the real terminal servers, "worked great" (user, 2026-10-25). Several lines / servers in tmux, also next to ssh panes: **BUILT** (D51) | [terminal-server.md](terminal-server.md) |
 | ~~Bracketed paste~~ | **BUILT** (D28), confirmed in PuTTY (user, 2026-10-25) | was [bracketed-paste.md](bracketed-paste.md) |
 | ~~Quick connect from the shell: `truffle bc01`~~ | **not needed** (user, feature review 2026-10-25) | |
 | ~~Forget the password after N idle minutes~~ | **BUILT, then changed**: D26 built `password_timeout` (idle minutes); now `password_lifetime = 600`, counted from when you typed it | was the *Warden*'s condition for background tmux sessions |

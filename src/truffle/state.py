@@ -136,18 +136,21 @@ class UserState(object):
     # -- terminal servers -----------------------------------------------------------
 
     def console_choice(self, key):
-        """(line, login) you used last on this terminal server, or (None, "radius").
-        Only a suggestion: lines get re-cabled, so the dialog always lets you change it."""
+        """([lines], login) you used last on this terminal server, or ([], "radius").
+        Only a suggestion: lines get re-cabled, so the dialog always lets you change it.
+        A line is `server TAB lines TAB login`, lines space-separated ("12" before D51)."""
         for row in reversed(self._read("console")):
             parts = row.rstrip("\n").split("\t")
-            if len(parts) == 3 and parts[0] == key and parts[1].isdigit() and parts[2] in CONSOLE_MODES:
-                return int(parts[1]), parts[2]
-        return None, "radius"
+            numbers = parts[1].split() if len(parts) == 3 else []
+            if numbers and parts[0] == key and all(n.isdigit() for n in numbers) and parts[2] in CONSOLE_MODES:
+                return [int(n) for n in numbers], parts[2]
+        return [], "radius"
 
-    def save_console_choice(self, key, line, mode):
+    def save_console_choice(self, key, lines, mode):
         with self._locked():
             rows = [row.rstrip("\n") for row in self._read("console") if row.split("\t", 1)[0] != key]
-            self._write("console", (rows + ["%s\t%d\t%s" % (key, line, mode)])[-self.MAX_CONSOLE:])
+            entry = "%s\t%s\t%s" % (key, " ".join(str(n) for n in lines), mode)
+            self._write("console", (rows + [entry])[-self.MAX_CONSOLE:])
 
     # -- a wrong password seen by a tmux pane: TRuffle then wipes its copy (D26) --------
 

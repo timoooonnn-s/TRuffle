@@ -477,11 +477,12 @@ class App(object):
         if command == "ping":
             self.start_batch(marked)
             return True
-        consoles = [d.name for d in marked if is_console_server(self.cfg, d)]
-        if consoles:
-            self.message("Terminal servers open one at a time - unmark %s (Shift-Tab) or ESC clears all marks"
-                         % ", ".join(consoles[:3]) + ("..." if len(consoles) > 3 else ""), error=True, seconds=10)
-        elif self.actions.many(marked):
+        servers = [d for d in marked if is_console_server(self.cfg, d)]
+        if servers:           # terminal servers among the marks: ask their lines (D51)
+            opened = self.actions.with_consoles(servers, [d for d in marked if d not in servers])
+        else:
+            opened = self.actions.many(marked)
+        if opened:
             self.list.marked.clear()
         return True
 

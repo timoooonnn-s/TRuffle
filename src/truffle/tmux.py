@@ -1,5 +1,5 @@
-"""Several switches at once: one tmux session, one pane per switch (D23, D40), and the
-session log of panes that are already running (tmux pipe-pane, D41)."""
+"""Several devices at once: one tmux session, one pane per device or terminal-server line
+(D23, D40, D51), and the session log of panes that are already running (pipe-pane, D41)."""
 
 import errno
 import os
@@ -110,9 +110,25 @@ def record_pane(cfg, pane, name, host, user):
     return None
 
 
-def pane_command(cfg, socket_path, ticket, host, name):
-    """TRuffle in --pane mode: the ticket, never the password.  (new-session and
-    split-window do not expand tmux formats, so shell quoting is enough.)"""
+class PaneTarget(object):
+    """What one pane connects to: a device by ssh, or one line of a terminal server."""
+
+    def __init__(self, dev, line=None):
+        self.dev, self.line = dev, line
+
+    @property
+    def console(self):
+        return self.line is not None
+
+    @property
+    def name(self):
+        return self.dev.name if self.line is None else "%s line %d" % (self.dev.name, self.line)
+
+
+def pane_command(cfg, socket_path, ticket, host, name, console=None):
+    """TRuffle in --pane mode: the ticket, never the password.  console: (line, login) for
+    a terminal-server line.  (new-session and split-window do not expand tmux formats, so
+    shell quoting is enough.)"""
     argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
     argv += [sys.executable, LAUNCHER]
     if cfg.config_file:
@@ -123,30 +139,36 @@ def pane_command(cfg, socket_path, ticket, host, name):
         argv += ["--log"]                # the pane starts its tmux recording itself
     if cfg.charset == "ascii":
         argv += ["--ascii"]              # what TRuffle shows now, Ctrl-G included
+    if console:
+        argv += ["--pane-console", str(console[0]), console[1]]
     argv += ["--pane", socket_path, ticket, host, name]
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def open_panes(cfg, devices, handover):
-    """Create a tmux session with one pane per switch.  Returns its name and
-    {pane id: device} - the pane title cannot be trusted for that, a switch can set it."""
+def open_panes(cfg, targets, handover, mode=None):
+    """Create a tmux session with one pane per PaneTarget (a bare device is an ssh pane).
+    mode: the switch login of the console panes.  Returns the session name and
+    {pane id: target} - the pane title cannot be trusted for that, a switch can set it."""
     session = free_session_name()
     panes = {}
+    targets = [t if isinstance(t, PaneTarget) else PaneTarget(t) for t in targets]
 
-    def start(dev, *where):
-        ticket = handover.issue(dev.host)
-        command = pane_command(cfg, handover.path, ticket, dev.host, dev.name)
+    def start(target, *where):
+        dev = target.dev
+        ticket = handover.issue(dev.host, switch=target.console)
+        command = pane_command(cfg, handover.path, ticket, dev.host, dev.name,
+                               (target.line, mode) if target.console else None)
         out = tmux_run(*(list(where) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
         pid, _, pane_id = out.strip().partition(" ")
         handover.bind(ticket, int(pid or 0))
-        panes[pane_id] = dev
-        tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (dev.name, dev.host))
+        panes[pane_id] = target
+        tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (target.name, dev.host))
 
     rows, cols = terminal_size() or (24, 80)          # a detached session would default to 80x24
     try:
-        start(devices[0], "new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows))
-        for dev in devices[1:]:
-            start(dev, "split-window", "-t", session)
+        start(targets[0], "new-session", "-d", "-s", session, "-x", str(cols), "-y", str(rows))
+        for target in targets[1:]:
+            start(target, "split-window", "-t", session)
             tmux_try("select-layout", "-t", session, "tiled")
     except BaseException:
         tmux_try("kill-session", "-t", "=" + session)       # never leave half a session behind
@@ -155,25 +177,34 @@ def open_panes(cfg, devices, handover):
     tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
     tmux_try("set-option", "-t", session, "status-left", "[TRuffle]  ")
+    consoles = any(t.console for t in targets)
     tmux_try("set-option", "-t", session, "status-right",
-             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one device ")
-    tmux_try("set-option", "-t", session, "status-right-length", "80")
+             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one device "
+             + ("  console: log out, then Ctrl-Q " if consoles else ""))
+    tmux_try("set-option", "-t", session, "status-right-length", "120" if consoles else "80")
     return session, panes
 
 
 class PaneSessions(object):
-    """The tmux sessions THIS window opened, and which switch is in which pane."""
+    """The tmux sessions THIS window opened, and what is in which pane."""
 
     def __init__(self):
         self.mine = []                 # session names, oldest first
-        self.panes = {}                # session -> {pane id: (device, user)}
+        self.panes = {}                # session -> {pane id: (PaneTarget, ssh user)}
         self.foreign = False           # the only live sessions are not ours
         self.ended = []                # ours that ended, not yet reported (take_ended)
         self.checked_at = 0.0
 
     def add(self, session, panes, user):
+        """panes: {pane id: PaneTarget}; user: the ssh user, or a function target -> user."""
         self.mine.append(session)
-        self.panes[session] = dict((pane, (dev, user)) for pane, dev in panes.items())
+        user_for = user if callable(user) else (lambda target: user)
+        self.panes[session] = dict((pane, (t, user_for(t))) for pane, t in panes.items())
+
+    def consoles(self, sessions):
+        """The console panes among these sessions: closing them leaves the switch consoles
+        behind them logged in (D51), so Ctrl-K has to say so."""
+        return [t.name for s in sessions for t, _ in self.panes.get(s, {}).values() if t.console]
 
     def refresh(self):
         """Ask tmux now.  Returns the sessions Ctrl-T / Ctrl-K act on: ours, else any TRuffle
@@ -205,15 +236,15 @@ class PaneSessions(object):
                 pane, _, piping = line.partition(" ")
                 if pane not in ours or (piping == "1") == on:
                     continue                         # not ours, or already as wanted
-                dev, user = ours[pane]
+                target, user = ours[pane]
                 if on:
-                    error = record_pane(cfg, pane, dev.name, dev.host, user)
+                    error = record_pane(cfg, pane, target.name, target.dev.host, user)
                 else:
                     try:
                         tmux_run("pipe-pane", "-t", pane)        # no command: stop recording
                         error = None
                     except TMUX_ERRORS as e:
-                        error = "cannot stop recording %s: %s" % (dev.name, e)
+                        error = "cannot stop recording %s: %s" % (target.name, e)
                 if error:
                     return changed, error, others
                 changed += 1

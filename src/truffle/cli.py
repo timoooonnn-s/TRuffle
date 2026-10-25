@@ -12,11 +12,12 @@ from . import CREDIT, TITLE, VERSION
 from .config import ConfigError, load_config
 from .console import is_console_server
 from .credentials import minutes_text
-from .inventory import DataError, build_devices, data_issues, read_table
 from .export import exports_since
+from .inventory import DataError, build_devices, data_issues, read_table
 from .logs import keep_text, list_logs, log_sink, logs_since
 from .pane import pane_main
 from .session import raw_mode_visible
+from .state import CONSOLE_MODES
 from .terminal import bracketed_paste, harden_process, which
 from .tmux import truffle_sessions
 from .ui.app import App
@@ -91,7 +92,9 @@ def parse_args(argv):
     parser.add_argument("--logs", action="store_true",
                         help="show where the log files are and the newest ones, then exit")
     parser.add_argument("--pane", nargs=4, metavar=("SOCKET", "TICKET", "HOST", "NAME"),
-                        help=argparse.SUPPRESS)        # internal: one switch inside a tmux pane
+                        help=argparse.SUPPRESS)        # internal: one device inside a tmux pane
+    parser.add_argument("--pane-console", nargs=2, metavar=("LINE", "LOGIN"),
+                        help=argparse.SUPPRESS)        # internal: ... that is a terminal-server line
     parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
                         help=argparse.SUPPRESS)        # internal: tmux records one pane into FILE
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
@@ -151,7 +154,11 @@ def main(argv=None):
         # Only what TRuffle passed counts - not truffle.conf, which a Ctrl-G change in
         # TRuffle (log off, other symbols) does not touch.
         cfg.session_log, cfg.charset_setting = args.log, "ascii" if args.ascii else "unicode"
-        return pane_main(cfg, *args.pane)
+        console = args.pane_console
+        if console and not (console[0].isdigit() and console[1] in CONSOLE_MODES):
+            print("truffle: --pane-console wants LINE and one of %s" % ", ".join(CONSOLE_MODES), file=sys.stderr)
+            return 2
+        return pane_main(cfg, *args.pane, console=console)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2

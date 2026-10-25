@@ -3,6 +3,7 @@
 Every one of these is a rule the design depends on, so they are tested rather than
 assumed: only our own user, only the process tmux started, only once, only briefly.
 """
+import json
 import os
 import socket
 import subprocess
@@ -42,6 +43,29 @@ class HandoverTest(unittest.TestCase):
         self.assertTrue(answer.startswith("OK "), answer)
         self.assertIn('"password": "secret"', answer)
         self.assertIn('"user": "timmy"', answer)
+
+    def test_only_a_console_ticket_carries_the_switch_login(self):
+        """D51: the switch login (e.g. the local account) goes to console panes only -
+        an ssh pane next to them never gets it."""
+        h = handover.Handover(lambda: ("timmy", "secret"), lambda: ("admin", "local123"))
+        self.handovers.append(h)
+        ssh_ticket, console_ticket = h.issue("10.0.0.1"), h.issue("10.0.0.9", switch=True)
+        h.bind(ssh_ticket, os.getpid())
+        h.bind(console_ticket, os.getpid())
+        ssh_answer, console_answer = self.ask(h, ssh_ticket), self.ask(h, console_ticket)
+        self.assertNotIn("local123", ssh_answer)
+        self.assertNotIn("switch_user", ssh_answer)
+        login = json.loads(console_answer[3:])
+        self.assertEqual((login["user"], login["switch_user"], login["switch_password"]),
+                         ("timmy", "admin", "local123"))
+
+    def test_manual_hands_no_switch_login(self):
+        h = handover.Handover(lambda: ("timmy", "secret"), lambda: (None, None))
+        self.handovers.append(h)
+        ticket = h.issue("10.0.0.9", switch=True)
+        h.bind(ticket, os.getpid())
+        login = json.loads(self.ask(h, ticket)[3:])
+        self.assertEqual((login["switch_user"], login["switch_password"]), ("", ""))
 
     def test_a_ticket_cannot_be_used_twice(self):
         h = self.make()
@@ -121,6 +145,8 @@ class HandoverTest(unittest.TestCase):
         self.assertNotIn("secret", command)
         self.assertIn("--pane", command)
         self.assertIn("a" * 32, command)             # only the ticket, which is useless alone
+        console_command = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.9", "ts1", (7, "local"))
+        self.assertIn("--pane-console 7 local", console_command)      # the line and the CHOICE, no login
 
     def test_peer_identity_sees_this_process(self):
         """The uid / pid check is what keeps other users out - make sure it works here

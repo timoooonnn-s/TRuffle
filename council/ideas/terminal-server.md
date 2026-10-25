@@ -1,7 +1,7 @@
 # Terminal server / console server access
 
-**Status: BUILT as a prototype (D42, 2026-10-20)** on the branch `terminal-server`, not yet
-tried on a real terminal server. Everything below the line "Discussion" is how we got there.
+**Status: BUILT and live (D42, D47; several lines and servers in tmux: D51).** Used on the real
+terminal servers, "worked great" (user, 2026-10-25).
 
 ## What was built (user's decisions, 2026-10-19/20)
 
