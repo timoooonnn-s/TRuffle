@@ -42,6 +42,40 @@ class TestConfig(TempDir):
                 config.load_config(args(config=conf))
 
 
+class TestSshCommand(TempDir):
+    """D52: Ruffy's `ssh_command = "ct ssh"` became ONE program called "ct ssh"."""
+
+    def cfg(self, line):
+        return config.load_config(args(config=self.write("c.conf", "[truffle]\n%s\n" % line)))
+
+    def test_a_wrapper_with_or_without_quotes(self):
+        for value in ('ct ssh', '"ct ssh"', "'ct ssh'", '  "ct ssh"  '):
+            self.assertEqual(self.cfg("ssh_command = %s" % value).ssh_command, ["ct", "ssh"], value)
+        self.assertEqual(self.cfg('ssh_command = "ct" ssh').ssh_command, ["ct", "ssh"])
+
+    def test_a_program_with_a_space_in_its_path_stays_one_word(self):
+        folder = os.path.join(self.tmp, "my tools")
+        os.makedirs(folder)
+        program = os.path.join(folder, "ssh")
+        with open(program, "w") as f:
+            f.write("#!/bin/sh\n")
+        os.chmod(program, 0o755)
+        self.assertEqual(self.cfg('ssh_command = "%s"' % program).ssh_command, [program])
+        self.assertEqual(self.cfg('ssh_command = "%s" -v' % program).ssh_command, [program, "-v"])
+
+    def test_options_quoted_as_a_whole_and_quotes_inside(self):
+        self.assertEqual(self.cfg('ssh_options = "-o KexAlgorithms=+x -o HostKeyAlgorithms=+ssh-rsa"').ssh_options,
+                         ["-o", "KexAlgorithms=+x", "-o", "HostKeyAlgorithms=+ssh-rsa"])
+        # a quoted part INSIDE the value is still one word, as in a shell
+        self.assertEqual(self.cfg('ssh_options = -o "ProxyCommand=ssh -W %h:%p jump"').ssh_options,
+                         ["-o", "ProxyCommand=ssh -W %h:%p jump"])
+        self.assertEqual(self.cfg('ssh_options = "-oProxyCommand=ssh -W %h:%p jump" -v').ssh_options,
+                         ["-oProxyCommand=ssh -W %h:%p jump", "-v"])
+        self.assertEqual(self.cfg("ssh_options =").ssh_options, [])
+        with self.assertRaises(config.ConfigError):
+            self.cfg('ssh_command = "ct ssh')                           # an unclosed quote is an error
+
+
 class TestCharset(TempDir):
     def test_setting_and_flag(self):
         self.assertEqual(config.resolve_charset("ascii"), "ascii")

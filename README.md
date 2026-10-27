@@ -777,6 +777,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
 | Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
+| `ssh : NOT FOUND` in `truffle --check` with a wrapper like `ssh_command = ct ssh` | The wrapper is not on the `PATH` of the server - give its full path (`ssh_command = /usr/local/bin/ct ssh`). With or without quotes around the value works the same since 2.2.1 |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
 | Every ssh shows `failed`, even good logins | Run `truffle --check`: if `ssh results` says `NOT RELIABLE`, TRuffle cannot see sessions start on this system - send the output. Also check `ssh_options` has no `-T` / `RequestTTY=no` |

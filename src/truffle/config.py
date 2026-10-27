@@ -7,6 +7,7 @@ import locale
 import os
 import re
 import shlex
+import shutil
 import time
 
 from . import INSTALL_DIR
@@ -172,6 +173,21 @@ def resolve_path(value, base):
     return os.path.normpath(os.path.join(base, os.path.expanduser(value)))
 
 
+def command_words(value, program=False):
+    """A command line from truffle.conf as argv words, split like a shell does.
+
+    A value wrapped in quotes as a whole - `ssh_command = "ct ssh"` - is how many config
+    formats write a value with a space, and it means the same as without the quotes: it
+    used to become ONE program called "ct ssh", which does not exist (D52).  Only a
+    program that really has a space in its path stays one word."""
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'" and value[0] not in value[1:-1]:
+        inner = value[1:-1].strip()
+        if not (program and any(c.isspace() for c in inner) and shutil.which(inner)):
+            value = inner
+    return shlex.split(value)
+
+
 def load_config(args):
     """Defaults <- truffle.conf next to the launcher <- ~/.config/truffle/truffle.conf
     <- --config FILE <- command line."""
@@ -192,8 +208,8 @@ def load_config(args):
     if user and not valid_user(user):
         raise ConfigError("user: '%s' is not a valid user name" % user)
     try:
-        ssh_command = shlex.split(raw["ssh_command"]) or ["ssh"]
-        ssh_options = shlex.split(raw["ssh_options"])
+        ssh_command = command_words(raw["ssh_command"], program=True) or ["ssh"]
+        ssh_options = command_words(raw["ssh_options"])
     except ValueError as e:
         raise ConfigError("ssh_command/ssh_options: %s" % e)
     charset = "ascii" if args.ascii else (raw["charset"] or "auto").lower()

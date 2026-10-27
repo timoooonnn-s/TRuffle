@@ -75,16 +75,17 @@ class PtyTest(unittest.TestCase):
                 pass
         shutil.rmtree(self.home)
 
-    def session(self, host, password, script=(), one_try=True, typeahead=None, user="timmy", console=None):
-        argv = [sys.executable, FAKE_SSH, "-l", user]
-        if one_try:
-            argv += ["-o", "NumberOfPasswordPrompts=1"]
+    def session(self, host, password, script=(), one_try=True, typeahead=None, user="timmy", console=None,
+                argv=None):
+        """argv: the whole command as TRuffle builds it (ends in -- host); default: fake ssh."""
+        if argv is None:
+            argv = [sys.executable, FAKE_SSH, "-l", user] + (["-o", "NumberOfPasswordPrompts=1"] if one_try else [])
+            argv += ["--", host]
         user = User(self.master, list(script))
         if typeahead:
             os.write(self.master, typeahead)
         user.start()
-        result = session.run_session(argv + ["--", host], password, in_fd=self.slave, out_fd=self.slave,
-                                console=console)
+        result = session.run_session(argv, password, in_fd=self.slave, out_fd=self.slave, console=console)
         user.finished = True
         user.join(2)
         self.assertIsNone(user.error, user.transcript)
@@ -92,6 +93,26 @@ class PtyTest(unittest.TestCase):
 
 
 class SessionTest(PtyTest):
+
+    def test_a_wrapper_from_the_config_in_quotes(self):
+        """D52: `ssh_command = "ct ssh"` (Ruffy's wrapper) - the whole login, end to end,
+        through the argv TRuffle builds from truffle.conf."""
+        from support import args
+        from truffle import config
+        wrapper = os.path.join(self.home, "ct")
+        with open(wrapper, "w") as f:
+            f.write("#!/bin/sh\nexec \"$@\"\n")             # runs the command it is given, like ct
+        os.chmod(wrapper, 0o755)
+        conf = os.path.join(self.home, "t.conf")
+        with open(conf, "w") as f:
+            f.write('[truffle]\nssh_command = "%s %s %s"\n' % (wrapper, sys.executable, FAKE_SSH))
+        cfg = config.load_config(args(config=conf))
+        self.assertEqual(cfg.ssh_command, [wrapper, sys.executable, FAKE_SSH])
+        argv = session.build_ssh_argv(cfg, "timmy", "10.99.0.1", inject_password=True)
+        r, out = self.session("10.99.0.1", "secret", [("FAKE-SW:1>", "exit\r")], argv=argv)
+        self.assertTrue(r.password_sent)
+        self.assertTrue(r.started)
+        self.assertFalse(r.failed)
 
     def type_later(self, data, delay):
         """Type while ssh is still connecting (after run_session dropped the typeahead)."""

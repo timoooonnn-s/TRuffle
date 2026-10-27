@@ -30,6 +30,9 @@
 #user =
 
 # ssh program and extra options. Your options take precedence over TRuffle's.
+# Both are split into words like in a shell; quotes around the whole value are fine too.
+# A wrapper in front of ssh, with or without quotes:
+#   ssh_command = ct ssh          (same as: ssh_command = "ct ssh")
 # Example for very old switch firmware:
 #   ssh_options = -o KexAlgorithms=+diffie-hellman-group14-sha1 -o HostKeyAlgorithms=+ssh-rsa
 #ssh_command = ssh

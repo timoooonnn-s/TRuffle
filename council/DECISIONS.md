@@ -1190,3 +1190,16 @@ the first version, not a limit, and the idea file said so.
   (the fake's line 3 takes only that account, so reaching its prompt proves it arrived).
 
 Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dialog was replaced, not extended).  Tests +116.  `VERSION` 2.2.0.  200 tests.
+
+## D52: `ssh_command = "ct ssh"` - quotes around a whole value (Ruffy, 2026-10-27)
+- Field report: Ruffy wanted the team wrapper `ct ssh` as the ssh command. Written into the Python code
+  it worked; in `truffle.conf` "it breaks with the empty space".  *Reproduced:* `ssh_command = ct ssh`
+  works, but `ssh_command = "ct ssh"` - the way many config formats want a value with a space - became
+  ONE program called `ct ssh`: `--check` said `ssh : NOT FOUND` and every connection failed.
+- *Fix:* `config.command_words` - a value wrapped in quotes **as a whole** means the same as without
+  them, for `ssh_command` and `ssh_options`.  Quotes *inside* a value still group words like a shell
+  (`-o "ProxyCommand=ssh -W %h:%p jump"`).  The one exception: a program that really has a space in its
+  path (`"/opt/my tools/ssh"`, found as one file) stays one word.
+- *Tester:* config cases for both options, the path-with-a-space exception, an unclosed quote, and a
+  whole login through a `ct`-style wrapper from a quoted config value; all checked to fail on 2.2.0.
+- `VERSION` 2.2.1.
