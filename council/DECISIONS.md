@@ -1061,6 +1061,8 @@ A second full review of the package found 13 findings; all are fixed, each with 
 - 176 tests, Python 3.8 and 3.14.
 
 ## D47: The terminal server's login is always RADIUS - and now the screen says so (user, 2026-10-21)
+*Superseded in part by D54: lab terminal servers have a local account instead, so the terminal
+server's login is a choice again.*
 - User: "The terminal server itself ALWAYS has a working RADIUS, there is no local alternative."
   The code already did exactly that - the terminal server always got your own login, only the
   switch behind it followed `radius` / `local` / `manual` (checked end to end: `timmy:7003` +
@@ -1203,3 +1205,45 @@ Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dia
 - *Tester:* config cases for both options, the path-with-a-space exception, an unclosed quote, and a
   whole login through a `ct`-style wrapper from a quoted config value; all checked to fail on 2.2.0.
 - `VERSION` 2.2.1.
+
+## D53: `ct ssh` - a wrapper that relays ssh on a terminal of its own (Ruffy, 2026-10-27)
+- Field report after D52: with `ssh_command = ct ssh` the password was never typed, and Enter gave an
+  error.  *Reproduced* with a wrapper built on Python's `pty.spawn` (like `script` or `expect`): the
+  wrapper switches TRuffle's terminal to **raw mode at once**, before ssh asks for anything.  Since
+  D45 raw mode means "session started", so TRuffle stopped watching for the password prompt; Enter
+  then sent an empty password -> `Permission denied`.  A wrapper that only `exec`s ssh never showed it.
+- *Fix (session.py):* when `ssh_command` is not ssh itself and the terminal turns raw **before any
+  password prompt** while a password waits to be typed, raw mode says nothing for this session.  The
+  prompt is still answered once (D3); the session counts as started at the first whole line after
+  the login that is neither a password prompt nor one of ssh's failures.  Plain `ssh` is untouched.
+- *Limit, accepted:* a relaying wrapper with key login and a stored password counts as started only
+  once you have typed something.  `--debug` names the case ("relays ssh").
+- *Tester:* login, wrong password (auth failed, password never typed twice), a banner ending in
+  "password:" and a failed connect, all through a relaying `ct`; they hang on 2.2.0 (the password is
+  never typed).  `VERSION` stays 2.2.1 (not released yet).
+
+## D54: A terminal server's own local account (user, 2026-10-28)
+- User: "Let me pick a local login for the terminal server itself too. Some lab terminal servers don't
+  have the RADIUS login but a local account."  Reverses D47's "always RADIUS" for those servers.
+- The console window: **Terminal server ‹ radius / local ›** above **Switch login**. `↑` `↓` / `Tab`
+  move between the lines and the two logins, `←` `→` change the one in focus (on a line still the
+  switch login - the habit since D42).  Typing digits on a login row goes back to the lines.
+- `local` asks for the terminal server's account once ("Local account · terminal server ..."), kept in
+  memory like the others (`Credentials.server`: same lifetime, `Ctrl-G` `p`, `ts local:` in the top
+  bar).  It is sent as `<account>:70NN`, through the same `console_login` template.
+- Your RADIUS login is asked only where something takes it: the terminal server (`radius`), the switch
+  (`radius`) or an ssh pane.  A lab with local accounts everywhere never asks for it.
+- A wrong password drops **only the login that failed**: the terminal server's account, not yours.  In
+  tmux, a pane's failure on a terminal server reached with its local account drops that account
+  (`Actions.local_servers`), never your RADIUS password.
+- Remembered **per terminal server** with its lines (a 4th field in `console`; rows from before read as
+  `radius`).  In the window it is one for all, like the switch login (D51); mixing a lab and a RADIUS
+  terminal server in one tmux session is rare - open them one after the other.
+- tmux: the console pane's ticket carries the terminal server's account **in place of** yours; an ssh
+  pane never gets it (TMUX-SECURITY.md).  `--pane-server-login local` only tells the pane which one,
+  for its note.  A ticket with no login at all answers `ERR no login` - the pane then asks ssh.
+- *Tester:* the saved choice (old rows too), the held account (expiry, forget, a pane failure drops only
+  it), the handover (console ticket only), the pane command, and three tmux UI runs against a fake
+  terminal server with a local account `labts` (one line + your login at the switch; local accounts
+  only - your login never asked; two console panes).  All fail on 2.2.1.
+- `VERSION` **2.3.0**.

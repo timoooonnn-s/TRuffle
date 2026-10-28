@@ -135,8 +135,9 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 From top to bottom:
 - **Top bar:** your login user once you've connected, how many devices are shown, and — when there
   are any — how many devices you've [marked](#several-devices-at-once-tmux), how many
-  [tmux sessions](#several-devices-at-once-tmux) are still running, and `local: <user>` while a
-  switch's [local account](#terminal-servers-console) is stored.
+  [tmux sessions](#several-devices-at-once-tmux) are still running, `local: <user>` while a
+  switch's [local account](#terminal-servers-console) is stored, and `ts local: <user>` while a
+  terminal server's own local account is.
 - **Command tabs.**
 - **Search line.**
 - **Table:**
@@ -365,7 +366,7 @@ own login. TRuffle does both logins in one go:
 
 | Login | Who | Your choice |
 |---|---|---|
-| 1. the terminal server | **always your RADIUS login** — a terminal server has no local account | none |
+| 1. the terminal server | your RADIUS login, or its local account (lab terminal servers) | `radius` / `local` |
 | 2. the switch behind it | RADIUS, its local account, or you yourself | `radius` / `local` / `manual` |
 
 **Which rows are terminal servers** is decided by their **name**, with the same `*` / `?` patterns as
@@ -378,19 +379,26 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
   ╭─ Console · ab-12-ts1-01 ─────────────────────────────────────╮
   │  Lines             12                                        │
   │                                                              │
-  │  Terminal server   RADIUS, always  ·  timmy:7012             │
-  │                                                              │
+  │  Terminal server   ‹ radius ›                                │
+  │                    your RADIUS login  ·  timmy:7012          │
   │  Switch login      ‹ radius ›                                │
-  │                    RADIUS as well (timmy), TRuffle types it  │
+  │                    RADIUS (timmy), TRuffle types it          │
   ╰──────────────────────────────────────────────────────────────╯
 ```
 
 - **Lines:** type the number, `12` becomes `7012` (`console_port_base = 7000`). **Several lines**
   (`3 7 12`, or `3-5 12`) open [one tmux pane per line](#several-consoles-at-once). The lines you
   used last on that terminal server are filled in — only as a suggestion, lines get re-cabled.
-- **Terminal server:** not a choice. It always gets your RADIUS login — the same one as for ssh,
-  asked once per session. The window shows the username it will send (`timmy:7012`).
-- **Switch login** (`←` `→`), only for the switch behind it:
+- **Terminal server** (`↓` to it, then `←` `→`), the login at the terminal server itself:
+  - **radius**: your RADIUS login — the same one as for ssh, asked once per session.
+  - **local**: the terminal server's own local account, for **lab terminal servers without
+    RADIUS**. Asked once, then kept in memory like your password; the top bar shows
+    `ts local: <user>`. It is only for the terminal server: the switch behind it still gets the
+    switch login below, so a lab with local accounts everywhere never asks for your RADIUS login.
+
+  The window shows the username it will send (`timmy:7012`, `labadmin:7012`). The choice is
+  remembered per terminal server, like its lines.
+- **Switch login** (`←` `→` on the lines or on this row), only for the switch behind it:
   - **radius**: your RADIUS login again.
   - **local**: the switch's local account, for a switch that can't reach its RADIUS server. Asked
     once, then kept in memory like your password (same lifetime, `Ctrl-G` `p` forgets it). The
@@ -400,14 +408,16 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
 | You want | Press |
 |---|---|
 | choose the line | type its number (`Backspace` / `Ctrl-U` deletes); several: `3 7 12` or `3-5` |
-| choose who logs in at the switch | `←` `→` |
+| move between the lines and the two logins | `↑` `↓` / `Tab` |
+| choose who logs in at the terminal server | `↓` to *Terminal server*, then `←` `→` |
+| choose who logs in at the switch | `←` `→` (on the lines or on *Switch login*) |
 | connect | `Enter` |
 | cancel | `ESC` |
 | **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the switch (in a tmux pane: closes that pane) |
 
 What TRuffle then does, in one ssh session:
 
-1. types your RADIUS password for the terminal server,
+1. types the password for the terminal server (yours, or its local account's),
 2. presses **Enter** to wake the serial line,
 3. at the switch's `Login:` prompt types the username, at `Password:` the password,
 4. waits — a switch whose RADIUS server is out of reach can take **minutes**. After a few seconds
@@ -418,7 +428,9 @@ person. Enter then shows a CLI prompt, and typing your username and password the
 them into the switch's command history, its syslog and onto the screen of anyone else on that
 line. So when no login prompt shows up, TRuffle types nothing and hands over to you. Same when
 the switch **refuses** the login: it is typed **once**, never again, and the password is kept,
-because the terminal server has just accepted it. You log in by hand.
+because the terminal server has just accepted it. You log in by hand. A wrong password at the
+**terminal server** is dropped and asked again, like a wrong ssh password — only the one that
+failed: a wrong local account of the terminal server never costs you your RADIUS password.
 
 **Getting back to TRuffle:** logging out of the switch does not end the session, it only brings
 back the switch's `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q goes back to
@@ -447,19 +459,21 @@ sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#severa
   │  ab-12-ts1-01      3 7 12                    3 panes             │
   │  cd-34-ts2-01      5                                             │
   │                                                                  │
-  │  Terminal server   RADIUS, always  ·  timmy:7003                 │
-  │                                                                  │
+  │  Terminal server   ‹ radius ›                                    │
+  │                    your RADIUS login  ·  timmy:7003              │
   │  Switch login      ‹ local  ›                                    │
   │                    its local account admin, TRuffle types it     │
   │                                                                  │
-  │  5 tmux panes (1 of them ssh), one switch login for all consoles │
+  │  5 tmux panes (1 of them ssh), the same two logins for all       │
   ╰──────────────────────────────────────────────────────────────────╯
 ```
 
-- **One switch login for all consoles** (`radius` / `local` / `manual`). Where a switch refuses it,
-  that pane hands over and you log in there by hand - the others are not affected. The ssh panes
-  always use your RADIUS login.
-- With `local`, the local account travels to the **console panes only**, through the same one-time,
+- **The same two logins for all consoles**: one terminal-server login (`radius` / `local`) and one
+  switch login (`radius` / `local` / `manual`). Where a switch refuses it, that pane hands over and
+  you log in there by hand - the others are not affected. The ssh panes always use your RADIUS
+  login. A lab terminal server and a RADIUS one in the same session: open them one after the other.
+- With `local`, the local account (the switch's, or the terminal server's) travels to the
+  **console panes only**, through the same one-time,
   your-user-only login handover as your password - an ssh pane next to them never receives it
   ([TMUX-SECURITY.md](TMUX-SECURITY.md)).
 - Every pane is titled `ab-12-ts1-01 line 7`. In a console pane, log out of the switch, then **`Ctrl-Q`**
@@ -480,7 +494,7 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 |---|---|---|
 | `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
-| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local account](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
+| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
 | `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
 | `ESC` | | close |
 
@@ -778,6 +792,7 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | `ssh : NOT FOUND` in `truffle --check` with a wrapper like `ssh_command = ct ssh` | The wrapper is not on the `PATH` of the server - give its full path (`ssh_command = /usr/local/bin/ct ssh`). With or without quotes around the value works the same since 2.2.1 |
+| With a wrapper (`ssh_command = ct ssh`) the password is not typed in, Enter gives `Permission denied` | Fixed in 2.2.1: the wrapper runs ssh on a terminal of its own, which before looked like a finished login. If it still happens, connect once with `truffle --debug` and look at the [debug log](#debug-log) |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
 | Every ssh shows `failed`, even good logins | Run `truffle --check`: if `ssh results` says `NOT RELIABLE`, TRuffle cannot see sessions start on this system - send the output. Also check `ssh_options` has no `-T` / `RequestTTY=no` |

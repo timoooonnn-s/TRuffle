@@ -1,5 +1,6 @@
-"""The login TRuffle holds in memory: your own, and a switch's local account for the
-console behind a terminal server.  Never written anywhere, gone when TRuffle exits."""
+"""The logins TRuffle holds in memory: your own, a switch's local account for the console
+behind a terminal server, and a terminal server's own local account (lab terminal servers
+without RADIUS, D54).  Never written anywhere, gone when TRuffle exits."""
 
 import time
 
@@ -27,15 +28,18 @@ class Login(object):
 
 
 class Credentials(object):
-    """`own` logs you in everywhere; `local` is a switch's local account (console only).
-    Both expire `lifetime` minutes after they were typed (0 = when TRuffle exits)."""
+    """`own` logs you in everywhere; `local` is a switch's local account (console only);
+    `server` a terminal server's local account.  Each expires `lifetime` minutes after it
+    was typed (0 = when TRuffle exits)."""
 
     def __init__(self, lifetime):
         self.lifetime = lifetime
         self.own = None
         self.local = None
+        self.server = None
         self.last_user = ""            # pre-filled in the login dialog after a wipe
         self.last_local_user = ""
+        self.last_server_user = ""
 
     def set_own(self, user, password):
         self.own = Login(user, password)
@@ -45,12 +49,23 @@ class Credentials(object):
         self.local = Login(user, password)
         self.last_local_user = user
 
+    def set_server(self, user, password):
+        self.server = Login(user, password)
+        self.last_server_user = user
+
     @property
     def held(self):
-        return self.own is not None or self.local is not None
+        return self.own is not None or self.local is not None or self.server is not None
 
     def forget(self):
-        self.own = self.local = None
+        self.own = self.local = self.server = None
+
+    def forget_server_if_older(self, stamp):
+        """forget_if_older for a pane on a terminal server that took its local account."""
+        if self.server is not None and stamp >= self.server.typed_at:
+            self.server = None
+            return True
+        return False
 
     def forget_if_older(self, stamp):
         """A tmux pane reported a wrong password at `stamp`: forget ours if it was typed
@@ -62,7 +77,7 @@ class Credentials(object):
 
     def expire(self, now=None):
         """Forget what is older than the lifetime.  Returns the names of what went:
-        a subset of ["password", "local account"]."""
+        a subset of ["password", "local account", "terminal server account"]."""
         now = time.time() if now is None else now
         gone = []
         if self.own is not None and creds_expired(now, self.own.typed_at, self.lifetime):
@@ -71,4 +86,7 @@ class Credentials(object):
         if self.local is not None and creds_expired(now, self.local.typed_at, self.lifetime):
             self.local = None
             gone.append("local account")
+        if self.server is not None and creds_expired(now, self.server.typed_at, self.lifetime):
+            self.server = None
+            gone.append("terminal server account")
         return gone

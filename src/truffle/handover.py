@@ -54,11 +54,13 @@ def parent_pid(pid):
 class Handover(object):
     """A ticket is answered once: our uid, the process tmux started for it, younger than
     TICKET_LIFETIME.  A console pane's ticket also carries the login for the switch behind
-    the terminal server (D51) - only that ticket, never an ssh pane's."""
+    the terminal server (D51) - only that ticket, never an ssh pane's - and, when the
+    terminal server takes its local account, that one in place of yours (D54)."""
 
-    def __init__(self, credentials, switch_credentials=None):
+    def __init__(self, credentials, switch_credentials=None, server_credentials=None):
         self.credentials = credentials        # callable -> (user, password or None)
         self.switch_credentials = switch_credentials    # callable -> (user or None, password or None)
+        self.server_credentials = server_credentials    # callable -> (user, password or None), or None
         self.dir = tempfile.mkdtemp(prefix="truffle-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
         self.path = os.path.join(self.dir, "handover.sock")
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -139,7 +141,12 @@ class Handover(object):
             if entry is None or entry["fetched"]:     # checked again: single use must be exact
                 return "ERR already used"
             entry["fetched"] = True
-        user, password = self.credentials()
+        if switch and self.server_credentials is not None:
+            user, password = self.server_credentials()
+        else:
+            user, password = self.credentials()
+        if user is None:                      # nothing for this pane: it asks for the password
+            return "ERR no login"
         login = {"user": user, "password": password or ""}
         if switch and self.switch_credentials is not None:
             switch_user, switch_password = self.switch_credentials()

@@ -17,7 +17,7 @@ from .inventory import DataError, build_devices, data_issues, read_table
 from .logs import keep_text, list_logs, log_sink, logs_since
 from .pane import pane_main
 from .session import raw_mode_visible
-from .state import CONSOLE_MODES
+from .state import CONSOLE_MODES, SERVER_MODES
 from .terminal import bracketed_paste, harden_process, which
 from .tmux import truffle_sessions
 from .ui.app import App
@@ -95,6 +95,8 @@ def parse_args(argv):
                         help=argparse.SUPPRESS)        # internal: one device inside a tmux pane
     parser.add_argument("--pane-console", nargs=2, metavar=("LINE", "LOGIN"),
                         help=argparse.SUPPRESS)        # internal: ... that is a terminal-server line
+    parser.add_argument("--pane-server-login", choices=SERVER_MODES, default="radius",
+                        help=argparse.SUPPRESS)        # internal: ... reached with its local account
     parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
                         help=argparse.SUPPRESS)        # internal: tmux records one pane into FILE
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
@@ -158,7 +160,7 @@ def main(argv=None):
         if console and not (console[0].isdigit() and console[1] in CONSOLE_MODES):
             print("truffle: --pane-console wants LINE and one of %s" % ", ".join(CONSOLE_MODES), file=sys.stderr)
             return 2
-        return pane_main(cfg, *args.pane, console=console)
+        return pane_main(cfg, *args.pane, console=console, server_mode=args.pane_server_login)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2

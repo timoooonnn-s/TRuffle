@@ -126,6 +126,8 @@ class App(object):
             right = "%s %s %s" % (self.creds.own.user, sym["sep"], right)
         if self.creds.local:
             right = "local: %s %s %s" % (self.creds.local.user, sym["sep"], right)
+        if self.creds.server:
+            right = "ts local: %s %s %s" % (self.creds.server.user, sym["sep"], right)
         if lst.marked:
             right = "%d marked %s %s" % (len(lst.marked), sym["sep"], right)
         if self.panes.mine:
@@ -561,7 +563,8 @@ class App(object):
             extra = {"session_log": cfg.log_dir, "debug": cfg.debug_log}.get(option, "") if on else ""
             rows.append((key, label, "on" if on else "off", extra))
         rows.append(("p", "Forget the stored password now", "held" if self.creds.held else "not held",
-                     "+ local account" if self.creds.local else ""))
+                     " + ".join(["+ local account"] * bool(self.creds.local)
+                                + ["terminal server account"] * bool(self.creds.server))))
         written = logs_since(cfg, cfg.started)
         rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
         return rows

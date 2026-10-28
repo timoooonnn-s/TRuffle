@@ -32,5 +32,35 @@ class TestPasswordLifetime(unittest.TestCase):
         self.assertEqual(credentials.minutes_text(45), "45 min")
 
 
+class TestTerminalServerAccount(unittest.TestCase):
+    """D54: a lab terminal server's own local account, held next to yours."""
+
+    def test_held_and_forgotten_with_the_others(self):
+        c = credentials.Credentials(600)
+        self.assertFalse(c.held)
+        c.set_server("labts", "lab123")
+        self.assertTrue(c.held)
+        self.assertEqual(c.last_server_user, "labts")
+        c.set_own("timmy", "secret")
+        c.forget()                                   # Ctrl-G p: everything goes
+        self.assertIsNone(c.server)
+        self.assertEqual(c.last_server_user, "labts")   # pre-filled next time
+
+    def test_it_expires_like_the_password(self):
+        c = credentials.Credentials(60)
+        c.set_server("labts", "lab123")
+        self.assertEqual(c.expire(c.server.typed_at + 61 * 60), ["terminal server account"])
+        self.assertIsNone(c.server)
+
+    def test_a_pane_failure_drops_only_the_account_it_used(self):
+        c = credentials.Credentials(600)
+        c.set_own("timmy", "secret")
+        c.set_server("labts", "wrong")
+        self.assertFalse(c.forget_server_if_older(c.server.typed_at - 5))     # typed again since
+        self.assertTrue(c.forget_server_if_older(c.server.typed_at + 1))
+        self.assertIsNone(c.server)
+        self.assertIsNotNone(c.own)                  # your RADIUS password was not the wrong one
+
+
 if __name__ == "__main__":
     unittest.main()

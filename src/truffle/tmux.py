@@ -126,8 +126,8 @@ class PaneTarget(object):
 
 
 def pane_command(cfg, socket_path, ticket, host, name, console=None):
-    """TRuffle in --pane mode: the ticket, never the password.  console: (line, login) for
-    a terminal-server line.  (new-session and split-window do not expand tmux formats, so
+    """TRuffle in --pane mode: the ticket, never the password.  console: (line, login[,
+    server login]) for a terminal-server line.  (new-session and split-window do not expand tmux formats, so
     shell quoting is enough.)"""
     argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
     argv += [sys.executable, LAUNCHER]
@@ -141,13 +141,15 @@ def pane_command(cfg, socket_path, ticket, host, name, console=None):
         argv += ["--ascii"]              # what TRuffle shows now, Ctrl-G included
     if console:
         argv += ["--pane-console", str(console[0]), console[1]]
+        if console[2:] == ("local",):
+            argv += ["--pane-server-login", "local"]     # only for the note in the pane (D54)
     argv += ["--pane", socket_path, ticket, host, name]
     return " ".join(shlex.quote(a) for a in argv)
 
 
-def open_panes(cfg, targets, handover, mode=None):
+def open_panes(cfg, targets, handover, mode=None, server_mode="radius"):
     """Create a tmux session with one pane per PaneTarget (a bare device is an ssh pane).
-    mode: the switch login of the console panes.  Returns the session name and
+    mode / server_mode: the switch and terminal-server login of the console panes.  Returns the session name and
     {pane id: target} - the pane title cannot be trusted for that, a switch can set it."""
     session = free_session_name()
     panes = {}
@@ -157,7 +159,7 @@ def open_panes(cfg, targets, handover, mode=None):
         dev = target.dev
         ticket = handover.issue(dev.host, switch=target.console)
         command = pane_command(cfg, handover.path, ticket, dev.host, dev.name,
-                               (target.line, mode) if target.console else None)
+                               (target.line, mode, server_mode) if target.console else None)
         out = tmux_run(*(list(where) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
         pid, _, pane_id = out.strip().partition(" ")
         handover.bind(ticket, int(pid or 0))

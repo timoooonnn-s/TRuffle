@@ -1,6 +1,8 @@
 """`truffle --pane ...`: what runs inside one tmux pane.  Fetch the login once, connect,
 record the outcome, then the pane closes.  With --pane-console LINE LOGIN the pane is one
-line of a terminal server (D51): ssh as user:<port>, then the switch's login behind it."""
+line of a terminal server (D51): ssh as user:<port>, then the switch's login behind it.
+The user:<port> login is yours or the terminal server's local account (D54) - the ticket
+holds the one to use, --pane-server-login only says which for the note."""
 
 import json
 import os
@@ -26,7 +28,7 @@ def fetch_login(socket_path, ticket):
     return login
 
 
-def pane_main(cfg, socket_path, ticket, host, name, console=None):
+def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="radius"):
     """console: (line, login) - this pane is that line of the terminal server `name`."""
     notes = Notes(os.environ.get("TERM", "dumb") not in ("", "dumb"), CHARSETS[cfg.charset]["gt"])
     close = "close this pane"
@@ -52,7 +54,8 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None):
             problems.append("No %s login for the switch - you log in at the switch yourself." % mode)
 
         def switch_login():
-            return ConsoleLogin(switch[0], switch[1], mode, cfg.console_login_wait, notes=notes)
+            return ConsoleLogin(switch[0], switch[1], mode, cfg.console_login_wait, notes=notes,
+                                server_mode=server_mode)
     if record:                     # before anything is shown, so nothing is missed
         error = record_pane(cfg, os.environ.get("TMUX_PANE", ""), label, host, ssh_user)
         problems = ([error] if error else []) + problems

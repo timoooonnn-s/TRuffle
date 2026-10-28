@@ -2,7 +2,8 @@
 
     recent      time TAB key
     status      host TAB kind TAB state TAB time [TAB detail]
-    console     server TAB line TAB login   authfail  time TAB host (from a tmux pane)
+    console     server TAB lines TAB login [TAB server login]
+    authfail    time TAB host (from a tmux pane)
 
 All TRuffle windows and tmux panes write here, so each read-change-write holds a lock (D45).
 """
@@ -15,7 +16,8 @@ import time
 from .results import CHECKED_STATES, KINDS, Results
 from .inventory import clean
 
-CONSOLE_MODES = ("radius", "local", "manual")
+CONSOLE_MODES = ("radius", "local", "manual")      # the switch behind a terminal server
+SERVER_MODES = ("radius", "local")                 # the terminal server itself (D54)
 
 
 class UserState(object):
@@ -136,20 +138,24 @@ class UserState(object):
     # -- terminal servers -----------------------------------------------------------
 
     def console_choice(self, key):
-        """([lines], login) you used last on this terminal server, or ([], "radius").
-        Only a suggestion: lines get re-cabled, so the dialog always lets you change it.
-        A line is `server TAB lines TAB login`, lines space-separated ("12" before D51)."""
+        """([lines], switch login, server login) you used last on this terminal server, or
+        ([], "radius", "radius").  Only a suggestion: lines get re-cabled, so the dialog
+        always lets you change it.  A line is `server TAB lines TAB login [TAB server
+        login]`, lines space-separated ("12" before D51, no server login before D54)."""
         for row in reversed(self._read("console")):
             parts = row.rstrip("\n").split("\t")
-            numbers = parts[1].split() if len(parts) == 3 else []
-            if numbers and parts[0] == key and all(n.isdigit() for n in numbers) and parts[2] in CONSOLE_MODES:
-                return [int(n) for n in numbers], parts[2]
-        return [], "radius"
+            if len(parts) == 3:
+                parts.append("radius")
+            numbers = parts[1].split() if len(parts) == 4 else []
+            if (numbers and parts[0] == key and all(n.isdigit() for n in numbers)
+                    and parts[2] in CONSOLE_MODES and parts[3] in SERVER_MODES):
+                return [int(n) for n in numbers], parts[2], parts[3]
+        return [], "radius", "radius"
 
-    def save_console_choice(self, key, lines, mode):
+    def save_console_choice(self, key, lines, mode, server_mode="radius"):
         with self._locked():
             rows = [row.rstrip("\n") for row in self._read("console") if row.split("\t", 1)[0] != key]
-            entry = "%s\t%s\t%s" % (key, " ".join(str(n) for n in lines), mode)
+            entry = "%s\t%s\t%s\t%s" % (key, " ".join(str(n) for n in lines), mode, server_mode)
             self._write("console", (rows + [entry])[-self.MAX_CONSOLE:])
 
     # -- a wrong password seen by a tmux pane: TRuffle then wipes its copy (D26) --------

@@ -114,6 +114,49 @@ class SessionTest(PtyTest):
         self.assertTrue(r.started)
         self.assertFalse(r.failed)
 
+    def relayed(self, host, user="timmy", one_try=True):
+        """argv through a `ct` that runs ssh on a terminal of its own and relays it, the
+        way `script`, `expect` or Python's pty.spawn do (D53): ours is raw at once."""
+        wrapper = os.path.join(self.home, "ct")
+        with open(wrapper, "w") as f:
+            f.write("#!%s\nimport pty, sys\nsys.exit(pty.spawn(sys.argv[1:]) >> 8)\n" % sys.executable)
+        os.chmod(wrapper, 0o755)
+        argv = [wrapper, sys.executable, FAKE_SSH, "-l", user]
+        return argv + (["-o", "NumberOfPasswordPrompts=1"] if one_try else []) + ["--", host]
+
+    def test_a_wrapper_that_relays_ssh_gets_the_password(self):
+        """D53, Ruffy's field report: through `ct ssh` the password was never typed - the
+        wrapper made the terminal raw at once, which read as "session started"."""
+        r, out = self.session("10.99.0.1", "secret", [("FAKE-SW:1>", "exit\r")], argv=self.relayed("10.99.0.1"))
+        self.assertTrue(r.password_sent, r.events)
+        self.assertTrue(r.started)
+        self.assertFalse(r.failed)
+        self.assertEqual(out.count("secret"), 0)
+
+    def test_a_wrapper_that_relays_ssh_and_a_wrong_password(self):
+        r, _ = self.session("10.99.0.1", "wrong", argv=self.relayed("10.99.0.1"))
+        self.assertTrue(r.password_sent)
+        self.assertFalse(r.started)
+        self.assertTrue(r.auth_failed)
+        self.assertTrue(r.failed)
+
+    def test_a_wrapper_that_relays_ssh_and_a_banner_ending_in_password(self):
+        r, out = self.session("10.99.0.7", "secret", [("share your password:", "exit\r")],
+                              argv=self.relayed("10.99.0.7"))
+        self.assertTrue(r.started)
+        self.assertFalse(r.auth_failed)
+        self.assertFalse(r.failed)
+        self.assertEqual(out.count("secret"), 0)
+
+    def test_a_wrapper_that_relays_ssh_and_a_failed_connect(self):
+        r, _ = self.session("10.99.0.3", "secret", argv=self.relayed("10.99.0.3"))
+        self.assertFalse(r.started)
+        self.assertTrue(r.failed)
+
+    def test_plain_ssh_is_never_taken_for_a_relaying_wrapper(self):
+        self.assertFalse(session.is_wrapper(["/usr/bin/ssh", "-l", "timmy", "--", "sw1"]))
+        self.assertTrue(session.is_wrapper(["ct", "ssh", "-l", "timmy", "--", "sw1"]))
+
     def type_later(self, data, delay):
         """Type while ssh is still connecting (after run_session dropped the typeahead)."""
         timer = threading.Timer(delay, os.write, (self.master, data))

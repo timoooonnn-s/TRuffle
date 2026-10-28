@@ -59,6 +59,28 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual((login["user"], login["switch_user"], login["switch_password"]),
                          ("timmy", "admin", "local123"))
 
+    def test_a_local_terminal_server_account_goes_to_console_panes_only(self):
+        """D54: a lab terminal server takes its own local account - its console panes get
+        that one as THE login, an ssh pane next to them still gets yours."""
+        h = handover.Handover(lambda: ("timmy", "secret"), lambda: ("timmy", "secret"),
+                              lambda: ("labts", "lab123"))
+        self.handovers.append(h)
+        ssh_ticket, console_ticket = h.issue("10.0.0.1"), h.issue("10.0.0.9", switch=True)
+        h.bind(ssh_ticket, os.getpid())
+        h.bind(console_ticket, os.getpid())
+        ssh_login = json.loads(self.ask(h, ssh_ticket)[3:])
+        console_login = json.loads(self.ask(h, console_ticket)[3:])
+        self.assertEqual((ssh_login["user"], ssh_login["password"]), ("timmy", "secret"))
+        self.assertEqual((console_login["user"], console_login["password"]), ("labts", "lab123"))
+        self.assertEqual(console_login["switch_user"], "timmy")
+
+    def test_no_login_held_for_a_pane_is_an_error_not_an_empty_user(self):
+        h = handover.Handover(lambda: (None, None))
+        self.handovers.append(h)
+        ticket = h.issue("10.0.0.1")
+        h.bind(ticket, os.getpid())
+        self.assertEqual(self.ask(h, ticket), "ERR no login")
+
     def test_manual_hands_no_switch_login(self):
         h = handover.Handover(lambda: ("timmy", "secret"), lambda: (None, None))
         self.handovers.append(h)
@@ -147,6 +169,10 @@ class HandoverTest(unittest.TestCase):
         self.assertIn("a" * 32, command)             # only the ticket, which is useless alone
         console_command = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.9", "ts1", (7, "local"))
         self.assertIn("--pane-console 7 local", console_command)      # the line and the CHOICE, no login
+        self.assertNotIn("--pane-server-login", console_command)
+        lab = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.9", "ts1", (7, "radius", "local"))
+        self.assertIn("--pane-console 7 radius --pane-server-login local", lab)
+        self.assertNotIn("lab123", lab)
 
     def test_peer_identity_sees_this_process(self):
         """The uid / pid check is what keeps other users out - make sure it works here

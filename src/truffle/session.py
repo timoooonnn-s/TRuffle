@@ -218,12 +218,29 @@ def _spawn(argv, winsize):
     return pid, master
 
 
+def is_wrapper(argv):
+    """ssh_command is not ssh itself but a program in front of it (`ct ssh`, D52)."""
+    return os.path.basename(argv[0]) != "ssh"
+
+
+def started_text(text):
+    """Output that shows a relayed login got past ssh: a whole line that is neither a
+    password prompt nor one of ssh's failures (D53)."""
+    lines = clean_output(text).split("\n")[:-1]      # the last one is not complete yet
+    return any(line.strip() and not is_password_prompt(line) and not SSH_FAILURE.search(line)
+               for line in lines)
+
+
 def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=None):
     """Run argv (ssh) on a pty connected to our terminal and return a SessionResult.
     The password is typed once, at the first prompt, unless you typed first; a second
     prompt aborts (D3).  console: a ConsoleLogin for a terminal server; its EXIT_KEY ends
     the session.  The window size is polled, never via SIGWINCH - that would remove
-    ncurses' own handler for good (D45)."""
+    ncurses' own handler for good (D45).
+
+    A wrapper that runs ssh on a terminal of its own (D53) switches ours to raw mode
+    before ssh has even asked for the password.  Raw mode then says nothing: the session
+    counts as started at the first line after the login that is not ssh's."""
     in_fd = sys.stdin.fileno() if in_fd is None else in_fd
     out_fd = sys.stdout.fileno() if out_fd is None else out_fd
     result = SessionResult()
@@ -248,7 +265,8 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     strip = EscapeStripper()
     armed = bool(password)       # watching for the password prompt
-    tail = captured = before_input = ""
+    wrapper, relayed = is_wrapper(argv), False
+    tail = captured = before_input = after_login = ""
     wait_status = None
     try:
         while True:
@@ -261,9 +279,15 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                     fcntl.ioctl(master, termios.TIOCSWINSZ, size)
                 except OSError:
                     pass
-            if not result.started and _in_raw_mode(master):
-                result.started = True
-                result.events.append("ssh switched the terminal to raw mode -> session started")
+            if not result.started and not relayed and _in_raw_mode(master):
+                if wrapper and armed and not result.prompt_seen:
+                    relayed = True
+                    result.events.append("%s switched the terminal to raw mode before any password "
+                                         "prompt -> it relays ssh, session start taken from the output"
+                                         % os.path.basename(argv[0]))
+                else:
+                    result.started = True
+                    result.events.append("ssh switched the terminal to raw mode -> session started")
             if master in ready:
                 try:
                     data = os.read(master, 65536)
@@ -286,6 +310,13 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                     before_input = (before_input + text)[-16384:]
                 # Prompts are ssh's only until the session starts: a banner ending in
                 # "password:" must not abort it.  The switch's own are ConsoleLogin's.
+                if relayed and not result.started and (result.password_sent or not armed):
+                    # Not before the password went in: until then it is ssh's banner.  Before
+                    # the prompt check: the switch's banner may end in "password:" (D45).
+                    after_login = (after_login + text)[-4096:]
+                    if started_text(after_login):
+                        result.started = True
+                        result.events.append("a line after the login that is not ssh's -> session started")
                 if not result.started:
                     tail = (tail + text)[-1024:]
                     prompt = last_line(tail)

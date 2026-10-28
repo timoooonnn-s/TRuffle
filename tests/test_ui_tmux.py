@@ -149,16 +149,16 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("ts1", literal=True)
         self.keys("Enter")
         self.wait_for("Switch login")
-        self.assertIn("RADIUS, always", self.screen())          # the terminal server's login is no choice
+        self.assertIn("your RADIUS login", self.screen())       # the terminal server's login: radius by default
         self.keys("1", literal=True)
         self.wait_for("timmy:7001")
         self.keys("Enter")
         self.wait_for("Username")
-        self.assertIn("always RADIUS", self.screen())           # the login window says what it is for
+        self.assertIn("For the terminal server", self.screen())  # the login window says what it is for
         self.keys("secret", literal=True)
         self.keys("Enter")
         self.wait_for("FAKE-CON:1>", timeout=15)
-        self.assertIn("terminal server: your RADIUS login (always)", self.screen())
+        self.assertIn("terminal server: your RADIUS login", self.screen())
         self.assertNotIn("you typed: timmy", self.screen())
         self.keys("exit", literal=True)
         self.keys("Enter")
@@ -179,6 +179,66 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Left", "Enter")
         self.wait_for("Files written while TRuffle was open")
         self.assertIn("_ab-12-ts1-01_line_1.log", self.screen().replace("\n", ""))   # the shell wraps it
+
+    def test_a_lab_terminal_server_with_its_own_local_account(self):
+        """D54: Terminal server <local> - its local account (labts:7001) logs in at the
+        terminal server, your RADIUS login at the switch behind it; remembered."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("ab-12-ts1-01;10.99.0.9;lab;Terminal server;\n")
+        self.start()
+        self.keys("ts1", literal=True)
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("1", literal=True)
+        self.keys("Down", "Right")                       # the terminal server's login: radius -> local
+        self.wait_for("its local account")
+        self.keys("Enter")
+        self.wait_for("terminal server ab-12-ts1-01")    # the local account window, for the server
+        self.keys("C-u")
+        self.keys("labts", literal=True)
+        self.keys("Tab")
+        self.keys("lab123", literal=True)
+        self.keys("Enter")
+        self.wait_for("your RADIUS login")               # then yours, for the switch
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-CON:1>", timeout=15)
+        self.assertIn("terminal server: its local account", self.screen())
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("goes back to TRuffle")
+        self.keys("C-q")
+        self.wait_for("Console closed: ab-12-ts1-01 line 1")
+        self.assertIn("ts local: labts", self.screen())
+        self.keys("Enter")                               # remembered: line 1, local at the server
+        self.wait_for("labts:7001")
+
+    def test_a_lab_with_local_accounts_only_never_asks_for_yours(self):
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("ab-12-ts1-01;10.99.0.9;lab;Terminal server;\n")
+        self.start()
+        self.keys("ts1", literal=True)
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("3", literal=True)
+        self.keys("Right")                               # on the line: the switch login, radius -> local
+        self.keys("Down", "Right")                       # the terminal server: radius -> local
+        self.wait_for("its local account")
+        self.keys("Enter")
+        self.wait_for("terminal server ab-12-ts1-01")
+        self.keys("C-u")
+        self.keys("labts", literal=True)
+        self.keys("Tab")
+        self.keys("lab123", literal=True)
+        self.keys("Enter")
+        self.wait_for("switch behind ab-12-ts1-01")
+        self.keys("C-u")
+        self.keys("admin", literal=True)
+        self.keys("Tab")
+        self.keys("local123", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-CON:1>", timeout=15)
+        self.assertNotIn("Login incorrect", self.screen())
 
     def test_the_screen_follows_a_resize_also_after_an_ssh_session(self):
         """Ruffy's bug: after the first ssh session, TRuffle stopped following the
@@ -288,6 +348,31 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Closed 1 tmux session")
         self.keys("Enter")                               # remembered: lines 1 4
         self.wait_for("2 tmux panes")
+
+    def test_console_panes_on_a_lab_terminal_server(self):
+        """D54 in tmux: two lines of a terminal server that takes its local account - both
+        panes log in as labts:70NN, the switches behind them with your login."""
+        self.add_terminal_server()
+        self.keys("ts1", literal=True)
+        self.keys("Enter")
+        self.wait_for("Switch login")
+        self.keys("1 4", literal=True)
+        self.keys("Down", "Right")
+        self.wait_for("its local account")
+        self.keys("Enter")
+        self.wait_for("terminal server")
+        self.keys("C-u")
+        self.keys("labts", literal=True)
+        self.keys("Tab")
+        self.keys("lab123", literal=True)
+        self.keys("Enter")
+        self.wait_for("your RADIUS login")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        self.wait_in_panes(session, "FAKE-CON:1>", timeout=20)
+        seen = [tmux("capture-pane", "-p", "-t", p) for p in self.panes(session)]
+        self.assertTrue(all("its local account" in s for s in seen), seen)
 
     def test_marked_devices_and_a_terminal_server_share_one_session(self):
         """D51: a marked switch gets an ssh pane, the marked terminal server's line a

@@ -154,15 +154,17 @@ Note condition 5. It is the one that does the real work, and it is explained nex
 ### Console panes carry one more login (since 2.2, D51)
 
 A pane can also be one **line of a terminal server**: it logs into the terminal server with your
-password, then into the switch behind it. For that switch you can choose your own login again,
+password - or, for a lab terminal server without RADIUS, with **that terminal server's local
+account** (since 2.3, D54) - then into the switch behind it. For that switch you can choose your own login again,
 **the switch's local account**, or typing it yourself. With the local account, that account is
 handed over too - by exactly the same ticket, under exactly the same five conditions:
 
 - it is in the answer **only for a console pane's ticket**. An ssh pane in the same session gets
   your login and nothing else - the ticket says which kind of pane it is, decided by TRuffle when
-  it creates the pane, not by anything the pane sends;
-- the pane's command line carries the line number and the *choice* (`--pane-console 7 local`),
-  never an account or a password;
+  it creates the pane, not by anything the pane sends. The same goes for a terminal server's local
+  account: a console pane gets it *in place of* your login, an ssh pane never sees it;
+- the pane's command line carries the line number and the *choices* (`--pane-console 7 local`,
+  `--pane-server-login local`), never an account or a password;
 - nothing else changes: one use, 15 seconds, your user, the exact process tmux started.
 
 What it does mean: during those seconds, the socket can hand out **two** secrets instead of one,

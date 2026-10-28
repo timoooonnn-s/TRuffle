@@ -15,7 +15,8 @@ LOGIN_REFUSED = re.compile(r"login incorrect|authentication failed|incorrect pas
 CONSOLE_QUIET = 1.0          # the terminal server says nothing for this long: it let us in
 CONSOLE_WAKE = 5.0           # seconds for the line to show its login prompt after Enter
 CONSOLE_WAITING_NOTE = 8.0   # no answer this long after the password: say why it takes so long
-MODE_TEXT = {"radius": "your RADIUS login as well, TRuffle types it",
+SERVER_MODE_TEXT = {"radius": "your RADIUS login", "local": "its local account, TRuffle types it"}
+MODE_TEXT = {"radius": "your RADIUS login, TRuffle types it",
              "local": "the switch's local account, TRuffle types it",
              "manual": "you type it"}
 
@@ -83,8 +84,9 @@ class ConsoleLogin(object):
     EXIT_KEY, EXIT_NAME = b"\x11", "Ctrl-Q"
 
     def __init__(self, user=None, password=None, mode="manual", wait=240,
-                 quiet=CONSOLE_QUIET, wake=CONSOLE_WAKE, notes=None):
+                 quiet=CONSOLE_QUIET, wake=CONSOLE_WAKE, notes=None, server_mode="radius"):
         self.user, self.password, self.mode = user, password, mode
+        self.server_mode = server_mode   # who logged in at the terminal server - for the note only
         self.wait, self.quiet, self.wake = wait, quiet, wake
         self.notes = notes or Notes()
         self.step, self.at, self.wakes = "ts", 0.0, 0

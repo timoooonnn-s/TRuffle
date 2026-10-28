@@ -5,7 +5,7 @@ import os
 import subprocess
 import time
 
-from .console import MODE_TEXT, ConsoleLogin
+from .console import MODE_TEXT, SERVER_MODE_TEXT, ConsoleLogin
 from .logs import open_session_log, write_debug_report
 from .results import SSH_FAILED, SSH_OK
 from .session import SSH_FAILURE, build_ssh_argv, run_session
@@ -75,7 +75,7 @@ def ssh_flow(cfg, name, host, user, password, notes, record, back="return to TRu
                       "log out to %s, ~. force-disconnects" % back)
         else:
             notes.say("Connecting to %s (%s) as %s" % (name, host, user),
-                      "terminal server: your RADIUS login (always)",
+                      "terminal server: %s" % SERVER_MODE_TEXT[login.server_mode],
                       "switch behind it: %s" % MODE_TEXT[login.mode],
                       "log out of the switch FIRST, then %s to %s" % (ConsoleLogin.EXIT_NAME, back),
                       "(%s while logged in leaves the console logged in for the next person)"

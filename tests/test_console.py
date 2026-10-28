@@ -52,13 +52,13 @@ class TestConsole(TempDir):
 
     def test_last_lines_and_login_are_remembered_per_terminal_server(self):
         st = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([], "radius"))
+        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([], "radius", "radius"))
         st.save_console_choice("ab-12-ts1-01", [12], "local")
-        st.save_console_choice("ab-12-ts2-01", [3, 7, 12], "manual")
+        st.save_console_choice("ab-12-ts2-01", [3, 7, 12], "manual", "local")      # a lab one (D54)
         st.save_console_choice("ab-12-ts1-01", [14], "radius")
         again = state.UserState(os.path.join(self.tmp, "state"))
-        self.assertEqual(again.console_choice("ab-12-ts1-01"), ([14], "radius"))
-        self.assertEqual(again.console_choice("ab-12-ts2-01"), ([3, 7, 12], "manual"))
+        self.assertEqual(again.console_choice("ab-12-ts1-01"), ([14], "radius", "radius"))
+        self.assertEqual(again.console_choice("ab-12-ts2-01"), ([3, 7, 12], "manual", "local"))
         with open(os.path.join(self.tmp, "state", "console")) as f:
             self.assertEqual(len(f.readlines()), 2)
 
@@ -66,10 +66,12 @@ class TestConsole(TempDir):
         d = os.path.join(self.tmp, "state")
         os.makedirs(d)
         with open(os.path.join(d, "console"), "w") as f:
-            f.write("ab-12-ts1-01\t12\tlocal\nab-12-ts2-01\tx y\tradius\n")
+            f.write("ab-12-ts1-01\t12\tlocal\nab-12-ts2-01\tx y\tradius\n"
+                    "ab-12-ts3-01\t5\tradius\tnope\n")
         st = state.UserState(d)
-        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([12], "local"))
-        self.assertEqual(st.console_choice("ab-12-ts2-01"), ([], "radius"))         # garbage: ignored
+        self.assertEqual(st.console_choice("ab-12-ts1-01"), ([12], "local", "radius"))   # before D54
+        self.assertEqual(st.console_choice("ab-12-ts2-01"), ([], "radius", "radius"))    # garbage: ignored
+        self.assertEqual(st.console_choice("ab-12-ts3-01"), ([], "radius", "radius"))
 
     def test_several_lines(self):
         cfg = config.load_config(args())

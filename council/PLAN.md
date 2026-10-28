@@ -1,7 +1,7 @@
 # Current Plan (Drafter)
 
 What is open and what comes next - nothing else.  **What was built and why is in
-[DECISIONS.md](DECISIONS.md)** (D1-D51); ideas that are not planned are in
+[DECISIONS.md](DECISIONS.md)** (D1-D54); ideas that are not planned are in
 [ideas/README.md](ideas/README.md).  Until 2026-10-25 this file also listed every finished
 milestone; that was a second copy of the decision log, and the stale boxes in it (a "batch ping"
 that no longer exists, checks done weeks ago) are how settled topics came back up.
@@ -16,6 +16,10 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 - [ ] Lab work: several lines of one terminal server (`3 7 12`) in tmux - all logged in?
 - [ ] A switch + a terminal-server line marked together: one session, ssh and console pane
 - [ ] `local` in console panes on the real switches; `Ctrl-K` warning read once by the newcomers
+
+## Field test of 2.3.0 (D52-D54)
+- [ ] Ruffy: `ssh_command = ct ssh` - the password is typed in (if not: `truffle --debug`, then the debug log)
+- [ ] A lab terminal server with `Terminal server <local>`: its account, then the switch login behind it
 
 ## Still to confirm on RHEL
 - [ ] `truffle --check` prints `ssh results : ok` (the session detection of D45 / D46)

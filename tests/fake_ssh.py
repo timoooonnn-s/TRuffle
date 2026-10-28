@@ -11,8 +11,9 @@
   10.99.0.8  like .1, but the password prompt takes 0.6 s (a slow connect)
   10.99.0.4  hangs while connecting until it is killed (press Ctrl-C), like an
              unreachable switch before ConnectTimeout
-  10.99.0.9  terminal server: user "<name>:70NN", password "secret", then silent until
-             Enter; behind it, by line NN:
+  10.99.0.9  terminal server: user "<name>:70NN", password "secret" - or its local
+             account "labts:70NN" / "lab123" (D54) - then silent until Enter; behind
+             it, by line NN (the switch's RADIUS knows people, so behind labts it is timmy):
                01  a switch: "Login:" / "Password:" (secret), "exit" -> "Login:" again
                02  a console somebody left logged in: Enter shows "FAKE-CON:1>" only
                03  a switch that only takes the local account admin / local123
@@ -96,7 +97,7 @@ def console_cli(s):
 def terminal_server(user, host):
     name, _, port = user.partition(":")
     pw = read_secret("%s@%s's password: " % (user, host))
-    if pw != "secret" or not port.startswith("70"):
+    if pw != ("lab123" if name == "labts" else "secret") or not port.startswith("70"):
         sys.stderr.write("%s@%s: Permission denied (password).\n" % (user, host))
         return 255
     line = port[2:]
@@ -113,7 +114,8 @@ def terminal_server(user, host):
                 pw = s.read_line("Password: ", echo=False)
                 if line == "04":
                     time.sleep(2)
-                ok = (login, pw) == (("admin", "local123") if line == "03" else (name, "secret"))
+                radius = "timmy" if name == "labts" else name
+                ok = (login, pw) == (("admin", "local123") if line == "03" else (radius, "secret"))
                 if not ok:
                     s.write("Login incorrect\n")
                     continue
