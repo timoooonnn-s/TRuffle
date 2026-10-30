@@ -183,7 +183,7 @@ def main():
     while True:
         tries += 1
         pw = read_secret("%s@%s's password: " % (user, host))
-        if pw == "secret":
+        if pw == ("lab123" if user == "labadmin" else "secret"):     # labadmin: a lab box's own account
             break
         if one_try or tries >= 3:
             sys.stderr.write("%s@%s: Permission denied (publickey,keyboard-interactive).\n" % (user, host))

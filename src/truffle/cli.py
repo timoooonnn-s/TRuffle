@@ -95,6 +95,7 @@ def parse_args(argv):
                         help=argparse.SUPPRESS)        # internal: one device inside a tmux pane
     parser.add_argument("--pane-console", nargs=2, metavar=("LINE", "LOGIN"),
                         help=argparse.SUPPRESS)        # internal: ... that is a terminal-server line
+    parser.add_argument("--pane-user", help=argparse.SUPPRESS)    # internal: a user@host device (D55)
     parser.add_argument("--pane-server-login", choices=SERVER_MODES, default="radius",
                         help=argparse.SUPPRESS)        # internal: ... reached with its local account
     parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
@@ -160,7 +161,8 @@ def main(argv=None):
         if console and not (console[0].isdigit() and console[1] in CONSOLE_MODES):
             print("truffle: --pane-console wants LINE and one of %s" % ", ".join(CONSOLE_MODES), file=sys.stderr)
             return 2
-        return pane_main(cfg, *args.pane, console=console, server_mode=args.pane_server_login)
+        return pane_main(cfg, *args.pane, console=console, server_mode=args.pane_server_login,
+                         user=args.pane_user)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2

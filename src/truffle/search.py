@@ -155,6 +155,8 @@ def exact_term(token, fields, status, recent, marked=(), exact=False):
     name, sep, value = token.partition(":")
     if sep:
         if name == "is":
+            if value == "saved":                 # your own devices (D55)
+                return lambda d: d.origin == "saved"
             collection = {"recent": recent, "marked": marked}.get(value)
             if collection is not None:
                 return lambda d: d.key in collection

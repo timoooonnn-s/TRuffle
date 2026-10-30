@@ -230,6 +230,81 @@ class TestSwitchList(TempDir):
         self.assertEqual(lst.view[0].name, "cd-1")                # problems first
 
 
+class TestTypedAndSavedDevices(TempDir):
+    """D55: an address typed in the search, and your own saved devices."""
+
+    def make(self):
+        return TestSwitchList.make(self)
+
+    def test_an_unknown_address_is_the_first_row(self):
+        lst = self.make()
+        lst.set_query("10.0.0.9")
+        self.assertEqual([(d.origin, d.host) for d in lst.view], [("typed", "10.0.0.9")])
+        self.assertEqual(lst.selected().cells, ["10.0.0.9", "10.0.0.9"])
+
+    def test_it_comes_before_the_devices_it_is_part_of(self):
+        csv = self.write("sw.csv", "Name;IP\nab-1;10.0.0.10\n")
+        conf = self.write("c.conf", "[truffle]\ndata = %s\ncolumns = Name, IP\n" % csv)
+        lst = switchlist.SwitchList(config.load_config(args(config=conf)),
+                                    state.UserState(os.path.join(self.tmp, "st")), Results())
+        lst.load()
+        lst.set_query("10.0.0.1")
+        self.assertEqual([d.name for d in lst.view], ["10.0.0.1", "ab-1"])
+        self.assertEqual(lst.selected().origin, "typed")         # Enter never hits 10.0.0.10
+
+    def test_a_listed_address_or_a_matching_hostname_is_no_typed_row(self):
+        lst = self.make()
+        lst.set_query("10.0.0.1")
+        self.assertEqual([d.name for d in lst.view], ["ab-1"])
+        lst.set_query("10.0")
+        self.assertFalse(any(d.origin == "typed" for d in lst.view))
+        lst.set_query("ab.1")                                    # a search that finds ab-1
+        self.assertEqual([d.name for d in lst.view], ["ab-1"])
+        lst.set_query("sw1.lab.example")
+        self.assertEqual([d.origin for d in lst.view], ["typed"])
+
+    def test_user_at_host_is_offered_even_for_a_listed_device(self):
+        lst = self.make()
+        lst.set_query("admin@10.0.0.1")
+        dev = lst.selected()
+        self.assertEqual((dev.origin, dev.user, dev.host, dev.name), ("typed", "admin", "10.0.0.1", "admin@10.0.0.1"))
+
+    def test_saved_devices_join_the_list_and_can_be_forgotten(self):
+        lst = self.make()
+        lst.store.save_device("10.0.0.9", "lab-box", "admin")
+        lst.load()
+        lst.set_query("is:saved")
+        dev = lst.selected()
+        self.assertEqual((dev.name, dev.host, dev.user, dev.origin), ("lab-box", "10.0.0.9", "admin", "saved"))
+        lst.toggle_mark(dev)
+        self.assertEqual([d.name for d in lst.marked_devices()], ["lab-box"])
+        lst.set_query("admin@10.0.0.9")                         # saved like that: no typed row
+        self.assertEqual([d.origin for d in lst.view], [])
+        lst.remove_saved(dev)
+        self.assertEqual(lst.marked_devices(), [])
+        lst.set_query("is:saved")
+        self.assertEqual(lst.view, [])
+
+    def test_saving_shows_it_under_its_name(self):
+        lst = self.make()
+        lst.set_query("10.0.0.9")
+        dev = lst.add_saved("10.0.0.9", "lab-box-with-a-long-name", None)
+        self.assertIs(lst.selected(), dev)
+        self.assertEqual(lst.query, "lab-box-with-a-long-name")
+        self.assertGreaterEqual(lst.widths[0], len("lab-box-with-a-long-name"))
+
+    def test_without_a_device_list_typed_and_saved_still_work(self):
+        conf = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)
+        st = state.UserState(os.path.join(self.tmp, "st"))
+        st.save_device("10.0.0.9", "lab-box")
+        lst = switchlist.SwitchList(config.load_config(args(config=conf)), st, Results())
+        lst.load()
+        self.assertIsNotNone(lst.load_error)
+        self.assertEqual([d.name for d in lst.view], ["lab-box"])
+        lst.set_query("10.0.0.8")
+        self.assertEqual(lst.selected().cells, ["10.0.0.8", "10.0.0.8"])
+
+
 class TestPaneSessions(unittest.TestCase):
     def test_a_session_noticed_as_ended_elsewhere_is_still_reported(self):
         """D45 review: Ctrl-T / Ctrl-G l refreshed the list and threw away which sessions

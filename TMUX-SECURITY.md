@@ -167,6 +167,11 @@ handed over too - by exactly the same ticket, under exactly the same five condit
   `--pane-server-login local`), never an account or a password;
 - nothing else changes: one use, 15 seconds, your user, the exact process tmux started.
 
+A device you saved as **`user@address`** (since 2.4, D55) is logged in as that user, with the password
+you typed for it in TRuffle. Its pane's ticket carries **that** login *in place of* yours - decided by
+TRuffle from the saved device, never by the pane - and only that pane's ticket; the command line gets
+the user name (`--pane-user admin`, as `ssh -l` would show it anyway), never the password.
+
 What it does mean: during those seconds, the socket can hand out **two** secrets instead of one,
 and a local account is often shared between switches - so the same trade-off below applies to it.
 If that is not acceptable, choose `manual` for the switch login and type it in each pane.

@@ -28,7 +28,7 @@ from ..state import UserState
 from ..terminal import which
 from ..tmux import PaneSessions
 from .actions import Actions
-from .dialogs import settings_window
+from .dialogs import save_dialog, settings_window
 from .draw import fit, fit_widths, put, status_cell
 from .pages import COMMANDS, details_lines, help_lines, log_lines
 from .screen import Screen
@@ -136,6 +136,9 @@ class App(object):
                  ("^G", "settings"), ("F1-F%d" % lst.ncols(), "sort"), ("^C", "quit")]
         if self.panes.mine:
             hints[3:3] = [("^T", "back to tmux"), ("^K", "close tmux")]
+        dev = lst.selected()
+        if dev is not None and dev.origin != "csv":
+            hints.insert(0, ("^N", "save" if dev.origin == "typed" else "forget"))
         esc = self.escape_step()
         if esc:                    # what the next ESC does - it depends on what is set (D50)
             hints.insert(0, ("ESC", esc[1]))
@@ -184,7 +187,11 @@ class App(object):
 
     def draw_table(self, y_head, h, w):
         scr, th, sym, lst = self.screen.scr, self.screen.th, self.screen.sym, self.list
-        widths = fit_widths(lst.widths, w - TABLE_X - 3 - 2 * (len(lst.widths) - 1))
+        widths = lst.widths
+        if lst.view and lst.view[0].origin == "typed":      # an address longer than any name
+            cells = lst.view[0].cells
+            widths = [max(n, min(40, len(c))) for n, c in zip(widths, cells)] + widths[len(cells):]
+        widths = fit_widths(widths, w - TABLE_X - 3 - 2 * (len(widths) - 1))
         labels = [label for _, label in lst.columns] + [label for label, _, _ in STATUS_COLUMNS]
         x = TABLE_X
         for i, label in enumerate(labels):
@@ -230,8 +237,12 @@ class App(object):
             put(scr, y, 2, " " * (w - 4), th.sel)
         if d.key in self.list.marked:
             put(scr, y, 2, "+", th.mark_sel if sel else th.mark)
+        elif d.origin == "saved":                  # one of yours, not in the list (D55)
+            put(scr, y, 2, "*", th.age_sel if sel else th.hint)
         x = TABLE_X
         marks = self.list.found.get(d, (0, {}))[1]
+        hint = d.origin == "typed" and ("ssh as %s %s ^N saves it" % (d.user, sym["sep"]) if d.user
+                                        else "not in the list %s ^N saves it" % sym["sep"])
         for i, value in enumerate(d.cells):
             put(scr, y, x, fit(value, widths[i], sym["more"]), th.sel if sel else th.text)
             visible = len(value) if len(value) <= widths[i] else widths[i] - 1
@@ -241,6 +252,11 @@ class App(object):
                 if pos < visible:
                     put(scr, y, x + pos, value[pos], th.match_sel if sel else th.match)
             x += widths[i] + 2
+        if hint and "" in d.cells:             # the first empty column says what this row is
+            i = d.cells.index("")
+            room = sum(widths[i:len(d.cells)]) + 2 * (len(d.cells) - i - 1)
+            put(scr, y, TABLE_X + sum(widths[:i]) + 2 * i, fit(hint, room, sym["more"]),
+                th.age_sel if sel else th.hint)
         for k, kind in enumerate(KINDS):
             state = self.results.get(kind, d.host)
             width = widths[len(d.cells) + k]
@@ -348,6 +364,8 @@ class App(object):
             self.actions.close_sessions()
         elif key == "CTRL_G":
             self.settings()
+        elif key == "CTRL_N":
+            self.save_or_forget()
         elif key == "CTRL_R":
             self.load()
             if not lst.load_error:
@@ -365,6 +383,9 @@ class App(object):
             lst.move(-1)
         dev = lst.selected()
         if dev is None:
+            return
+        if dev.origin == "typed":
+            self.message("%s is not in the list - ^N saves it, then it can be marked" % dev.name)
             return
         at = lst.cursor
         lst.toggle_mark(dev)
@@ -465,7 +486,11 @@ class App(object):
         elif command == "ping":
             self.ping(dev)
         elif is_console_server(self.cfg, dev):
-            self.actions.console(dev)
+            if dev.user:
+                self.message("%s is a terminal server - leave out the %s@, the console window asks "
+                             "who logs in" % (dev.host, dev.user), error=True, seconds=10)
+            else:
+                self.actions.console(dev)
         else:
             self.actions.ssh(dev)
         return True
@@ -526,6 +551,45 @@ class App(object):
         self.batch = BatchPing(hosts, self.cfg.ping_timeout, self.results)
         self.message("Pinging %d marked devices - ESC cancels" % len(hosts))
 
+    def save_or_forget(self):
+        """^N: save the address you typed in the search to your own list - or, on one of
+        yours, forget it (D55).  The shared device list is never written."""
+        lst, dev = self.list, self.list.selected()
+        if dev is None or dev.origin == "csv":
+            self.message("^N saves an address you typed in the search (10.1.2.3, sw1.lab.example, "
+                         "admin@10.1.2.3) - this device is in the list already")
+            return
+        if dev.origin == "saved":
+            if not self.screen.confirm("Forget saved device", "Remove %s (%s) from your devices?" % (dev.name, dev.host),
+                                       detail=["  only from your own list - the device list stays as it is"]):
+                self.message("Nothing removed")
+                return
+            self.store.forget_device(dev.name)
+            if self.store.error:
+                self.message(self.store.error, error=True, seconds=10)
+                return
+            lst.remove_saved(dev)
+            self.message("Removed %s from your devices" % dev.name)
+            return
+        # a hostname suggests its first label, an address nothing
+        name, error = ("" if dev.host.replace(".", "").isdigit() else dev.host.split(".")[0]), None
+        while True:
+            name = save_dialog(self.screen, dev.name, name, error)
+            if name is None:
+                self.message("Not saved")
+                return
+            taken = next((d for d in lst.loaded if d.key.lower() == name.lower()), None)
+            if taken is None:
+                break
+            error = "%s is taken already (%s)." % (name, "one of yours" if taken.origin == "saved" else "in the list")
+        self.store.save_device(dev.host, name, dev.user)
+        if self.store.error:
+            self.message(self.store.error, error=True, seconds=10)
+            return
+        lst.add_saved(dev.host, name, dev.user)
+        self.message("Saved %s (%s) to your devices - only you see it, ^N on it forgets it" % (name, dev.name),
+                     seconds=10)
+
     def show_details(self, dev):
         lines = details_lines(self.screen.th, dev, self.results, self.store.recent.get(dev.key),
                               self.screen.scr.getmaxyx()[1])
@@ -564,7 +628,8 @@ class App(object):
             rows.append((key, label, "on" if on else "off", extra))
         rows.append(("p", "Forget the stored password now", "held" if self.creds.held else "not held",
                      " + ".join(["+ local account"] * bool(self.creds.local)
-                                + ["terminal server account"] * bool(self.creds.server))))
+                                + ["terminal server account"] * bool(self.creds.server)
+                                + ["login of %s" % u for u in sorted(self.creds.others)])))
         written = logs_since(cfg, cfg.started)
         rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
         return rows

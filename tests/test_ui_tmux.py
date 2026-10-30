@@ -140,6 +140,67 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Left", "Enter")               # "exit" is left of "ssh" (the bar wraps)
         self.wait_for("credentials forgotten")
 
+    def test_an_address_not_in_the_list_connect_save_forget(self):
+        """D55: typed in the search, connected with Enter, saved with ^N - only to your own
+        list, and back after a restart - then forgotten with ^N."""
+        self.keys("10.99.0.11", literal=True)
+        self.wait_for("not in the list")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-SW:1>")
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("Disconnected from 10.99.0.11")
+        self.keys("C-n")
+        self.wait_for("Save device")
+        self.keys("lab-box", literal=True)
+        self.keys("Enter")
+        self.wait_for("Saved lab-box")
+        with open(os.path.join(self.tmp, "data.csv")) as f:
+            self.assertNotIn("10.99.0.11", f.read())                # the shared list stays as it is
+        self.start()
+        self.keys("is:saved", literal=True)
+        self.wait_for("lab-box")
+        self.assertIn("ok", [line for line in self.screen().splitlines() if "lab-box" in line][0])
+        self.keys("C-n")
+        self.wait_for("Forget saved device")
+        self.keys("y")
+        self.wait_for("Removed lab-box")
+
+    def test_user_at_an_address_and_its_saved_pane_in_tmux(self):
+        """D55: labadmin@ logs in with labadmin's own password, not yours - alone, and
+        saved and marked next to a normal switch in one tmux session."""
+        self.keys("labadmin@10.99.0.12", literal=True)
+        self.wait_for("ssh as labadmin")
+        self.keys("Enter")
+        self.wait_for("For labadmin@10.99.0.12 only")
+        self.keys("lab123", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-SW:1>")
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("Disconnected from labadmin@10.99.0.12")
+        self.keys("C-n")
+        self.wait_for("Save device")
+        self.keys("lab-box", literal=True)
+        self.keys("Enter")
+        self.wait_for("Saved lab-box")
+        self.keys("Tab")
+        self.keys("C-u")
+        self.keys("fake-good", literal=True)
+        self.keys("Tab")
+        self.wait_for("2 marked")
+        self.keys("Enter")
+        self.wait_for("Username")                  # yours, for fake-good - labadmin's is kept
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        self.wait_in_panes(session, "FAKE-SW:1>")
+        seen = [tmux("capture-pane", "-p", "-t", p) for p in self.panes(session)]
+        self.assertEqual(sorted("labadmin@10.99.0.12" in s for s in seen), [False, True])
+
     def test_terminal_server_console_and_the_log_paths(self):
         """A terminal server row: line dialog, both logins typed, Ctrl-Q back after the
         logout, and the session log's path in Ctrl-G f and on exit."""

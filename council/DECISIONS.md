@@ -1247,3 +1247,30 @@ Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dia
   terminal server with a local account `labts` (one line + your login at the switch; local accounts
   only - your login never asked; two console panes).  All fail on 2.2.1.
 - `VERSION` **2.3.0**.
+
+## D55: Addresses that are not in the list (user, 2026-10-29)
+- User: "Add the option to manually type and maybe also save an IP, if it isn't in the inventory. I'd
+  like this for on the go changes."  Asked and decided by the user: typed **in the search** (no extra
+  window), saved to **your own list** (never `data.csv`), and besides IPv4 also **hostnames with a dot**
+  and **`user@address`**.  Not IPv6.
+- *Typed:* when the whole search is one address (`inventory.typed_target`: a full IPv4 address, or a
+  hostname with a dot; `user@` in front if you like), the list gets a row of its own **on top, selected
+  on every keystroke** - typing `10.1.2.3` while `10.1.2.30` was selected must never connect there.  No
+  row when the address is in the list (that device is the row); a hostname only when nothing matches
+  (`sw1.lab` is more likely a search).  `ssh`, `ping`, `details` work; `Tab` refuses (save it first).
+- *Saved:* `Ctrl-N` asks a name (unique against the list and your devices) and writes
+  `~/.local/state/truffle/saved` (`host TAB name [TAB user]`, 0600, the state lock).  Saved devices join
+  the list with a `*`, are found by name and by `is:saved`, can be marked, and survive a restart - also
+  when the CSV cannot be read.  `Ctrl-N` on one forgets it (asks first).  Not `Ctrl-S`: the tty driver
+  eats it (XON/XOFF), like `Ctrl-O` (D29).  Rows TRuffle cannot use are skipped, never fixed up.
+- *`user@`:* that user's own login, asked once **per user** and kept like yours (`Credentials.others`,
+  same lifetime, `Ctrl-G` `p`); your own user name reuses your login.  A wrong one drops only that login.
+  In tmux the pane of a saved `user@` device gets that login on its ticket in place of yours
+  (`Handover(account_credentials=)`, `--pane-user` for the fallback), and a pane's failure there drops
+  only that login (`Actions.account_hosts`).  A terminal server refuses `user@`: its logins are in the
+  console window (D51, D54).
+- *Tester:* the address rules (searches that must stay searches), the saved file (replace, forget, bad
+  rows), the list (on top even inside 10.1.2.30, no row for a listed address, `is:saved`, marks, no
+  CSV), the held logins, the handover, and two tmux UI runs: type -> connect -> save -> restart ->
+  forget, and `labadmin@` alone and as a saved pane next to a normal switch.
+- `VERSION` **2.4.0**.

@@ -4,6 +4,7 @@
     status      host TAB kind TAB state TAB time [TAB detail]
     console     server TAB lines TAB login [TAB server login]
     authfail    time TAB host (from a tmux pane)
+    saved       host TAB name [TAB user]   (your own devices, not in the list: D55)
 
 All TRuffle windows and tmux panes write here, so each read-change-write holds a lock (D45).
 """
@@ -14,7 +15,7 @@ import os
 import time
 
 from .results import CHECKED_STATES, KINDS, Results
-from .inventory import clean
+from .inventory import clean, typed_target
 
 CONSOLE_MODES = ("radius", "local", "manual")      # the switch behind a terminal server
 SERVER_MODES = ("radius", "local")                 # the terminal server itself (D54)
@@ -26,6 +27,7 @@ class UserState(object):
 
     MAX_RECENT = 200
     MAX_CONSOLE = 500
+    MAX_SAVED = 1000
 
     def __init__(self, directory):
         self.dir = directory
@@ -157,6 +159,34 @@ class UserState(object):
             rows = [row.rstrip("\n") for row in self._read("console") if row.split("\t", 1)[0] != key]
             entry = "%s\t%s\t%s\t%s" % (key, " ".join(str(n) for n in lines), mode, server_mode)
             self._write("console", (rows + [entry])[-self.MAX_CONSOLE:])
+
+    # -- your own devices (D55) -----------------------------------------------------
+
+    def load_saved(self):
+        """[(host, name, user or None)] in the order you saved them; a row TRuffle cannot
+        use is skipped, never fixed up."""
+        out = []
+        for row in self._read("saved"):
+            parts = [clean(p) for p in row.rstrip("\n").split("\t")]
+            if len(parts) not in (2, 3) or not parts[1] or typed_target(parts[0]) != (None, parts[0]):
+                continue
+            user = parts[2] if len(parts) == 3 and parts[2] else None
+            if user is not None and typed_target("%s@%s" % (user, parts[0])) is None:
+                continue
+            out.append((parts[0], parts[1], user))
+        return out
+
+    def save_device(self, host, name, user=None):
+        """Add one - a device saved before under the same name is replaced."""
+        with self._locked():
+            rows = [r for r in (r.rstrip("\n") for r in self._read("saved")) if r.split("\t")[1:2] != [name]]
+            entry = "\t".join([host, clean(name)] + ([user] if user else []))
+            self._write("saved", (rows + [entry])[-self.MAX_SAVED:])
+
+    def forget_device(self, name):
+        with self._locked():
+            self._write("saved", [r.rstrip("\n") for r in self._read("saved")
+                                  if r.rstrip("\n").split("\t")[1:2] != [name]])
 
     # -- a wrong password seen by a tmux pane: TRuffle then wipes its copy (D26) --------
 

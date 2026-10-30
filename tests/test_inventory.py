@@ -183,5 +183,24 @@ class TestCsv(TempDir):
             inventory.build_devices(*inventory.read_table(p), cfg=cfg)
 
 
+
+class TestTypedTarget(unittest.TestCase):
+    """D55: which searches are an address to connect to, and which stay a search."""
+
+    def test_addresses(self):
+        t = inventory.typed_target
+        self.assertEqual(t(" 10.1.2.3 "), (None, "10.1.2.3"))
+        self.assertEqual(t("sw-lab-17.example.net"), (None, "sw-lab-17.example.net"))
+        self.assertEqual(t("admin@10.1.2.3"), ("admin", "10.1.2.3"))
+        self.assertEqual(t("admin@sw1.lab"), ("admin", "sw1.lab"))
+
+    def test_searches_stay_searches(self):
+        t = inventory.typed_target
+        for text in ("ber", "sw-1", "10.1.2", "10.1.2.300", "10.01.2.3", "1.2.3.4.5", "type:core",
+                     "a b", "-x.y", "sw..lab", "*.lab", "@10.1.2.3", "-o@10.1.2.3", "a@b@10.1.2.3",
+                     "10.1.2.3.", "'10.1.2.3"):
+            self.assertIsNone(t(text), text)
+
+
 if __name__ == "__main__":
     unittest.main()

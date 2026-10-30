@@ -21,7 +21,7 @@ How the package is cut, from the bottom up - a module only imports the ones abov
 
 import os
 
-VERSION = "2.3.0"           # bump before building a bundle
+VERSION = "2.4.0"           # bump before building a bundle
 TITLE = "TRuffle: Device Manager"
 CREDIT = "by Timmy & Ruffy"
 

@@ -25,6 +25,7 @@ class Actions(object):
         self.store, self.results, self.creds, self.panes = store, results, creds, panes
         self.authfail_seen = 0.0       # the last pane login failure already acted on
         self.local_servers = set()     # terminal servers our panes reached with their local account
+        self.account_hosts = {}        # host -> user, for our panes of user@host devices (D55)
 
     def message(self, *args, **kw):
         self.screen.message(*args, **kw)
@@ -58,6 +59,18 @@ class Actions(object):
             self.creds.set_server(*entered)
         return self.creds.server
 
+    def ask_account(self, account, host, error=None):
+        """The login of a device saved or typed as user@host (D55), asked once per user and
+        kept - yours when it is your own user name."""
+        if self.creds.own is not None and self.creds.own.user == account:
+            return self.creds.own
+        if account not in self.creds.others:
+            entered = login_dialog(self.screen, account, error=error, account_for="%s@%s" % (account, host))
+            if entered is None:
+                return None
+            self.creds.set_other(account, *entered)
+        return self.creds.others[account]
+
     def forget_logins(self, why):
         self.creds.forget()
         self.message("Password forgotten (%s) - you will be asked again." % why, seconds=15)
@@ -65,7 +78,7 @@ class Actions(object):
     # -- one switch -----------------------------------------------------------------
 
     def ssh(self, dev):
-        self._connect(dev, dev.name, lambda own: own.user)
+        self._connect(dev, dev.name, lambda login: login.user, account=dev.user)
 
     def console(self, dev):
         """A terminal server: ask which lines and who logs in - at the terminal server
@@ -121,13 +134,16 @@ class Actions(object):
         login = {"radius": self.creds.own, "local": self.creds.local}.get(mode)
         return (login.user, login.password) if login else (None, None)
 
-    def _connect(self, dev, label, ssh_user, console=None, mode=None, server_local=False):
+    def _connect(self, dev, label, ssh_user, console=None, mode=None, server_local=False, account=None):
         """Login, connect, record; a refused password is wiped and asked again (D3).
         ssh_user maps the login to the ssh user (terminal server: user:port).
-        server_local: the terminal server takes its local account, not yours (D54)."""
+        server_local: the terminal server takes its local account, not yours (D54).
+        account: the user of a user@host device, whose login it takes (D55)."""
         error = None
         while True:
-            if server_local:
+            if account:
+                login = self.ask_account(account, dev.host, error)
+            elif server_local:
                 login = self.ask_server_login(dev.name, error)
             else:
                 login = self.ask_login(error, server=dev.name if console else None)
@@ -143,10 +159,7 @@ class Actions(object):
             if not result.auth_failed:
                 break
             # The wrong password goes; the switch's local account stays.
-            if server_local:
-                self.creds.server = None
-            else:
-                self.creds.own = None
+            self.creds.forget_login(login)
             error = "Login failed for '%s' on %s - please re-enter." % (user, dev.name)
         self._report(dev, label, result, mode)
 
@@ -204,24 +217,38 @@ class Actions(object):
             return False
         left_out = [t.name for t in targets[MAX_PANES:]]
         targets = targets[:MAX_PANES]
-        consoles_local = server_mode == "local" and any(t.console for t in targets)
+        consoles = any(t.console for t in targets)
+        consoles_local = server_mode == "local" and consoles
         own = server = None
+        accounts = {}                  # user of a user@host device -> its Login (D55)
         if consoles_local:
             server = self.ask_server_login("the terminal servers")
             if server is None:
                 self.message("ssh cancelled")
                 return False
-        if not consoles_local or mode == "radius" or not all(t.console for t in targets):
+        if (any(not t.console and not t.dev.user for t in targets)
+                or (consoles and (not consoles_local or mode == "radius"))):
             own = self.ask_login()
             if own is None:
                 self.message("ssh cancelled")
                 return False
+        for t in targets:
+            if not t.console and t.dev.user and t.dev.user not in accounts:
+                accounts[t.dev.user] = self.ask_account(t.dev.user, t.dev.host)
+                if accounts[t.dev.user] is None:
+                    self.message("ssh cancelled")
+                    return False
+
+        def account_login(user):
+            login = accounts.get(user)
+            return (login.user, login.password) if login else (None, None)
         try:
             # A console pane's ticket also carries the switch login (D51, TMUX-SECURITY.md),
             # and the terminal server's local account instead of yours when it takes one (D54)
             handover = Handover(lambda: (own.user, own.password) if own else (None, None),
                                 lambda: self.switch_login(mode),
-                                (lambda: (server.user, server.password)) if server else None)
+                                (lambda: (server.user, server.password)) if server else None,
+                                account_login)
         except OSError as e:
             self.message("cannot open the login handover for the panes: %s" % e, error=True, seconds=15)
             return False
@@ -233,8 +260,14 @@ class Actions(object):
             return False
         hosts = set(t.dev.host for t in targets if t.console)
         self.local_servers = (self.local_servers | hosts) if server else (self.local_servers - hosts)
+        for t in targets:
+            if not t.console:
+                if t.dev.user:
+                    self.account_hosts[t.dev.host] = t.dev.user
+                else:
+                    self.account_hosts.pop(t.dev.host, None)
         self.panes.add(session, panes, lambda t: console_user(self.cfg, (server or own).user, t.line)
-                       if t.console else own.user)
+                       if t.console else (accounts[t.dev.user] if t.dev.user else own).user)
         self.message("Starting %d panes and logging them in ..." % len(targets), seconds=30)
         self.screen.backdrop()                         # the wait is short, but never silent
         self.screen.scr.refresh()
@@ -245,10 +278,12 @@ class Actions(object):
         # A pane may have reported a wrong password while we were in tmux; that message
         # matters most, so it leads the line - a long one is cut off at the right edge.
         own_lost = own is not None and self.creds.own is not own
-        lost = own_lost or (server is not None and self.creds.server is not server)
+        server_lost = server is not None and self.creds.server is not server
+        account_lost = [u for u, login in accounts.items() if login is not own and self.creds.others.get(u) is not login]
+        lost = own_lost or server_lost or account_lost
         lead = ("%s was wrong and has been dropped - you will be asked again.  %s  "
-                % ("Password" if own_lost else "The terminal server's local account",
-                   self.screen.sym["sep"])) if lost else ""
+                % ("Password" if own_lost else "The terminal server's local account" if server_lost
+                   else "The login of %s" % account_lost[0], self.screen.sym["sep"])) if lost else ""
         if error:
             self.message("%stmux session %s started, but could not show it: %s" % (lead, session, error),
                          error=True, seconds=15)
@@ -357,10 +392,15 @@ class Actions(object):
         if stamp <= self.authfail_seen:
             return
         self.authfail_seen = stamp
+        account = self.account_hosts.get(host)
         if host in self.local_servers:                 # a terminal server's local account (D54)
             if self.creds.forget_server_if_older(stamp):
                 self.message("The terminal server's local account was forgotten (a tmux pane could not "
                              "log in to %s) - you will be asked again." % host, seconds=15)
+        elif account in self.creds.others:              # a user@host device's own login (D55)
+            if self.creds.forget_other_if_older(account, stamp):
+                self.message("The login of %s was forgotten (a tmux pane could not log in to %s) - "
+                             "you will be asked again." % (account, host), seconds=15)
         elif self.creds.forget_if_older(stamp):          # it was THIS password that failed
             self.message("Password forgotten (a tmux pane could not log in to %s) - "
                          "you will be asked again." % host, seconds=15)

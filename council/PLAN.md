@@ -1,7 +1,7 @@
 # Current Plan (Drafter)
 
 What is open and what comes next - nothing else.  **What was built and why is in
-[DECISIONS.md](DECISIONS.md)** (D1-D54); ideas that are not planned are in
+[DECISIONS.md](DECISIONS.md)** (D1-D55); ideas that are not planned are in
 [ideas/README.md](ideas/README.md).  Until 2026-10-25 this file also listed every finished
 milestone; that was a second copy of the decision log, and the stale boxes in it (a "batch ping"
 that no longer exists, checks done weeks ago) are how settled topics came back up.
@@ -20,6 +20,10 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 ## Field test of 2.3.0 (D52-D54)
 - [ ] Ruffy: `ssh_command = ct ssh` - the password is typed in (if not: `truffle --debug`, then the debug log)
 - [ ] A lab terminal server with `Terminal server <local>`: its account, then the switch login behind it
+
+## Field test of 2.4.0 (D55)
+- [ ] A device that is not in the list: type its IP, Enter, then `Ctrl-N` to save it
+- [ ] `admin@<ip>` of a lab box with its own account
 
 ## Still to confirm on RHEL
 - [ ] `truffle --check` prints `ssh results : ok` (the session detection of D45 / D46)

@@ -125,9 +125,10 @@ class PaneTarget(object):
         return self.dev.name if self.line is None else "%s line %d" % (self.dev.name, self.line)
 
 
-def pane_command(cfg, socket_path, ticket, host, name, console=None):
+def pane_command(cfg, socket_path, ticket, host, name, console=None, user=None):
     """TRuffle in --pane mode: the ticket, never the password.  console: (line, login[,
-    server login]) for a terminal-server line.  (new-session and split-window do not expand tmux formats, so
+    server login]) for a terminal-server line; user: of a user@host device, for when the
+    ticket cannot be fetched (D55).  (new-session and split-window do not expand tmux formats, so
     shell quoting is enough.)"""
     argv = ["env"] + ["%s=%s" % (k, os.environ[k]) for k in PANE_ENV if os.environ.get(k)]
     argv += [sys.executable, LAUNCHER]
@@ -143,6 +144,8 @@ def pane_command(cfg, socket_path, ticket, host, name, console=None):
         argv += ["--pane-console", str(console[0]), console[1]]
         if console[2:] == ("local",):
             argv += ["--pane-server-login", "local"]     # only for the note in the pane (D54)
+    if user:
+        argv += ["--pane-user", user]
     argv += ["--pane", socket_path, ticket, host, name]
     return " ".join(shlex.quote(a) for a in argv)
 
@@ -157,9 +160,10 @@ def open_panes(cfg, targets, handover, mode=None, server_mode="radius"):
 
     def start(target, *where):
         dev = target.dev
-        ticket = handover.issue(dev.host, switch=target.console)
+        account = None if target.console else dev.user
+        ticket = handover.issue(dev.host, switch=target.console, account=account)
         command = pane_command(cfg, handover.path, ticket, dev.host, dev.name,
-                               (target.line, mode, server_mode) if target.console else None)
+                               (target.line, mode, server_mode) if target.console else None, account)
         out = tmux_run(*(list(where) + ["-P", "-F", "#{pane_pid} #{pane_id}", command]))
         pid, _, pane_id = out.strip().partition(" ")
         handover.bind(ticket, int(pid or 0))

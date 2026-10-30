@@ -1,5 +1,6 @@
 """The password lifetime and the logins TRuffle holds."""
 
+import time
 import unittest
 
 from support import args
@@ -30,6 +31,33 @@ class TestPasswordLifetime(unittest.TestCase):
         self.assertEqual(credentials.minutes_text(90), "1 h 30 min")       # was reported as "2 h"
         self.assertEqual(credentials.minutes_text(60), "1 h")
         self.assertEqual(credentials.minutes_text(45), "45 min")
+
+
+class TestUserAtHostLogins(unittest.TestCase):
+    """D55: a device saved as user@host has its own login, kept per user."""
+
+    def test_kept_per_user_and_forgotten_alone_or_with_the_rest(self):
+        c = credentials.Credentials(60)
+        c.set_own("timmy", "secret")
+        c.set_other("labadmin", "labadmin", "lab123")
+        self.assertTrue(c.held)
+        c.forget_login(c.others["labadmin"])           # it was refused
+        self.assertEqual(c.others, {})
+        self.assertIsNotNone(c.own)
+        c.set_other("labadmin", "labadmin", "lab123")
+        c.forget()
+        self.assertFalse(c.held)
+
+    def test_it_expires_and_a_pane_failure_drops_only_it(self):
+        c = credentials.Credentials(60)
+        c.set_own("timmy", "secret")
+        c.set_other("labadmin", "labadmin", "lab123")
+        self.assertFalse(c.forget_other_if_older("labadmin", c.others["labadmin"].typed_at - 1))
+        self.assertTrue(c.forget_other_if_older("labadmin", c.others["labadmin"].typed_at))
+        self.assertIsNotNone(c.own)
+        c.own = None
+        c.set_other("labadmin", "labadmin", "lab123")
+        self.assertEqual(c.expire(time.time() + 3601), ["login of labadmin"])
 
 
 class TestTerminalServerAccount(unittest.TestCase):

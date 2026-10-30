@@ -80,6 +80,8 @@ echo "alias truffle='python3 $HOME/git/truffle/truffle'" >> ~/.bashrc
 7. A **terminal server** (a name like `ab-12-ts1-01`): **Enter** asks for the line, then TRuffle logs
    you into the [console](#terminal-servers-console) of the switch behind it. **`Ctrl-Q`** brings you back.
 8. **`is:recent`** lists the devices you connected to, newest first - TRuffle remembers them by itself.
+9. **Not in the list?** Type the address - `10.1.2.3`, `sw-lab-17.example.net` or `admin@10.1.2.3` - and
+   press **Enter**. **`Ctrl-N`** [saves it](#devices-that-are-not-in-the-list) to your own list.
 
 Filtering by a naming scheme — all the `-l1` switches, or the `w3` and `w4` ones — is what
 [patterns and `|`](#search) are for: `*-l1`, `w3|w4`.
@@ -97,6 +99,7 @@ All keys: [Keys](#keys) or the **help** command inside TRuffle. If something loo
 - [Several devices at once (tmux)](#several-devices-at-once-tmux)
 - [Terminal servers (console)](#terminal-servers-console)
 - [Settings](#settings)
+- [Devices that are not in the list](#devices-that-are-not-in-the-list)
 - [Recent devices](#recent-devices)
 - [Saved check results](#saved-check-results)
 - [Export](#export)
@@ -144,6 +147,8 @@ From top to bottom:
   - `▌` marks the selected row.
   - `+` marks a device you picked with `Tab` or `Ctrl-A` for [several at once](#several-devices-at-once-tmux).
     Marks are kept when you search for something else, so you can collect them from several searches.
+  - `*` marks one of [your own saved devices](#devices-that-are-not-in-the-list); a row
+    `not in the list · ^N saves it` is the address you typed in the search.
   - `▲`/`▼` shows the sorted column.
   - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
     changes nothing - TRuffle says so instead of calling the device `down`.
@@ -173,6 +178,7 @@ From top to bottom:
 | `Tab` / `Shift-Tab` | mark / unmark a device for [several at once](#several-devices-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
 | `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay |
 | `Ctrl-E` | [export](#export) what the search shows, with the PING / SSH results, to a CSV in your home folder |
+| `Ctrl-N` | on an address you typed: [save it](#devices-that-are-not-in-the-list) to your own list. On one of yours (`*`): forget it (asks first) |
 | `Ctrl-T` | back into the running [tmux session](#several-devices-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
 | `Ctrl-G` | [settings](#settings) for this session: session log, debug log, forget password, log files |
@@ -235,6 +241,8 @@ your naming scheme — use a **pattern** with `*` and `?`.
 | `ssh:failed`, `ssh:ok` | outcome of your last ssh attempt to that device, or `none` (never tried) |
 | `is:recent` | devices you connected to, newest first ([more](#recent-devices)) |
 | `is:marked` | everything you've picked with `Tab` so far, from any search |
+| `is:saved` | [your own devices](#devices-that-are-not-in-the-list), saved with `Ctrl-N` |
+| `10.1.2.3`, `sw1.lab.example`, `admin@10.1.2.3` | a whole address that is not in the list gets a row of its own, on top: [connect to it](#devices-that-are-not-in-the-list) |
 
 ### Tips & tricks
 
@@ -494,7 +502,7 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 |---|---|---|
 | `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
-| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
+| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) and [`user@` logins](#devices-that-are-not-in-the-list) too. Running sessions and tmux panes are untouched |
 | `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
 | `ESC` | | close |
 
@@ -503,6 +511,38 @@ Changes apply to **this TRuffle only** and take effect on the next connection (t
 
 Everything else (columns, paths, password lifetime, tmux on or off, the screen symbols) is set once in the
 configuration file; nothing else is worth flipping mid-day.
+
+## Devices that are not in the list
+
+For the box that's not in the list yet - a lab switch, a replacement, something on the go - **type its
+address in the search** and press **Enter**:
+
+```
+  ›  10.99.0.11
+
+    NAME         IP           SUBNET    ALIAS        COMMENT    PING        SSH
+    ──────────────────────────────────────────────────────────────────────────────
+ ▌  10.99.0.11   10.99.0.11   not in the list · ^N saves it
+    sw11         10.99.0.110  ber       Core Berlin
+```
+
+- **What counts as an address:** a whole IPv4 address (`10.1.2.3`, not `10.1.2`), or a hostname with a dot
+  (`sw-lab-17.example.net`). A plain word like `ber` stays a search.
+- **The row is on top and selected**, also when the address is part of another one in the list
+  (`10.99.0.11` in `10.99.0.110`), so Enter connects to what you typed. An address that **is** in the list
+  shows that device instead; a hostname gets a row only when nothing in the list matches it.
+- **`ssh`, `ping` and `details` work** on it like on any device, with your login.
+- **`user@address`** (`admin@10.1.2.3`) connects as that user and asks for **its** password - not your
+  RADIUS one. It's kept in memory per user like yours (same lifetime, `Ctrl-G` `p` forgets it), and a
+  wrong one drops only that login. This works even for a device that is in the list.
+- **`Ctrl-N` saves it** under a name you give (a hostname suggests its first part). It's then in the list
+  with a `*`, found by its name and by `is:saved`, can be marked for [tmux](#several-devices-at-once-tmux)
+  (a saved `admin@` gets admin's login in its pane), and is still there after a restart.
+  **`Ctrl-N` on it** forgets it again.
+- Saved devices are **yours only**: `~/.local/state/truffle/saved` (only readable by you). The shared
+  device list (`data.csv`) is never written - add a device there for everyone.
+- A saved name that matches [`console_hosts`](#terminal-servers-console) makes it a terminal server; leave
+  out the `user@` then, the console window asks who logs in.
 
 ## Recent devices
 

@@ -13,6 +13,26 @@ from truffle.results import PING_UP, WAIT, Results
 
 
 class TestUserState(TempDir):
+    def test_saved_devices(self):
+        """D55: your own devices - in your state dir only, 0600, a name saved again replaces."""
+        d = os.path.join(self.tmp, "state")
+        st = state.UserState(d)
+        st.save_device("10.1.2.3", "lab-box")
+        st.save_device("10.1.2.4", "lab-two", "admin")
+        st.save_device("10.1.2.5", "lab-box")
+        self.assertEqual(state.UserState(d).load_saved(),
+                         [("10.1.2.4", "lab-two", "admin"), ("10.1.2.5", "lab-box", None)])
+        self.assertEqual(os.stat(os.path.join(d, "saved")).st_mode & 0o777, 0o600)
+        st.forget_device("lab-two")
+        self.assertEqual(st.load_saved(), [("10.1.2.5", "lab-box", None)])
+
+    def test_saved_rows_truffle_cannot_use_are_skipped(self):
+        d = os.path.join(self.tmp, "state")
+        os.makedirs(d)
+        with open(os.path.join(d, "saved"), "w") as f:
+            f.write("garbage\n-oProxyCommand=x\tevil\n10.1.2.3\t\n10.1.2.4\tok\t-l\n10.1.2.5\tfine\n")
+        self.assertEqual(state.UserState(d).load_saved(), [("10.1.2.5", "fine", None)])
+
     def test_recent_persists(self):
         st = state.UserState(os.path.join(self.tmp, "state"))
         st.touch("sw2")

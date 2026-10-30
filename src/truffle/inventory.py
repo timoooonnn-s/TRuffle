@@ -6,10 +6,12 @@ import os
 import re
 
 from . import INSTALL_DIR
+from .config import valid_user
 
 CONTROL_CHARS = re.compile(r"[\x00-\x1f\x7f]")
 IPV4_LIKE = re.compile(r"^[0-9.]+$")
 HOST_RE = re.compile(r"^[A-Za-z0-9_.:%-]+$")
+HOSTNAME_RE = re.compile(r"^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)+$")     # at least one dot
 # Where a search word may be split (see search.anchored_positions).
 BOUNDARY = " -_./:@"
 
@@ -42,16 +44,37 @@ def segments_of(text):
     return parts
 
 
+def typed_target(text):
+    """(user or None, host) when the search is one address to connect to (D55): a whole
+    IPv4 address or a hostname with a dot, `user@` in front if you like.  None for
+    anything else - a plain word like "ber" is a search, and so is "10.1.2"."""
+    text = text.strip()
+    if not text or any(c.isspace() for c in text):
+        return None
+    user, at, host = text.rpartition("@")
+    if at and not valid_user(user):
+        return None
+    if IPV4_LIKE.match(host):
+        ok = len(host.split(".")) == 4 and address_issue(host) is None
+    else:
+        ok = (len(host) <= 253 and HOSTNAME_RE.match(host) is not None and not host.startswith("-")
+              and any(c.isalpha() for c in host))
+    return (user or None, host) if ok else None
+
+
 class Device(object):
     """One row of the switch list.  The lower-case cells and their segments are worked
-    out once here, so the search does no per-keystroke preparation."""
-    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search")
+    out once here, so the search does no per-keystroke preparation.  origin: "csv", one
+    of your saved devices ("saved"), or the address you typed in the search ("typed", D55);
+    user: the ssh user it was saved or typed with (user@host), None = your login."""
+    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search", "origin", "user")
 
-    def __init__(self, values, host, name, cells):
+    def __init__(self, values, host, name, cells, origin="csv", user=None):
         self.values = values                  # every CSV column, header -> value
         self.host = host                      # the ssh / ping target
         self.name = name                      # the switch name, or the host without one
         self.cells = cells                    # the visible columns, in table order
+        self.origin, self.user = origin, user
         self.lcells = [c.lower() for c in cells]
         self.lsegments = [segments_of(c) for c in self.lcells]
         self.search = "\x00".join(self.lcells)          # \x00: a word never matches across two columns

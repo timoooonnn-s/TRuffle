@@ -1,10 +1,11 @@
-"""The dialog windows: login, terminal-server line, settings.  Each one draws on a
+"""The dialog windows: login, terminal-server line, saving a typed address, settings.  Each one draws on a
 Screen, reads keys until it is done and returns what was chosen - no TRuffle state."""
 
 import textwrap
 
 from ..config import valid_user
 from ..console import console_user, parse_console_lines
+from ..inventory import clean
 from ..state import CONSOLE_MODES, SERVER_MODES
 from .draw import fit, put
 
@@ -26,16 +27,18 @@ def edit_field(text, key, keep=None, limit=None):
     return (text + added)[:limit] if limit else text + added
 
 
-def login_dialog(screen, user, local_for=None, error=None, server=None, local_server=None):
+def login_dialog(screen, user, local_for=None, error=None, server=None, local_server=None, account_for=None):
     """Ask user + password.  Returns (user, password or None) or None on ESC.
     local_for: the terminal server name - then it asks for a switch's local account.
     server: the terminal server this RADIUS login is asked for.
-    local_server: the terminal server whose OWN local account it asks for (D54)."""
+    local_server: the terminal server whose OWN local account it asks for (D54).
+    account_for: the user@host this login is for - not your RADIUS login (D55)."""
     entry = [user or "", ""]
     field = 1 if entry[0] else 0
     scr, th, sym = screen.scr, screen.th, screen.sym
     which = ("Only the switch - not the terminal server in front of it." if local_for
              else "Only the terminal server - the switch behind it has its own login." if local_server
+             else "For %s only - not your RADIUS login." % account_for if account_for
              else "For the terminal server %s." % server if server else "")
     while True:
         bw, bh = min(66, scr.getmaxyx()[1] - 6), 14 if which else 13
@@ -43,6 +46,8 @@ def login_dialog(screen, user, local_for=None, error=None, server=None, local_se
             y0, x0 = screen.draw_window("Local account", "switch behind %s" % local_for, bh, bw)
         elif local_server:
             y0, x0 = screen.draw_window("Local account", "terminal server %s" % local_server, bh, bw)
+        elif account_for:
+            y0, x0 = screen.draw_window("Login", "as %s" % entry[0], bh, bw)
         elif server:
             y0, x0 = screen.draw_window("Login", "your RADIUS login", bh, bw)
         else:
@@ -84,6 +89,40 @@ def login_dialog(screen, user, local_for=None, error=None, server=None, local_se
         else:
             edited = edit_field(entry[field], key)
             entry[field] = entry[field] if edited is None else edited
+
+
+def save_dialog(screen, address, name, error=None):
+    """The name for an address you typed in the search, saved to your own list (D55).
+    Returns the name, or None on ESC."""
+    scr, th, sym = screen.scr, screen.th, screen.sym
+    while True:
+        bw, bh = min(66, scr.getmaxyx()[1] - 6), 12
+        y0, x0 = screen.draw_window("Save device", "your own list", bh, bw)
+        fw = max(6, bw - 18)
+        put(scr, y0 + 2, x0 + 3, "Address", th.win)
+        put(scr, y0 + 2, x0 + 15, address[:fw], th.win_label)
+        put(scr, y0 + 4, x0 + 3, "Name", th.win_label)
+        shown = name[-(fw - 2):]
+        put(scr, y0 + 4, x0 + 14, " " + shown.ljust(fw - 1), th.field)
+        put(scr, y0 + 4, x0 + 15 + len(shown), " ", th.cursor)
+        if error:
+            put(scr, y0 + 6, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
+        put(scr, y0 + 7, x0 + 3, "Only for you - the device list stays as it is."[:bw - 6], th.win_hint)
+        put(scr, y0 + 8, x0 + 3, ("Search finds it by its name %s ^N on it forgets it" % sym["sep"])[:bw - 6],
+            th.win_hint)
+        screen.draw_keys(y0 + bh - 2, x0 + 3, (("Enter", "save"), ("ESC", "cancel")))
+        scr.refresh()
+
+        key = screen.read_key(-1)
+        if key == "ESC":
+            return None
+        if key == "ENTER":
+            if clean(name):
+                return clean(name)
+            error = "Please enter a name."
+        else:
+            edited = edit_field(name, key, limit=64)
+            name = name if edited is None else edited
 
 
 def console_dialog(screen, cfg, servers, mode, user, local_user, others=0, server_mode="radius",

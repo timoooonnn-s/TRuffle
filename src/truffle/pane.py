@@ -2,7 +2,8 @@
 record the outcome, then the pane closes.  With --pane-console LINE LOGIN the pane is one
 line of a terminal server (D51): ssh as user:<port>, then the switch's login behind it.
 The user:<port> login is yours or the terminal server's local account (D54) - the ticket
-holds the one to use, --pane-server-login only says which for the note."""
+holds the one to use, --pane-server-login only says which for the note.  --pane-user: a
+device saved as user@host (D55), logged in as that user."""
 
 import json
 import os
@@ -28,8 +29,9 @@ def fetch_login(socket_path, ticket):
     return login
 
 
-def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="radius"):
-    """console: (line, login) - this pane is that line of the terminal server `name`."""
+def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="radius", user=None):
+    """console: (line, login) - this pane is that line of the terminal server `name`.
+    user: the device's own ssh user, if it has one."""
     notes = Notes(os.environ.get("TERM", "dumb") not in ("", "dumb"), CHARSETS[cfg.charset]["gt"])
     close = "close this pane"
     if not valid_host(host):
@@ -38,7 +40,7 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="r
     # A pane is recorded through tmux (pipe-pane), never by ssh_flow, so TRuffle can switch
     # the log on and off while it runs - and it is never written twice.
     record, cfg.session_log = cfg.session_log, False
-    login, problems = {"user": cfg.user}, []
+    login, problems = {"user": user or cfg.user}, []
     try:
         login = fetch_login(socket_path, ticket)
     except (OSError, ValueError, KeyError) as e:

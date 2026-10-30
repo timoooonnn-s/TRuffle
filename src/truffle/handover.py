@@ -55,12 +55,14 @@ class Handover(object):
     """A ticket is answered once: our uid, the process tmux started for it, younger than
     TICKET_LIFETIME.  A console pane's ticket also carries the login for the switch behind
     the terminal server (D51) - only that ticket, never an ssh pane's - and, when the
-    terminal server takes its local account, that one in place of yours (D54)."""
+    terminal server takes its local account, that one in place of yours (D54).  A device
+    saved as user@host gets that user's login instead of yours (D55)."""
 
-    def __init__(self, credentials, switch_credentials=None, server_credentials=None):
+    def __init__(self, credentials, switch_credentials=None, server_credentials=None, account_credentials=None):
         self.credentials = credentials        # callable -> (user, password or None)
         self.switch_credentials = switch_credentials    # callable -> (user or None, password or None)
         self.server_credentials = server_credentials    # callable -> (user, password or None), or None
+        self.account_credentials = account_credentials  # callable user -> (user or None, password or None)
         self.dir = tempfile.mkdtemp(prefix="truffle-", dir=os.environ.get("XDG_RUNTIME_DIR") or None)
         self.path = os.path.join(self.dir, "handover.sock")
         self.server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -76,13 +78,14 @@ class Handover(object):
         self.closed = False
         threading.Thread(target=self._serve, daemon=True).start()
 
-    def issue(self, host, switch=False):
+    def issue(self, host, switch=False, account=None):
         """A ticket for one pane.  bind() must follow once tmux reports the pane's pid.
-        switch: a console pane - its answer includes the switch login."""
+        switch: a console pane - its answer includes the switch login.  account: the user
+        of a user@host device, whose login it gets."""
         ticket = secrets.token_hex(16)
         with self.lock:
             self.tickets[ticket] = {"host": host, "pid": None, "created": time.time(), "fetched": False,
-                                    "switch": switch}
+                                    "switch": switch, "account": account}
         return ticket
 
     def bind(self, ticket, pid):
@@ -131,7 +134,7 @@ class Handover(object):
                 return "ERR already used"
             if time.time() - entry["created"] > TICKET_LIFETIME:
                 return "ERR ticket expired"
-            expected, host, switch = entry["pid"], entry["host"], entry["switch"]
+            expected, host, switch, account = entry["pid"], entry["host"], entry["switch"], entry["account"]
         # An unbound ticket is refused, never waited for (D29).  Outside the lock: the
         # parent lookup runs `ps` on macOS.
         if pid != expected and parent_pid(pid) != expected:    # ps only when it is needed
@@ -143,6 +146,8 @@ class Handover(object):
             entry["fetched"] = True
         if switch and self.server_credentials is not None:
             user, password = self.server_credentials()
+        elif account is not None:
+            user, password = self.account_credentials(account) if self.account_credentials else (None, None)
         else:
             user, password = self.credentials()
         if user is None:                      # nothing for this pane: it asks for the password
