@@ -13,7 +13,7 @@ from .config import ConfigError, load_config
 from .console import is_console_server
 from .credentials import minutes_text
 from .export import exports_since
-from .inventory import DataError, build_devices, data_issues, read_table
+from .inventory import DEVICE_LOGINS, DataError, build_devices, data_issues, read_table
 from .logs import keep_text, list_logs, log_sink, logs_since
 from .pane import pane_main
 from .session import raw_mode_visible
@@ -95,9 +95,11 @@ def parse_args(argv):
                         help=argparse.SUPPRESS)        # internal: one device inside a tmux pane
     parser.add_argument("--pane-console", nargs=2, metavar=("LINE", "LOGIN"),
                         help=argparse.SUPPRESS)        # internal: ... that is a terminal-server line
-    parser.add_argument("--pane-user", help=argparse.SUPPRESS)    # internal: a user@host device (D55)
     parser.add_argument("--pane-server-login", choices=SERVER_MODES, default="radius",
                         help=argparse.SUPPRESS)        # internal: ... reached with its local account
+    parser.add_argument("--pane-login", choices=DEVICE_LOGINS, default="radius",
+                        help=argparse.SUPPRESS)        # internal: a saved device's login (D56) ...
+    parser.add_argument("--pane-user", help=argparse.SUPPRESS)    # ... and its ssh user
     parser.add_argument("--log-sink", nargs=2, metavar=("FILE", "HEADER"),
                         help=argparse.SUPPRESS)        # internal: tmux records one pane into FILE
     parser.add_argument("--version", action="version", version="%(prog)s " + VERSION)
@@ -162,7 +164,7 @@ def main(argv=None):
             print("truffle: --pane-console wants LINE and one of %s" % ", ".join(CONSOLE_MODES), file=sys.stderr)
             return 2
         return pane_main(cfg, *args.pane, console=console, server_mode=args.pane_server_login,
-                         user=args.pane_user)
+                         login_kind=args.pane_login, user=args.pane_user)
     if not (sys.stdin.isatty() and sys.stdout.isatty()):
         print("truffle: must be run in an interactive terminal", file=sys.stderr)
         return 2

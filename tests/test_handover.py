@@ -74,17 +74,23 @@ class HandoverTest(unittest.TestCase):
         self.assertEqual((console_login["user"], console_login["password"]), ("labts", "lab123"))
         self.assertEqual(console_login["switch_user"], "timmy")
 
-    def test_a_user_at_host_pane_gets_that_login_only(self):
-        """D55: a device saved as labadmin@host gets labadmin's login, the others yours."""
-        logins = {"labadmin": ("labadmin", "lab123")}
-        h = handover.Handover(lambda: ("timmy", "secret"), account_credentials=lambda u: logins.get(u, (None, None)))
+    def test_local_and_manual_device_panes(self):
+        """D56: a device set to local gets the local account in place of yours, one set to
+        manual only its user - the password is typed in the pane."""
+        h = handover.Handover(lambda: ("timmy", "secret"), local_credentials=lambda: ("labadmin", "lab123"))
         self.handovers.append(h)
-        mine, lab, gone = h.issue("10.0.0.1"), h.issue("10.0.0.2", account="labadmin"), h.issue("10.0.0.3", account="x")
-        for t in (mine, lab, gone):
+        mine, lab, manual = (h.issue("10.0.0.1"), h.issue("10.0.0.2", login="local"),
+                             h.issue("10.0.0.3", login="manual", user="admin"))
+        for t in (mine, lab, manual):
             h.bind(t, os.getpid())
         self.assertEqual(json.loads(self.ask(h, mine)[3:])["user"], "timmy")
         self.assertEqual(json.loads(self.ask(h, lab)[3:]), {"user": "labadmin", "password": "lab123"})
-        self.assertEqual(self.ask(h, gone), "ERR no login")
+        self.assertEqual(json.loads(self.ask(h, manual)[3:]), {"user": "admin", "password": ""})
+        nothing = handover.Handover(lambda: ("timmy", "secret"))
+        self.handovers.append(nothing)
+        ticket = nothing.issue("10.0.0.2", login="local")
+        nothing.bind(ticket, os.getpid())
+        self.assertEqual(self.ask(nothing, ticket), "ERR no login")     # never yours instead
 
     def test_no_login_held_for_a_pane_is_an_error_not_an_empty_user(self):
         h = handover.Handover(lambda: (None, None))
@@ -184,8 +190,9 @@ class HandoverTest(unittest.TestCase):
         self.assertNotIn("--pane-server-login", console_command)
         lab = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.9", "ts1", (7, "radius", "local"))
         self.assertIn("--pane-console 7 radius --pane-server-login local", lab)
-        account = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.2", "lab-box", user="labadmin")
-        self.assertIn("--pane-user labadmin --pane", account)
+        local = tmux.pane_command(cfg, "/tmp/x.sock", "a" * 32, "10.0.0.2", "lab-box", login="local", user="labadmin")
+        self.assertIn("--pane-login local --pane-user labadmin --pane", local)
+        self.assertNotIn("--pane-login", command)
         self.assertNotIn("lab123", lab)
 
     def test_peer_identity_sees_this_process(self):

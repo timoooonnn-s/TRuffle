@@ -4,7 +4,8 @@
     status      host TAB kind TAB state TAB time [TAB detail]
     console     server TAB lines TAB login [TAB server login]
     authfail    time TAB host (from a tmux pane)
-    saved       host TAB name [TAB user]   (your own devices, not in the list: D55)
+    saved       host TAB name TAB login [TAB user]   (your own devices: D55, D56;
+                host TAB name [TAB user] from 2.4.0 = radius, or manual as that user)
 
 All TRuffle windows and tmux panes write here, so each read-change-write holds a lock (D45).
 """
@@ -15,7 +16,7 @@ import os
 import time
 
 from .results import CHECKED_STATES, KINDS, Results
-from .inventory import clean, typed_target
+from .inventory import DEVICE_LOGINS, clean, typed_target
 
 CONSOLE_MODES = ("radius", "local", "manual")      # the switch behind a terminal server
 SERVER_MODES = ("radius", "local")                 # the terminal server itself (D54)
@@ -163,24 +164,30 @@ class UserState(object):
     # -- your own devices (D55) -----------------------------------------------------
 
     def load_saved(self):
-        """[(host, name, user or None)] in the order you saved them; a row TRuffle cannot
-        use is skipped, never fixed up."""
+        """[(host, name, login, user or None)] in the order you saved them; user only with
+        the login "manual".  A row TRuffle cannot use is skipped, never fixed up."""
         out = []
         for row in self._read("saved"):
             parts = [clean(p) for p in row.rstrip("\n").split("\t")]
-            if len(parts) not in (2, 3) or not parts[1] or typed_target(parts[0]) != (None, parts[0]):
+            if len(parts) == 2 or (len(parts) == 3 and parts[2] not in DEVICE_LOGINS):
+                parts[2:] = ["manual"] + parts[2:] if len(parts) == 3 else ["radius"]     # 2.4.0
+            if (len(parts) not in (3, 4) or not parts[1] or parts[2] not in DEVICE_LOGINS
+                    or typed_target(parts[0]) != (None, parts[0])):
                 continue
-            user = parts[2] if len(parts) == 3 and parts[2] else None
-            if user is not None and typed_target("%s@%s" % (user, parts[0])) is None:
+            user = parts[3] if len(parts) == 4 else None
+            if (parts[2] == "manual") != (user is not None) or (
+                    user is not None and typed_target("%s@%s" % (user, parts[0])) is None):
                 continue
-            out.append((parts[0], parts[1], user))
+            out.append((parts[0], parts[1], parts[2], user))
         return out
 
-    def save_device(self, host, name, user=None):
-        """Add one - a device saved before under the same name is replaced."""
+    def save_device(self, host, name, login="radius", user=None, old=None):
+        """Add one - a device saved before under the same name, or under `old` (renamed in
+        the window), is replaced."""
+        gone = [[name], [old]]
         with self._locked():
-            rows = [r for r in (r.rstrip("\n") for r in self._read("saved")) if r.split("\t")[1:2] != [name]]
-            entry = "\t".join([host, clean(name)] + ([user] if user else []))
+            rows = [r for r in (r.rstrip("\n") for r in self._read("saved")) if r.split("\t")[1:2] not in gone]
+            entry = "\t".join([host, clean(name), login] + ([user] if login == "manual" else []))
             self._write("saved", (rows + [entry])[-self.MAX_SAVED:])
 
     def forget_device(self, name):

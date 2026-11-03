@@ -138,7 +138,7 @@ class App(object):
             hints[3:3] = [("^T", "back to tmux"), ("^K", "close tmux")]
         dev = lst.selected()
         if dev is not None and dev.origin != "csv":
-            hints.insert(0, ("^N", "save" if dev.origin == "typed" else "forget"))
+            hints.insert(0, ("^N", "save" if dev.origin == "typed" else "change"))
         esc = self.escape_step()
         if esc:                    # what the next ESC does - it depends on what is set (D50)
             hints.insert(0, ("ESC", esc[1]))
@@ -241,7 +241,7 @@ class App(object):
             put(scr, y, 2, "*", th.age_sel if sel else th.hint)
         x = TABLE_X
         marks = self.list.found.get(d, (0, {}))[1]
-        hint = d.origin == "typed" and ("ssh as %s %s ^N saves it" % (d.user, sym["sep"]) if d.user
+        hint = d.origin == "typed" and ("manual login as %s %s ^N saves it" % (d.user, sym["sep"]) if d.user
                                         else "not in the list %s ^N saves it" % sym["sep"])
         for i, value in enumerate(d.cells):
             put(scr, y, x, fit(value, widths[i], sym["more"]), th.sel if sel else th.text)
@@ -365,7 +365,7 @@ class App(object):
         elif key == "CTRL_G":
             self.settings()
         elif key == "CTRL_N":
-            self.save_or_forget()
+            self.own_device()
         elif key == "CTRL_R":
             self.load()
             if not lst.load_error:
@@ -486,9 +486,10 @@ class App(object):
         elif command == "ping":
             self.ping(dev)
         elif is_console_server(self.cfg, dev):
-            if dev.user:
-                self.message("%s is a terminal server - leave out the %s@, the console window asks "
-                             "who logs in" % (dev.host, dev.user), error=True, seconds=10)
+            if dev.login != "radius":
+                self.message("%s is a terminal server - %s, the console window asks who logs in"
+                             % (dev.name, "leave out the %s@" % dev.user if dev.origin == "typed"
+                                else "set its login to radius (^N)"), error=True, seconds=10)
             else:
                 self.actions.console(dev)
         else:
@@ -551,44 +552,56 @@ class App(object):
         self.batch = BatchPing(hosts, self.cfg.ping_timeout, self.results)
         self.message("Pinging %d marked devices - ESC cancels" % len(hosts))
 
-    def save_or_forget(self):
+    def own_device(self):
         """^N: save the address you typed in the search to your own list - or, on one of
-        yours, forget it (D55).  The shared device list is never written."""
+        yours, change its name and login or forget it (D55, D56).  The shared device list
+        is never written."""
         lst, dev = self.list, self.list.selected()
         if dev is None or dev.origin == "csv":
             self.message("^N saves an address you typed in the search (10.1.2.3, sw1.lab.example, "
                          "admin@10.1.2.3) - this device is in the list already")
             return
-        if dev.origin == "saved":
-            if not self.screen.confirm("Forget saved device", "Remove %s (%s) from your devices?" % (dev.name, dev.host),
-                                       detail=["  only from your own list - the device list stays as it is"]):
-                self.message("Nothing removed")
-                return
-            self.store.forget_device(dev.name)
-            if self.store.error:
-                self.message(self.store.error, error=True, seconds=10)
-                return
-            lst.remove_saved(dev)
-            self.message("Removed %s from your devices" % dev.name)
-            return
+        saved = dev.origin == "saved"
         # a hostname suggests its first label, an address nothing
-        name, error = ("" if dev.host.replace(".", "").isdigit() else dev.host.split(".")[0]), None
+        name = dev.name if saved else "" if dev.host.replace(".", "").isdigit() else dev.host.split(".")[0]
+        login, user, error = dev.login, dev.user or self.cfg.manual_user or self.cfg.user, None
         while True:
-            name = save_dialog(self.screen, dev.name, name, error)
-            if name is None:
-                self.message("Not saved")
+            choice = save_dialog(self.screen, dev.host, name, login, user, saved, error)
+            if choice is None:
+                self.message("Nothing changed" if saved else "Not saved")
                 return
-            taken = next((d for d in lst.loaded if d.key.lower() == name.lower()), None)
+            if choice == "forget":
+                self.forget_device(dev)
+                return
+            name, login, picked = choice
+            user = picked or user              # the User line keeps what you typed in it
+            taken = next((d for d in lst.loaded if d is not dev and d.key.lower() == name.lower()), None)
             if taken is None:
                 break
             error = "%s is taken already (%s)." % (name, "one of yours" if taken.origin == "saved" else "in the list")
-        self.store.save_device(dev.host, name, dev.user)
+        self.store.save_device(dev.host, name, login, picked, old=dev.name if saved else None)
         if self.store.error:
             self.message(self.store.error, error=True, seconds=10)
             return
-        lst.add_saved(dev.host, name, dev.user)
-        self.message("Saved %s (%s) to your devices - only you see it, ^N on it forgets it" % (name, dev.name),
-                     seconds=10)
+        lst.add_saved(dev.host, name, login, picked, old=dev if saved else None)
+        how = {"radius": "your login", "local": "the local account", "manual": "manual as %s" % picked}[login]
+        if saved:
+            self.message("Changed %s (%s, %s)" % (name, dev.host, how), seconds=10)
+        else:
+            self.message("Saved %s (%s, %s) to your devices - only you see it, ^N on it changes or forgets it"
+                         % (name, dev.host, how), seconds=10)
+
+    def forget_device(self, dev):
+        if not self.screen.confirm("Forget saved device", "Remove %s (%s) from your devices?" % (dev.name, dev.host),
+                                   detail=["  only from your own list - the device list stays as it is"]):
+            self.message("Nothing removed")
+            return
+        self.store.forget_device(dev.name)
+        if self.store.error:
+            self.message(self.store.error, error=True, seconds=10)
+            return
+        self.list.remove_saved(dev)
+        self.message("Removed %s from your devices" % dev.name)
 
     def show_details(self, dev):
         lines = details_lines(self.screen.th, dev, self.results, self.store.recent.get(dev.key),
@@ -628,8 +641,7 @@ class App(object):
             rows.append((key, label, "on" if on else "off", extra))
         rows.append(("p", "Forget the stored password now", "held" if self.creds.held else "not held",
                      " + ".join(["+ local account"] * bool(self.creds.local)
-                                + ["terminal server account"] * bool(self.creds.server)
-                                + ["login of %s" % u for u in sorted(self.creds.others)])))
+                                + ["terminal server account"] * bool(self.creds.server))))
         written = logs_since(cfg, cfg.started)
         rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
         return rows

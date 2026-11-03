@@ -29,6 +29,10 @@
 # Pre-filled ssh username (default: your Linux user name; can be changed at login).
 #user =
 
+# Pre-filled user of a device you saved yourself with the login "manual" (Ctrl-N, you
+# type the password at the switch). Default: the user above. Changeable per device.
+#manual_user =
+
 # ssh program and extra options. Your options take precedence over TRuffle's.
 # Both are split into words like in a shell; quotes around the whole value are fine too.
 # A wrapper in front of ssh, with or without quotes:

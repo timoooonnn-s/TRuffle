@@ -14,24 +14,38 @@ from truffle.results import PING_UP, WAIT, Results
 
 class TestUserState(TempDir):
     def test_saved_devices(self):
-        """D55: your own devices - in your state dir only, 0600, a name saved again replaces."""
+        """D55, D56: your own devices with their login - in your state dir only, 0600, a
+        name saved again replaces, and so does a renamed one."""
         d = os.path.join(self.tmp, "state")
         st = state.UserState(d)
         st.save_device("10.1.2.3", "lab-box")
-        st.save_device("10.1.2.4", "lab-two", "admin")
-        st.save_device("10.1.2.5", "lab-box")
+        st.save_device("10.1.2.4", "lab-two", "manual", "admin")
+        st.save_device("10.1.2.5", "lab-box", "local")
+        st.save_device("10.1.2.6", "lab-three", "local", "ignored")     # a user only with manual
         self.assertEqual(state.UserState(d).load_saved(),
-                         [("10.1.2.4", "lab-two", "admin"), ("10.1.2.5", "lab-box", None)])
+                         [("10.1.2.4", "lab-two", "manual", "admin"), ("10.1.2.5", "lab-box", "local", None),
+                          ("10.1.2.6", "lab-three", "local", None)])
         self.assertEqual(os.stat(os.path.join(d, "saved")).st_mode & 0o777, 0o600)
         st.forget_device("lab-two")
-        self.assertEqual(st.load_saved(), [("10.1.2.5", "lab-box", None)])
+        st.save_device("10.1.2.6", "lab-3", "radius", old="lab-three")
+        self.assertEqual(st.load_saved(), [("10.1.2.5", "lab-box", "local", None), ("10.1.2.6", "lab-3", "radius", None)])
 
     def test_saved_rows_truffle_cannot_use_are_skipped(self):
         d = os.path.join(self.tmp, "state")
         os.makedirs(d)
         with open(os.path.join(d, "saved"), "w") as f:
-            f.write("garbage\n-oProxyCommand=x\tevil\n10.1.2.3\t\n10.1.2.4\tok\t-l\n10.1.2.5\tfine\n")
-        self.assertEqual(state.UserState(d).load_saved(), [("10.1.2.5", "fine", None)])
+            f.write("garbage\n-oProxyCommand=x\tevil\tradius\n10.1.2.3\t\tradius\n10.1.2.4\tok\tmanual\t-l\n"
+                    "10.1.2.6\tno-user\tmanual\n10.1.2.8\tx\tsudo\tbad user\n10.1.2.5\tfine\tlocal\n")
+        self.assertEqual(state.UserState(d).load_saved(), [("10.1.2.5", "fine", "local", None)])
+
+    def test_saved_rows_of_2_4_0_still_load(self):
+        """D56: 2.4.0 wrote host TAB name [TAB user] - your login, or user@ (now manual)."""
+        d = os.path.join(self.tmp, "state")
+        os.makedirs(d)
+        with open(os.path.join(d, "saved"), "w") as f:
+            f.write("10.1.2.3\tlab-box\n10.1.2.4\tlab-two\tadmin\n")
+        self.assertEqual(state.UserState(d).load_saved(),
+                         [("10.1.2.3", "lab-box", "radius", None), ("10.1.2.4", "lab-two", "manual", "admin")])
 
     def test_recent_persists(self):
         st = state.UserState(os.path.join(self.tmp, "state"))

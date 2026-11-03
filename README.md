@@ -81,7 +81,8 @@ echo "alias truffle='python3 $HOME/git/truffle/truffle'" >> ~/.bashrc
    you into the [console](#terminal-servers-console) of the switch behind it. **`Ctrl-Q`** brings you back.
 8. **`is:recent`** lists the devices you connected to, newest first - TRuffle remembers them by itself.
 9. **Not in the list?** Type the address - `10.1.2.3`, `sw-lab-17.example.net` or `admin@10.1.2.3` - and
-   press **Enter**. **`Ctrl-N`** [saves it](#devices-that-are-not-in-the-list) to your own list.
+   press **Enter**. **`Ctrl-N`** [saves it](#devices-that-are-not-in-the-list) to your own list - with the
+   local account or a manual login for a box without RADIUS.
 
 Filtering by a naming scheme — all the `-l1` switches, or the `w3` and `w4` ones — is what
 [patterns and `|`](#search) are for: `*-l1`, `w3|w4`.
@@ -178,7 +179,7 @@ From top to bottom:
 | `Tab` / `Shift-Tab` | mark / unmark a device for [several at once](#several-devices-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
 | `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay |
 | `Ctrl-E` | [export](#export) what the search shows, with the PING / SSH results, to a CSV in your home folder |
-| `Ctrl-N` | on an address you typed: [save it](#devices-that-are-not-in-the-list) to your own list. On one of yours (`*`): forget it (asks first) |
+| `Ctrl-N` | on an address you typed: [save it](#devices-that-are-not-in-the-list) to your own list, with its login (radius / local / manual). On one of yours (`*`): change its name and login, or `Ctrl-D` forgets it (asks first) |
 | `Ctrl-T` | back into the running [tmux session](#several-devices-at-once-tmux) |
 | `Ctrl-K` | close the running tmux sessions (asks first) |
 | `Ctrl-G` | [settings](#settings) for this session: session log, debug log, forget password, log files |
@@ -502,7 +503,7 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 |---|---|---|
 | `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
-| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) and [`user@` logins](#devices-that-are-not-in-the-list) too. Running sessions and tmux panes are untouched |
+| `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
 | `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
 | `ESC` | | close |
 
@@ -532,17 +533,37 @@ address in the search** and press **Enter**:
   (`10.99.0.11` in `10.99.0.110`), so Enter connects to what you typed. An address that **is** in the list
   shows that device instead; a hostname gets a row only when nothing in the list matches it.
 - **`ssh`, `ping` and `details` work** on it like on any device, with your login.
-- **`user@address`** (`admin@10.1.2.3`) connects as that user and asks for **its** password - not your
-  RADIUS one. It's kept in memory per user like yours (same lifetime, `Ctrl-G` `p` forgets it), and a
-  wrong one drops only that login. This works even for a device that is in the list.
+- **`user@address`** (`admin@10.1.2.3`) is a **manual** login: ssh logs in as that user and **you type
+  the password** at the switch - TRuffle neither asks nor keeps it. This works even for a device that is
+  in the list.
 - **`Ctrl-N` saves it** under a name you give (a hostname suggests its first part). It's then in the list
-  with a `*`, found by its name and by `is:saved`, can be marked for [tmux](#several-devices-at-once-tmux)
-  (a saved `admin@` gets admin's login in its pane), and is still there after a restart.
-  **`Ctrl-N` on it** forgets it again.
+  with a `*`, found by its name and by `is:saved`, can be marked for [tmux](#several-devices-at-once-tmux),
+  and is still there after a restart. **`Ctrl-N` on it** opens the same window again: change its name or
+  login, or **`Ctrl-D`** forgets it.
+- **Who logs in** is chosen in that window with `←` `→` on the **Login** line - for boxes without RADIUS:
+
+  ```
+  Address     10.99.0.12
+  Name        lab-box
+  Login       ‹ manual ›
+              ssh as the user below, you type the password
+  User        admin
+  ```
+
+  | Login | who | asked |
+  |---|---|---|
+  | `radius` | your RADIUS login, like every device in the list (the default) | once, like always |
+  | `local` | the switches' **local account** - the same one a [console](#terminal-servers-console) uses for the switch behind a terminal server | once, then kept like yours (`local: <user>` in the top bar, `Ctrl-G` `p` forgets it); a wrong one drops only it |
+  | `manual` | ssh as the **User** line, you type the password at the switch | never - nothing is kept |
+
+  The User line is pre-filled with `manual_user` from [`truffle.conf`](#configuration) (else your user
+  name). Devices in the list always use your RADIUS login; your normal login gets no extra step. In
+  [tmux](#several-devices-at-once-tmux) each pane gets its device's login: yours, the local account, or
+  none (you type it in that pane).
 - Saved devices are **yours only**: `~/.local/state/truffle/saved` (only readable by you). The shared
   device list (`data.csv`) is never written - add a device there for everyone.
-- A saved name that matches [`console_hosts`](#terminal-servers-console) makes it a terminal server; leave
-  out the `user@` then, the console window asks who logs in.
+- A saved name that matches [`console_hosts`](#terminal-servers-console) makes it a terminal server; give
+  it the login `radius` then (and leave out the `user@`), the console window asks who logs in.
 
 ## Recent devices
 

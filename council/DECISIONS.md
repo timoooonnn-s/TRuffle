@@ -1274,3 +1274,33 @@ Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dia
   CSV), the held logins, the handover, and two tmux UI runs: type -> connect -> save -> restart ->
   forget, and `labadmin@` alone and as a saved pane next to a normal switch.
 - `VERSION` **2.4.0**.
+
+## D56: Your own devices without RADIUS - local account or manual login (user, 2026-11-03)
+- User: "Add devices that don't have radius configured.  An alternative way of using another set of
+  credentials (local login) for those switches I want.  No extra steps for the normal login."  Asked and
+  decided by the user: chosen **in the save window**, with the **console's switch local account**, for
+  **your saved devices only** (`data.csv` devices always RADIUS) - and "also give me the option to
+  manually log in", **like the console window: radius / local / manual**.
+- *The window:* `Ctrl-N` gets **Login ‹ radius / local / manual ›** below the name (`←` `→`, typing on it
+  edits the name, like D54's).  `manual` shows a **User** line, pre-filled from the new `manual_user` in
+  `truffle.conf` (else `user`) - the user's "editable line, with a default in the cfg file".  `Ctrl-N` on
+  one of yours opens it again to **change** name and login; **`Ctrl-D`** there forgets it (asks first) -
+  `Ctrl-N` alone no longer forgets, a double press must not delete.
+- *local:* `Credentials.local`, the same account as for the switch behind a terminal server - asked once
+  ("Local account", "Your devices set to local - and consoles ..."), kept, `local:` in the top bar,
+  `Ctrl-G` `p`.  A wrong one drops only it, also from a tmux pane (`Actions.local_hosts`).
+- *manual:* ssh `-l USER`, no password: ssh asks and you type it.  TRuffle asks and keeps nothing; a
+  manual login cannot fail as "wrong password" (nothing was sent).
+- *`user@`* (the user: "user@ gives the manual user"): `admin@10.1.2.3` is a manual login as admin, typed
+  or saved.  D55's per-user logins (`Credentials.others`, `account_credentials`, `ask_account`) are gone.
+- *tmux:* the ticket carries the device's login - yours, the local account in its place, or for manual
+  only the user (`Handover.issue(login=, user=)`); `--pane-login` / `--pane-user` for the fallback and
+  the pane's note.  The own login is asked only when a `radius` device or a console needs it.
+- *Saved file:* `host TAB name TAB login [TAB user]`; 2.4.0's `host TAB name [TAB user]` still loads
+  (radius, or manual as that user).
+- *Tester:* the saved file (logins, rename, bad rows, 2.4.0 rows), the local account (dropped alone, pane
+  failure), the handover (local, manual, no local held = `ERR no login`, never yours), `manual_user`, the
+  list (typed `user@` = manual, a changed device keeps its mark), and three tmux UI runs: save -> restart
+  -> `Ctrl-D`; `local` alone then marked next to a normal switch (each pane its login); `labadmin@`
+  manual with ssh's own prompt -> saved -> changed to radius.
+- `VERSION` **2.5.0**.

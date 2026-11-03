@@ -51,7 +51,8 @@ class SwitchList(object):
             self.headers, self.delimiter = headers, report["delimiter"]
             self.fields = Fields(headers, columns)
             self.issues = data_issues(devices, report["lines"], report["issues"], picked["name"])
-        self.loaded += [self.make_device(name, host, "saved", user) for host, name, user in self.store.load_saved()]
+        self.loaded += [self.make_device(name, host, "saved", login, user)
+                        for host, name, login, user in self.store.load_saved()]
         self.measure()
         if keep is not None:
             keep = next((d for d in self.loaded if d.host == keep.host and d.name == keep.name), None)
@@ -63,9 +64,14 @@ class SwitchList(object):
                        for i, (_, label) in enumerate(self.columns)]
         self.widths += [width for _, width, _ in STATUS_COLUMNS]
 
-    def add_saved(self, host, name, user):
-        """A typed address was just saved: it joins the list, found by its name."""
-        dev = self.make_device(name, host, "saved", user)
+    def add_saved(self, host, name, login="radius", user=None, old=None):
+        """A typed address was just saved - or `old`, one of yours, changed: it joins the
+        list (in place of `old`), found by its name."""
+        dev = self.make_device(name, host, "saved", login, user)
+        if old is not None:
+            self.loaded = [d for d in self.loaded if d is not old]
+            if self.marked.pop(old.key, None) is not None:
+                self.marked[dev.key] = True
         self.loaded.append(dev)
         self.measure()
         self.query = name
@@ -78,15 +84,16 @@ class SwitchList(object):
         self.measure()
         self.apply_sort()
 
-    def make_device(self, name, host, origin, user=None):
+    def make_device(self, name, host, origin, login="radius", user=None):
         """A device that is not in the CSV: your saved one, or the address you typed."""
         values = {self.picked["name"]: name, self.picked["host"]: host}
-        return Device(values, host, name, [values.get(h, "") for h, _ in self.columns], origin, user)
+        return Device(values, host, name, [values.get(h, "") for h, _ in self.columns], origin, login, user)
 
     def typed_device(self, view):
         """The search as an address to connect to, or None (D55): a whole IPv4 address
         that no device has (it may still be part of one: 10.1.2.3 in 10.1.2.30), a
-        hostname nothing matches, or anything with user@ in front."""
+        hostname nothing matches, or anything with user@ in front - logged in to by hand
+        as that user (D56)."""
         target = typed_target(self.query)
         if target is None:
             return None
@@ -95,7 +102,8 @@ class SwitchList(object):
             return None
         if any(d.host.lower() == host.lower() and d.user == user for d in self.loaded):
             return None                          # there it is already: that row is the one
-        return self.make_device("%s@%s" % (user, host) if user else host, host, "typed", user)
+        return self.make_device("%s@%s" % (user, host) if user else host, host, "typed",
+                                "manual" if user else "radius", user)
 
     # -- what is shown ------------------------------------------------------------
 

@@ -142,7 +142,7 @@ class UiSmokeTest(unittest.TestCase):
 
     def test_an_address_not_in_the_list_connect_save_forget(self):
         """D55: typed in the search, connected with Enter, saved with ^N - only to your own
-        list, and back after a restart - then forgotten with ^N."""
+        list, and back after a restart - then forgotten in its ^N window (D56)."""
         self.keys("10.99.0.11", literal=True)
         self.wait_for("not in the list")
         self.keys("Enter")
@@ -155,6 +155,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Disconnected from 10.99.0.11")
         self.keys("C-n")
         self.wait_for("Save device")
+        self.assertIn("your RADIUS login", self.screen())           # the default: like the list
         self.keys("lab-box", literal=True)
         self.keys("Enter")
         self.wait_for("Saved lab-box")
@@ -165,41 +166,78 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("lab-box")
         self.assertIn("ok", [line for line in self.screen().splitlines() if "lab-box" in line][0])
         self.keys("C-n")
+        self.wait_for("^D forget")
+        self.keys("C-d")
         self.wait_for("Forget saved device")
         self.keys("y")
         self.wait_for("Removed lab-box")
 
-    def test_user_at_an_address_and_its_saved_pane_in_tmux(self):
-        """D55: labadmin@ logs in with labadmin's own password, not yours - alone, and
-        saved and marked next to a normal switch in one tmux session."""
-        self.keys("labadmin@10.99.0.12", literal=True)
-        self.wait_for("ssh as labadmin")
+    def test_a_saved_device_with_the_local_account_alone_and_in_tmux(self):
+        """D56: Login <local> - the switches' local account, asked once, logs in there
+        instead of yours; marked next to a normal switch each pane gets its own login."""
+        self.keys("10.99.0.12", literal=True)
+        self.wait_for("not in the list")
+        self.keys("C-n")
+        self.wait_for("Save device")
+        self.keys("lab-box", literal=True)
+        self.keys("Down", "Right")                      # radius -> local
+        self.wait_for("the switches' local account")
         self.keys("Enter")
-        self.wait_for("For labadmin@10.99.0.12 only")
+        self.wait_for("Saved lab-box")
+        self.keys("Enter")
+        self.wait_for("Your devices set to local")      # the local account window, not yours
+        self.keys("labadmin", literal=True)
+        self.keys("Tab")
         self.keys("lab123", literal=True)
         self.keys("Enter")
         self.wait_for("FAKE-SW:1>")
         self.keys("exit", literal=True)
         self.keys("Enter")
-        self.wait_for("Disconnected from labadmin@10.99.0.12")
-        self.keys("C-n")
-        self.wait_for("Save device")
-        self.keys("lab-box", literal=True)
-        self.keys("Enter")
-        self.wait_for("Saved lab-box")
+        self.wait_for("Disconnected from lab-box")
+        self.assertIn("local: labadmin", self.screen())
         self.keys("Tab")
         self.keys("C-u")
         self.keys("fake-good", literal=True)
         self.keys("Tab")
         self.wait_for("2 marked")
         self.keys("Enter")
-        self.wait_for("Username")                  # yours, for fake-good - labadmin's is kept
+        self.wait_for("Username")                  # yours, for fake-good - the local account is kept
+        self.assertIn("asked once per session", self.screen())
         self.keys("secret", literal=True)
         self.keys("Enter")
         session = self.wait_for_session()
         self.wait_in_panes(session, "FAKE-SW:1>")
         seen = [tmux("capture-pane", "-p", "-t", p) for p in self.panes(session)]
-        self.assertEqual(sorted("labadmin@10.99.0.12" in s for s in seen), [False, True])
+        self.assertEqual(sorted("as labadmin" in s for s in seen), [False, True])
+
+    def test_user_at_an_address_is_a_manual_login_saved_and_changed(self):
+        """D56: labadmin@ - ssh as labadmin, you type the password at the switch, TRuffle
+        asks and keeps nothing; saved with that user, then changed in its ^N window."""
+        self.keys("labadmin@10.99.0.13", literal=True)
+        self.wait_for("manual login as labadmin")
+        self.keys("Enter")
+        self.wait_for("labadmin@10.99.0.13's password:")       # ssh's own prompt
+        self.keys("lab123", literal=True)
+        self.keys("Enter")
+        self.wait_for("FAKE-SW:1>")
+        self.keys("exit", literal=True)
+        self.keys("Enter")
+        self.wait_for("Disconnected from labadmin@10.99.0.13")
+        self.keys("C-n")
+        self.wait_for("Save device")
+        self.assertIn("ssh as the user below", self.screen())
+        self.assertIn("labadmin", self.screen())
+        self.keys("lab-box", literal=True)
+        self.keys("Enter")
+        self.wait_for("Saved lab-box (10.99.0.13, manual as labadmin)")
+        self.keys("C-n")
+        self.wait_for("^D forget")
+        self.keys("Down", "Left", "Left")                 # manual -> local -> radius
+        self.wait_for("your RADIUS login, like")
+        self.keys("Enter")
+        self.wait_for("Changed lab-box (10.99.0.13, your login)")
+        with open(os.path.join(self.tmp, ".local", "state", "truffle", "saved")) as f:
+            self.assertEqual(f.read(), "10.99.0.13\tlab-box\tradius\n")
 
     def test_terminal_server_console_and_the_log_paths(self):
         """A terminal server row: line dialog, both logins typed, Ctrl-Q back after the

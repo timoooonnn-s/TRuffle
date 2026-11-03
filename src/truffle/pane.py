@@ -2,8 +2,9 @@
 record the outcome, then the pane closes.  With --pane-console LINE LOGIN the pane is one
 line of a terminal server (D51): ssh as user:<port>, then the switch's login behind it.
 The user:<port> login is yours or the terminal server's local account (D54) - the ticket
-holds the one to use, --pane-server-login only says which for the note.  --pane-user: a
-device saved as user@host (D55), logged in as that user."""
+holds the one to use, --pane-server-login only says which for the note.  --pane-login: a
+saved device that takes the switch's local account or a manual login (D56), with
+--pane-user its ssh user for when the ticket cannot be fetched."""
 
 import json
 import os
@@ -29,9 +30,10 @@ def fetch_login(socket_path, ticket):
     return login
 
 
-def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="radius", user=None):
+def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="radius", login_kind="radius",
+              user=None):
     """console: (line, login) - this pane is that line of the terminal server `name`.
-    user: the device's own ssh user, if it has one."""
+    login_kind / user: a saved device's login and, unless it is yours, its ssh user."""
     notes = Notes(os.environ.get("TERM", "dumb") not in ("", "dumb"), CHARSETS[cfg.charset]["gt"])
     close = "close this pane"
     if not valid_host(host):
@@ -44,9 +46,12 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="r
     try:
         login = fetch_login(socket_path, ticket)
     except (OSError, ValueError, KeyError) as e:
-        problems += ["Could not get the login from TRuffle (%s)." % e,
-                     "Connecting anyway - ssh will ask you for the password."]
+        if login_kind != "manual":            # manual: there was no password to fetch
+            problems += ["Could not get the login from TRuffle (%s)." % e,
+                         "Connecting anyway - ssh will ask you for the password."]
     user, password = login["user"], login.get("password") or None
+    if login_kind == "manual":
+        problems.append("Manual login: you type the password for %s at the switch." % user)
     label, ssh_user, switch_login = name, user, None
     if console:
         line, mode = int(console[0]), console[1]
@@ -75,7 +80,8 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="r
         # next switch as well - the socket is already closed by now.
         store.note_auth_failure(host)
         notes.ask("Login failed on %s - wrong password?" % label,
-                  "TRuffle will ask for the password again.", "Press any key to %s ..." % close)
+                  "TRuffle will ask for the %s again." % ("local account" if login_kind == "local" else "password"),
+                  "Press any key to %s ..." % close)
     elif result.prompt_missed:
         notes.ask("No password prompt recognised on %s - you had to type it." % label,
                   "Run TRuffle with --debug and connect again to see what the switch sent.",

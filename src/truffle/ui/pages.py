@@ -39,7 +39,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "ping:down  ssh:failed", "results: up down wait / ok failed, or none"),
         ("item", "is:recent  is:marked", "connected to (newest first), marked"),
         ("item", "10.1.2.3  admin@sw1.lab.net", "not in the list: the top row connects to it, ^N saves it"),
-        ("item", "is:saved", "your own saved devices (* in front)"),
+        ("item", "is:saved", "your own devices (* in front); ^N: login radius / local / manual"),
         ("section", "Commands"),
         ("item", "ssh", "connect; with 2+ marked: one tmux pane each (max %d)" % MAX_PANES),
         ("item", "", "the password is kept in memory only, forgotten %s" % lifetime),
@@ -89,10 +89,10 @@ def details_lines(th, dev, results, last_connected, width):
         text = results.get(kind, dev.host) or "not checked"
         return text + ("   (%s)" % when(stamp) if stamp else "")
     values = list(dev.values.items())
-    if dev.user:
-        values.append(("ssh user", "%s (not your login)" % dev.user))
     if dev.origin != "csv":
-        values.append(("From", "your own devices (^N forgets it)" if dev.origin == "saved"
+        values.append(("Login", {"radius": "your RADIUS login", "local": "the switches' local account",
+                                  "manual": "manual - ssh as %s, you type the password" % dev.user}[dev.login]))
+        values.append(("From", "your own devices (^N changes or forgets it)" if dev.origin == "saved"
                        else "typed in the search - not in the list (^N saves it)"))
     values += [("Ping", result("ping")), ("SSH (last try)", result("ssh"))]
     for i, line in enumerate(textwrap.wrap(results.why("ssh", dev.host), max(20, width - 24))[:4]):

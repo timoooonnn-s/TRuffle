@@ -1,7 +1,7 @@
-"""The logins TRuffle holds in memory: your own, a switch's local account for the console
-behind a terminal server, a terminal server's own local account (lab terminal servers
-without RADIUS, D54), and the logins of devices saved or typed as user@host (D55).  Never
-written anywhere, gone when TRuffle exits."""
+"""The logins TRuffle holds in memory: your own, a switch's local account (for the console
+behind a terminal server, and for your saved devices without RADIUS: D56), and a terminal
+server's own local account (lab terminal servers without RADIUS, D54).  Never written
+anywhere, gone when TRuffle exits."""
 
 import time
 
@@ -29,16 +29,15 @@ class Login(object):
 
 
 class Credentials(object):
-    """`own` logs you in everywhere; `local` is a switch's local account (console only);
-    `server` a terminal server's local account; `others` the login per user of user@host
-    devices.  Each expires `lifetime` minutes after it was typed (0 = when TRuffle exits)."""
+    """`own` logs you in everywhere; `local` is a switch's local account (consoles, and
+    saved devices set to it); `server` a terminal server's local account.  Each expires
+    `lifetime` minutes after it was typed (0 = when TRuffle exits)."""
 
     def __init__(self, lifetime):
         self.lifetime = lifetime
         self.own = None
         self.local = None
         self.server = None
-        self.others = {}               # user of a user@host device -> Login
         self.last_user = ""            # pre-filled in the login dialog after a wipe
         self.last_local_user = ""
         self.last_server_user = ""
@@ -55,30 +54,26 @@ class Credentials(object):
         self.server = Login(user, password)
         self.last_server_user = user
 
-    def set_other(self, account, user, password):
-        self.others[account] = Login(user, password)
-
     @property
     def held(self):
-        return self.own is not None or self.local is not None or self.server is not None or bool(self.others)
+        return self.own is not None or self.local is not None or self.server is not None
 
     def forget(self):
         self.own = self.local = self.server = None
-        self.others = {}
 
     def forget_login(self, login):
         """Drop this one login, whichever it is - it was refused."""
         if login is self.own:
             self.own = None
+        if login is self.local:
+            self.local = None
         if login is self.server:
             self.server = None
-        self.others = dict((k, v) for k, v in self.others.items() if v is not login)
 
-    def forget_other_if_older(self, account, stamp):
-        """forget_if_older for a pane of a user@host device."""
-        login = self.others.get(account)
-        if login is not None and stamp >= login.typed_at:
-            del self.others[account]
+    def forget_local_if_older(self, stamp):
+        """forget_if_older for a pane of a saved device that takes the local account (D56)."""
+        if self.local is not None and stamp >= self.local.typed_at:
+            self.local = None
             return True
         return False
 
@@ -99,7 +94,7 @@ class Credentials(object):
 
     def expire(self, now=None):
         """Forget what is older than the lifetime.  Returns the names of what went:
-        a subset of ["password", "local account", "terminal server account", "login of USER"]."""
+        a subset of ["password", "local account", "terminal server account"]."""
         now = time.time() if now is None else now
         gone = []
         if self.own is not None and creds_expired(now, self.own.typed_at, self.lifetime):
@@ -111,8 +106,4 @@ class Credentials(object):
         if self.server is not None and creds_expired(now, self.server.typed_at, self.lifetime):
             self.server = None
             gone.append("terminal server account")
-        for account, login in sorted(self.others.items()):
-            if creds_expired(now, login.typed_at, self.lifetime):
-                del self.others[account]
-                gone.append("login of %s" % account)
         return gone

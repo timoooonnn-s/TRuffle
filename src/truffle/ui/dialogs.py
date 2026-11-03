@@ -1,11 +1,11 @@
-"""The dialog windows: login, terminal-server line, saving a typed address, settings.  Each one draws on a
+"""The dialog windows: login, terminal-server line, your own devices, settings.  Each one draws on a
 Screen, reads keys until it is done and returns what was chosen - no TRuffle state."""
 
 import textwrap
 
 from ..config import valid_user
 from ..console import console_user, parse_console_lines
-from ..inventory import clean
+from ..inventory import DEVICE_LOGINS, clean
 from ..state import CONSOLE_MODES, SERVER_MODES
 from .draw import fit, put
 
@@ -27,18 +27,18 @@ def edit_field(text, key, keep=None, limit=None):
     return (text + added)[:limit] if limit else text + added
 
 
-def login_dialog(screen, user, local_for=None, error=None, server=None, local_server=None, account_for=None):
+def login_dialog(screen, user, local_for=None, error=None, server=None, local_server=None, local_device=None):
     """Ask user + password.  Returns (user, password or None) or None on ESC.
     local_for: the terminal server name - then it asks for a switch's local account.
     server: the terminal server this RADIUS login is asked for.
     local_server: the terminal server whose OWN local account it asks for (D54).
-    account_for: the user@host this login is for - not your RADIUS login (D55)."""
+    local_device: the same switch local account, for your devices set to it (D56)."""
     entry = [user or "", ""]
     field = 1 if entry[0] else 0
     scr, th, sym = screen.scr, screen.th, screen.sym
     which = ("Only the switch - not the terminal server in front of it." if local_for
              else "Only the terminal server - the switch behind it has its own login." if local_server
-             else "For %s only - not your RADIUS login." % account_for if account_for
+             else "Your devices set to local - and consoles with a local switch login." if local_device
              else "For the terminal server %s." % server if server else "")
     while True:
         bw, bh = min(66, scr.getmaxyx()[1] - 6), 14 if which else 13
@@ -46,8 +46,8 @@ def login_dialog(screen, user, local_for=None, error=None, server=None, local_se
             y0, x0 = screen.draw_window("Local account", "switch behind %s" % local_for, bh, bw)
         elif local_server:
             y0, x0 = screen.draw_window("Local account", "terminal server %s" % local_server, bh, bw)
-        elif account_for:
-            y0, x0 = screen.draw_window("Login", "as %s" % entry[0], bh, bw)
+        elif local_device:
+            y0, x0 = screen.draw_window("Local account", local_device, bh, bw)
         elif server:
             y0, x0 = screen.draw_window("Login", "your RADIUS login", bh, bw)
         else:
@@ -91,38 +91,68 @@ def login_dialog(screen, user, local_for=None, error=None, server=None, local_se
             entry[field] = entry[field] if edited is None else edited
 
 
-def save_dialog(screen, address, name, error=None):
-    """The name for an address you typed in the search, saved to your own list (D55).
-    Returns the name, or None on ESC."""
+def save_dialog(screen, address, name, login, user, saved=False, error=None):
+    """One of your own devices (D55, D56): its name and who logs in - your RADIUS login,
+    the switches' local account, or manual (ssh as `user`, you type the password).  Up /
+    Down / Tab move, Left / Right change the login, typing on it edits the name.  saved: it is in your list already,
+    ^D forgets it.  Returns (name, login, user or None), "forget", or None on ESC."""
+    li = DEVICE_LOGINS.index(login) if login in DEVICE_LOGINS else 0
+    field = 0                            # 0 name, 1 login, 2 user (manual only)
+    entry = [name, user or ""]
     scr, th, sym = screen.scr, screen.th, screen.sym
     while True:
-        bw, bh = min(66, scr.getmaxyx()[1] - 6), 12
-        y0, x0 = screen.draw_window("Save device", "your own list", bh, bw)
+        login = DEVICE_LOGINS[li]
+        manual = login == "manual"
+        bw, bh = min(66, scr.getmaxyx()[1] - 6), 15
+        y0, x0 = screen.draw_window("Device" if saved else "Save device", "your own list", bh, bw)
         fw = max(6, bw - 18)
         put(scr, y0 + 2, x0 + 3, "Address", th.win)
         put(scr, y0 + 2, x0 + 15, address[:fw], th.win_label)
-        put(scr, y0 + 4, x0 + 3, "Name", th.win_label)
-        shown = name[-(fw - 2):]
-        put(scr, y0 + 4, x0 + 14, " " + shown.ljust(fw - 1), th.field)
-        put(scr, y0 + 4, x0 + 15 + len(shown), " ", th.cursor)
+        for i, (label, y) in enumerate((("Name", 4), ("User", 8))):
+            if i and not manual:
+                continue
+            active = field == i * 2
+            put(scr, y0 + y, x0 + 3, label, th.win_label if active else th.win)
+            shown = entry[i][-(fw - 2):]
+            put(scr, y0 + y, x0 + 14, " " + shown.ljust(fw - 1), th.field if active else th.field_idle)
+            if active:
+                put(scr, y0 + y, x0 + 15 + len(shown), " ", th.cursor)
+        put(scr, y0 + 6, x0 + 3, "Login", th.win_label if field == 1 else th.win)
+        put(scr, y0 + 6, x0 + 14, " %s %s %s" % (sym["lt"], login.ljust(6), sym["gt"]),
+            th.field if field == 1 else th.field_idle)
+        what = {"radius": "your RADIUS login, like the devices in the list",
+                "local": "the switches' local account - asked once, then kept",
+                "manual": "ssh as the user below, you type the password"}[login]
+        put(scr, y0 + 7, x0 + 15, what[:bw - 18], th.win_hint)
         if error:
-            put(scr, y0 + 6, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
-        put(scr, y0 + 7, x0 + 3, "Only for you - the device list stays as it is."[:bw - 6], th.win_hint)
-        put(scr, y0 + 8, x0 + 3, ("Search finds it by its name %s ^N on it forgets it" % sym["sep"])[:bw - 6],
-            th.win_hint)
-        screen.draw_keys(y0 + bh - 2, x0 + 3, (("Enter", "save"), ("ESC", "cancel")))
+            put(scr, y0 + 10, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
+        put(scr, y0 + 11, x0 + 3, "Only for you - the device list stays as it is."[:bw - 6], th.win_hint)
+        keys = [("Enter", "save"), ("Tab", "next"), (sym["lr"], "login")]
+        screen.draw_keys(y0 + bh - 2, x0 + 3, keys + ([("^D", "forget")] if saved else []) + [("ESC", "cancel")])
         scr.refresh()
 
         key = screen.read_key(-1)
         if key == "ESC":
             return None
-        if key == "ENTER":
-            if clean(name):
-                return clean(name)
-            error = "Please enter a name."
+        if key == "CTRL_D" and saved:
+            return "forget"
+        if key in ("LEFT", "RIGHT") and field == 1:
+            li = (li + (-1 if key == "LEFT" else 1)) % len(DEVICE_LOGINS)
+        elif key in ("TAB", "DOWN", "BTAB", "UP"):
+            field = (field + (-1 if key in ("BTAB", "UP") else 1)) % (3 if manual else 2)
+        elif key == "ENTER":
+            if not clean(entry[0]):
+                error, field = "Please enter a name.", 0
+            elif manual and not valid_user(entry[1]):
+                error, field = "Please enter the user ssh logs in as.", 2
+            else:
+                return clean(entry[0]), login, entry[1] if manual else None
         else:
-            edited = edit_field(name, key, limit=64)
-            name = name if edited is None else edited
+            # typing on the login row goes to the name, like on the console window's (D54)
+            edited = edit_field(entry[field // 2 if field != 1 else 0], key, limit=64)
+            if edited is not None:
+                field = field if field != 1 else 0
+                entry[field // 2], error = edited, None
 
 
 def console_dialog(screen, cfg, servers, mode, user, local_user, others=0, server_mode="radius",

@@ -267,15 +267,19 @@ class TestTypedAndSavedDevices(TempDir):
         lst = self.make()
         lst.set_query("admin@10.0.0.1")
         dev = lst.selected()
-        self.assertEqual((dev.origin, dev.user, dev.host, dev.name), ("typed", "admin", "10.0.0.1", "admin@10.0.0.1"))
+        self.assertEqual((dev.origin, dev.login, dev.user, dev.host, dev.name),
+                         ("typed", "manual", "admin", "10.0.0.1", "admin@10.0.0.1"))     # D56: you type the password
+        lst.set_query("10.0.0.9")
+        self.assertEqual((lst.selected().login, lst.selected().user), ("radius", None))
 
     def test_saved_devices_join_the_list_and_can_be_forgotten(self):
         lst = self.make()
-        lst.store.save_device("10.0.0.9", "lab-box", "admin")
+        lst.store.save_device("10.0.0.9", "lab-box", "manual", "admin")
         lst.load()
         lst.set_query("is:saved")
         dev = lst.selected()
-        self.assertEqual((dev.name, dev.host, dev.user, dev.origin), ("lab-box", "10.0.0.9", "admin", "saved"))
+        self.assertEqual((dev.name, dev.host, dev.login, dev.user, dev.origin),
+                         ("lab-box", "10.0.0.9", "manual", "admin", "saved"))
         lst.toggle_mark(dev)
         self.assertEqual([d.name for d in lst.marked_devices()], ["lab-box"])
         lst.set_query("admin@10.0.0.9")                         # saved like that: no typed row
@@ -288,10 +292,20 @@ class TestTypedAndSavedDevices(TempDir):
     def test_saving_shows_it_under_its_name(self):
         lst = self.make()
         lst.set_query("10.0.0.9")
-        dev = lst.add_saved("10.0.0.9", "lab-box-with-a-long-name", None)
+        dev = lst.add_saved("10.0.0.9", "lab-box-with-a-long-name")
         self.assertIs(lst.selected(), dev)
         self.assertEqual(lst.query, "lab-box-with-a-long-name")
         self.assertGreaterEqual(lst.widths[0], len("lab-box-with-a-long-name"))
+
+    def test_a_changed_device_takes_the_place_of_the_old_one_with_its_mark(self):
+        """D56: ^N on one of yours changes its name and login."""
+        lst = self.make()
+        old = lst.add_saved("10.0.0.9", "lab-box")
+        lst.toggle_mark(old)
+        new = lst.add_saved("10.0.0.9", "lab-1", "local", old=old)
+        self.assertEqual([(d.name, d.login) for d in lst.loaded if d.origin == "saved"], [("lab-1", "local")])
+        self.assertEqual(lst.marked_devices(), [new])
+        self.assertIs(lst.selected(), new)
 
     def test_without_a_device_list_typed_and_saved_still_work(self):
         conf = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)

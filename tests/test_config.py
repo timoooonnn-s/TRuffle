@@ -33,10 +33,12 @@ class TestConfig(TempDir):
         self.assertEqual(cfg.columns, [("Name", "Name"), ("location", "Where")])
         self.assertTrue(cfg.session_log)
         self.assertEqual(cfg.user, "netadmin")
+        self.assertEqual(cfg.manual_user, "")          # the save window then offers `user` (D56)
 
     def test_unknown_option_and_bad_values(self):
         for body in ("[truffle]\ndatta = x\n", "[truffle]\nping_rate = lots\n",
-                     "[truffle]\nsession_log = maybe\n", "[other]\n", "[truffle]\nuser = -oProxyCommand=x\n"):
+                     "[truffle]\nsession_log = maybe\n", "[other]\n", "[truffle]\nuser = -oProxyCommand=x\n",
+                     "[truffle]\nmanual_user = -lroot\n"):
             conf = self.write("bad.conf", body)
             with self.assertRaises(config.ConfigError, msg=body):
                 config.load_config(args(config=conf))

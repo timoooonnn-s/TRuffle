@@ -24,6 +24,7 @@ DEFAULTS = {
     "data": "data.csv",
     "columns": "Name, IP, subnet, aliases:Alias, comment",
     "user": "",
+    "manual_user": "",
     "ssh_command": "ssh",
     "ssh_options": "",
     "connect_timeout": "10",
@@ -71,6 +72,7 @@ class Config:
     console_login: str          # "{user}:{port}"
     console_port_base: int
     console_login_wait: int
+    manual_user: str = ""       # pre-filled user of a saved device you log in to by hand (D56)
     debug: bool = False
     config_file: str = None     # --config FILE, passed on to tmux panes
     started: float = dataclasses.field(default_factory=time.time)   # logs since then are "this session's"
@@ -207,6 +209,8 @@ def load_config(args):
     user = raw["user"] or default_user()
     if user and not valid_user(user):
         raise ConfigError("user: '%s' is not a valid user name" % user)
+    if raw["manual_user"] and not valid_user(raw["manual_user"]):
+        raise ConfigError("manual_user: '%s' is not a valid user name" % raw["manual_user"])
     try:
         ssh_command = command_words(raw["ssh_command"], program=True) or ["ssh"]
         ssh_options = command_words(raw["ssh_options"])
@@ -239,6 +243,7 @@ def load_config(args):
         console_login=console_login,
         console_port_base=parse_int(raw["console_port_base"], "console_port_base", 0, 65000),
         console_login_wait=parse_int(raw["console_login_wait"], "console_login_wait", 10, 900),
+        manual_user=raw["manual_user"],
         debug=args.debug,
         config_file=args.config,
     )

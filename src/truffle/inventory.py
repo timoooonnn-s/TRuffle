@@ -44,6 +44,11 @@ def segments_of(text):
     return parts
 
 
+# Who logs in at a device you saved yourself (D56): your RADIUS login, the switch's local
+# account (the one the console window uses), or you by hand - ssh as a user, you type the password.
+DEVICE_LOGINS = ("radius", "local", "manual")
+
+
 def typed_target(text):
     """(user or None, host) when the search is one address to connect to (D55): a whole
     IPv4 address or a hostname with a dot, `user@` in front if you like.  None for
@@ -66,15 +71,16 @@ class Device(object):
     """One row of the switch list.  The lower-case cells and their segments are worked
     out once here, so the search does no per-keystroke preparation.  origin: "csv", one
     of your saved devices ("saved"), or the address you typed in the search ("typed", D55);
-    user: the ssh user it was saved or typed with (user@host), None = your login."""
-    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search", "origin", "user")
+    login: who logs in (DEVICE_LOGINS, D56) - "radius" for every CSV device; user: the ssh
+    user of a "manual" one, who types the password at the switch."""
+    __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search", "origin", "login", "user")
 
-    def __init__(self, values, host, name, cells, origin="csv", user=None):
+    def __init__(self, values, host, name, cells, origin="csv", login="radius", user=None):
         self.values = values                  # every CSV column, header -> value
         self.host = host                      # the ssh / ping target
         self.name = name                      # the switch name, or the host without one
         self.cells = cells                    # the visible columns, in table order
-        self.origin, self.user = origin, user
+        self.origin, self.login, self.user = origin, login, user
         self.lcells = [c.lower() for c in cells]
         self.lsegments = [segments_of(c) for c in self.lcells]
         self.search = "\x00".join(self.lcells)          # \x00: a word never matches across two columns
