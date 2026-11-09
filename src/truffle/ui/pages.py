@@ -9,7 +9,7 @@ from .. import CREDIT, TITLE, VERSION
 from ..console import ConsoleLogin
 from ..credentials import minutes_text
 from ..logs import keep_text
-from ..tmux import MAX_PANES
+from ..tmux import MAX_PANES, back_key
 from .theme import BANNER
 
 COMMANDS = ["ssh", "ping", "details", "help", "exit"]
@@ -49,7 +49,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "exit", "quit and forget the credentials"),
         ("item", "SSH column", "ok = you got logged in; Ctrl-C while connecting = failed"),
         ("section", "tmux (%s)" % ("on" if cfg.tmux else "off: tmux = yes in truffle.conf")),
-        ("item", "Ctrl-b d  ^T  ^K", "back here, back into tmux, close the sessions"),
+        ("item", "%s  ^T  ^K" % back_key(), "back here, back into tmux, close the sessions"),
         ("item", "^G l", "session log on/off, also for running panes"),
         ("section", "Terminal servers (%s)" % (", ".join(cfg.console_hosts) or "off")),
         ("item", "Enter (ssh)", "asks the lines (12 = port %d; several: 3 7 12 = one tmux pane each)"

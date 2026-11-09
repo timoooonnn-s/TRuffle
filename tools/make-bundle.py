@@ -22,6 +22,7 @@ Python 3.8+, standard library only.
 """
 
 import base64
+import gzip
 import hashlib
 import io
 import os
@@ -204,16 +205,25 @@ def existing_sha(path):
 def main():
     force = "--force" in sys.argv
     files = project_files()
-    buf = io.BytesIO()
-    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+    # The same files must give the same bundle, byte for byte: the checksum below is what
+    # tells a rebuild from a changed one ("already up to date" vs. "DIFFERENT contents"),
+    # and it has to be the checksum of the payload, because the extractor verifies exactly
+    # that.  So neither timestamp may get in: not the file times in the tar, and not the
+    # build time gzip writes into its header.
+    tarred = io.BytesIO()
+    with tarfile.open(fileobj=tarred, mode="w") as tar:
         for name in files:
             path = os.path.join(ROOT, name)
             info = tar.gettarinfo(path, arcname=name)
             info.uid = info.gid = 0
             info.uname = info.gname = ""
+            info.mtime = 0
             info.mode = 0o755 if os.access(path, os.X_OK) else 0o644
             with open(path, "rb") as f:
                 tar.addfile(info, f)
+    buf = io.BytesIO()
+    with gzip.GzipFile(fileobj=buf, mode="wb", compresslevel=9, mtime=0) as gz:
+        gz.write(tarred.getvalue())
     raw = buf.getvalue()
     payload = base64.b64encode(raw).decode("ascii")
     ver = version()

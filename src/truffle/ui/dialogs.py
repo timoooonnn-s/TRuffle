@@ -91,17 +91,20 @@ def login_dialog(screen, user, local_for=None, error=None, server=None, local_se
             entry[field] = entry[field] if edited is None else edited
 
 
-def save_dialog(screen, address, name, login, user, saved=False, error=None):
+def save_dialog(screen, address, name, login, user, saved=False, error=None, is_console=lambda name: False):
     """One of your own devices (D55, D56): its name and who logs in - your RADIUS login,
     the switches' local account, or manual (ssh as `user`, you type the password).  Up /
-    Down / Tab move, Left / Right change the login, typing on it edits the name.  saved: it is in your list already,
-    ^D forgets it.  Returns (name, login, user or None), "forget", or None on ESC."""
+    Down / Tab move, Left / Right change the login, typing on it edits the name.  saved:
+    it is in your list already, ^D forgets it.  A name is_console() calls a terminal
+    server has no login line - the console window asks who logs in there.  Returns
+    (name, login, user or None), "forget", or None on ESC."""
     li = DEVICE_LOGINS.index(login) if login in DEVICE_LOGINS else 0
     field = 0                            # 0 name, 1 login, 2 user (manual only)
     entry = [name, user or ""]
     scr, th, sym = screen.scr, screen.th, screen.sym
     while True:
-        login = DEVICE_LOGINS[li]
+        console = is_console(clean(entry[0]))
+        login = "radius" if console else DEVICE_LOGINS[li]
         manual = login == "manual"
         bw, bh = min(66, scr.getmaxyx()[1] - 6), 15
         y0, x0 = screen.draw_window("Device" if saved else "Save device", "your own list", bh, bw)
@@ -117,17 +120,21 @@ def save_dialog(screen, address, name, login, user, saved=False, error=None):
             put(scr, y0 + y, x0 + 14, " " + shown.ljust(fw - 1), th.field if active else th.field_idle)
             if active:
                 put(scr, y0 + y, x0 + 15 + len(shown), " ", th.cursor)
-        put(scr, y0 + 6, x0 + 3, "Login", th.win_label if field == 1 else th.win)
-        put(scr, y0 + 6, x0 + 14, " %s %s %s" % (sym["lt"], login.ljust(6), sym["gt"]),
-            th.field if field == 1 else th.field_idle)
-        what = {"radius": "your RADIUS login, like the devices in the list",
-                "local": "the switches' local account - asked once, then kept",
-                "manual": "ssh as the user below, you type the password"}[login]
-        put(scr, y0 + 7, x0 + 15, what[:bw - 18], th.win_hint)
+        if console:
+            put(scr, y0 + 6, x0 + 3, "Login", th.win)
+            put(scr, y0 + 6, x0 + 15, "terminal server - the console window asks"[:bw - 18], th.win_hint)
+        else:
+            put(scr, y0 + 6, x0 + 3, "Login", th.win_label if field == 1 else th.win)
+            put(scr, y0 + 6, x0 + 14, " %s %s %s" % (sym["lt"], login.ljust(6), sym["gt"]),
+                th.field if field == 1 else th.field_idle)
+            what = {"radius": "your RADIUS login, like the devices in the list",
+                    "local": "the switches' local account - asked once, then kept",
+                    "manual": "ssh as the user below, you type the password"}[login]
+            put(scr, y0 + 7, x0 + 15, what[:bw - 18], th.win_hint)
         if error:
             put(scr, y0 + 10, x0 + 3, (sym["dot"] + " " + error)[:bw - 6], th.win_err)
         put(scr, y0 + 11, x0 + 3, "Only for you - the device list stays as it is."[:bw - 6], th.win_hint)
-        keys = [("Enter", "save"), ("Tab", "next"), (sym["lr"], "login")]
+        keys = [("Enter", "save")] + ([] if console else [("Tab", "next"), (sym["lr"], "login")])
         screen.draw_keys(y0 + bh - 2, x0 + 3, keys + ([("^D", "forget")] if saved else []) + [("ESC", "cancel")])
         scr.refresh()
 
@@ -139,7 +146,7 @@ def save_dialog(screen, address, name, login, user, saved=False, error=None):
         if key in ("LEFT", "RIGHT") and field == 1:
             li = (li + (-1 if key == "LEFT" else 1)) % len(DEVICE_LOGINS)
         elif key in ("TAB", "DOWN", "BTAB", "UP"):
-            field = (field + (-1 if key in ("BTAB", "UP") else 1)) % (3 if manual else 2)
+            field = 0 if console else (field + (-1 if key in ("BTAB", "UP") else 1)) % (3 if manual else 2)
         elif key == "ENTER":
             if not clean(entry[0]):
                 error, field = "Please enter a name.", 0

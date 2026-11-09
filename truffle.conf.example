@@ -50,6 +50,7 @@
 # to switch it on just for this session.
 #session_log = no
 # A relative path is relative to THIS config file, like `data`.
+# Unset: the `logs` folder inside state_dir, so it follows state_dir and XDG_STATE_HOME.
 #log_dir = ~/.local/state/truffle/logs
 # Session logs nobody has written to for this many days are deleted when TRuffle starts.
 # Only TRuffle's own log files in log_dir; move a log elsewhere to keep it. 0 = keep forever.

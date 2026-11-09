@@ -29,7 +29,7 @@ DEFAULTS = {
     "ssh_options": "",
     "connect_timeout": "10",
     "session_log": "no",
-    "log_dir": "~/.local/state/truffle/logs",
+    "log_dir": "",              # unset: <state_dir>/logs, so it follows state_dir
     "log_keep_days": "180",
     "state_dir": "",
     "ping_timeout": "1",
@@ -61,7 +61,7 @@ class Config:
     ssh_options: list
     connect_timeout: int
     session_log: bool
-    log_dir: str
+    log_dir: str                # unset in truffle.conf: <state_dir>/logs
     log_keep_days: int          # session logs older than this are deleted at start, 0 = never
     state_dir: str
     ping_timeout: int
@@ -206,6 +206,11 @@ def load_config(args):
     state_home = os.environ.get("XDG_STATE_HOME") or os.path.join(os.path.expanduser("~"), ".local", "state")
     state_dir = (resolve_path(raw["state_dir"], bases.get("state_dir", INSTALL_DIR)) if raw["state_dir"]
                  else os.path.join(state_home, "truffle"))
+    # Unset, the session logs live in the state folder: XDG_STATE_HOME and `state_dir`
+    # then move them too.  The old hard-coded default moved the state and left the logs
+    # behind in ~/.local/state/truffle/logs.
+    log_dir = (resolve_path(raw["log_dir"], bases.get("log_dir", INSTALL_DIR)) if raw["log_dir"]
+               else os.path.join(state_dir, "logs"))
     user = raw["user"] or default_user()
     if user and not valid_user(user):
         raise ConfigError("user: '%s' is not a valid user name" % user)
@@ -232,7 +237,7 @@ def load_config(args):
         ssh_options=ssh_options,
         connect_timeout=parse_int(raw["connect_timeout"], "connect_timeout", 1, 300),
         session_log=args.log or parse_bool(raw["session_log"], "session_log"),
-        log_dir=resolve_path(raw["log_dir"], bases.get("log_dir", INSTALL_DIR)),
+        log_dir=log_dir,
         log_keep_days=parse_int(raw["log_keep_days"], "log_keep_days", 0, 3650),
         state_dir=state_dir,
         ping_timeout=parse_int(raw["ping_timeout"], "ping_timeout", 1, 30),

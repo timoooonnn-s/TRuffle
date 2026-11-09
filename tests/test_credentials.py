@@ -45,6 +45,29 @@ class TestLocalAccountForDevices(unittest.TestCase):
         self.assertIsNotNone(c.own)
         self.assertEqual(c.last_local_user, "labadmin")
 
+    def test_a_pane_failure_on_a_radius_device_keeps_the_local_accounts(self):
+        """D54's rule both ways round: the RADIUS password that failed went, and used to
+        take the switches' local account and the terminal server's with it."""
+        c = credentials.Credentials(60)
+        c.set_own("timmy", "wrong")
+        c.set_local("labadmin", "lab123")
+        c.set_server("labts", "lab123")
+        self.assertTrue(c.forget_if_older(c.own.typed_at))
+        self.assertIsNone(c.own)
+        self.assertIsNotNone(c.local)
+        self.assertIsNotNone(c.server)
+
+    def test_expiry_names_exactly_what_it_dropped(self):
+        """Each login expires on its own clock, so a just-typed local account survives
+        the password typed ten hours ago - and `expire` says what really went."""
+        c = credentials.Credentials(60)
+        c.set_own("timmy", "secret")
+        c.set_local("labadmin", "lab123")
+        c.local.typed_at = c.own.typed_at + 59 * 60
+        self.assertEqual(c.expire(c.own.typed_at + 61 * 60), ["password"])
+        self.assertIsNone(c.own)
+        self.assertIsNotNone(c.local)
+
     def test_a_pane_failure_drops_only_it(self):
         c = credentials.Credentials(60)
         c.set_own("timmy", "secret")

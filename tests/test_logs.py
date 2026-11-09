@@ -6,7 +6,7 @@ import shutil
 import subprocess
 import unittest
 
-from support import TempDir, args, log_cfg
+from support import PrivateTmux, TempDir, args, log_cfg
 from truffle import config, logs, session, tmux
 
 
@@ -84,6 +84,29 @@ class TestSessionLog(TempDir):
         self.assertNotIn("#{", command.replace("##", ""))
         self.assertNotIn("#(", command.replace("##", ""))
         self.assertEqual(shlex.split(command.replace("##", "#"))[-1], header)
+
+    def test_tmux_formats_in_a_pane_title_are_not_expanded(self):
+        """Same class as above, the half that was missed: `select-pane -T` expands formats
+        as well, so 'sw #{pane_id}' from the CSV showed up as 'sw %0' on the pane border."""
+        title = tmux.format_text("sw #{pane_id} #(id) (10.0.0.1)")
+        self.assertNotIn("#{", title.replace("##", ""))
+        self.assertNotIn("#(", title.replace("##", ""))
+        self.assertEqual(title.replace("##", "#"), "sw #{pane_id} #(id) (10.0.0.1)")
+
+    @unittest.skipUnless(shutil.which("tmux"), "tmux not installed")
+    def test_the_pane_title_tmux_really_sets_is_the_name_itself(self):
+        """Against the real tmux: what open_panes hands to select-pane must come back
+        from #{pane_title} unchanged."""
+        name = "sw #{pane_id} (10.0.0.1)"
+        private = PrivateTmux()
+        private.start()
+        try:
+            tmux.tmux_run("new-session", "-d", "-s", "title-test", "sleep 5")
+            tmux.tmux_run("select-pane", "-t", "title-test", "-T", tmux.format_text(name))
+            self.assertEqual(tmux.tmux_run("display-message", "-p", "-t", "title-test",
+                                           "#{pane_title}"), name)
+        finally:
+            private.stop()
 
     def test_a_pane_is_told_to_record_itself(self):
         """With the log on, a pane starts its tmux recording before it shows anything -

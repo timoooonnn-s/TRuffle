@@ -188,12 +188,26 @@ class TestUserState(TempDir):
         comes back through this file - TRuffle then drops the password it holds."""
         d = os.path.join(self.tmp, "state")
         st = state.UserState(d)
-        self.assertEqual(state.UserState(d).load_auth_failure(), (0.0, ""))
+        self.assertEqual(state.UserState(d).load_auth_failures(), [])
         st.note_auth_failure("10.0.0.7")
-        stamp, host = state.UserState(d).load_auth_failure()
-        self.assertEqual(host, "10.0.0.7")
-        self.assertGreater(stamp, 0)
+        failures = state.UserState(d).load_auth_failures()
+        self.assertEqual([host for _, host in failures], ["10.0.0.7"])
+        self.assertGreater(failures[0][0], 0)
         self.assertEqual(os.stat(os.path.join(d, "authfail")).st_mode & 0o777, 0o600)
+
+    def test_two_panes_failing_with_two_logins_are_both_reported(self):
+        """One line used to overwrite the one before it, so of two panes that failed
+        between two of TRuffle's looks only the last one's login was dropped."""
+        d = os.path.join(self.tmp, "state")
+        st = state.UserState(d)
+        st.note_auth_failure("10.0.0.7")
+        st.note_auth_failure("10.0.0.9")
+        failures = state.UserState(d).load_auth_failures()
+        self.assertEqual([host for _, host in failures], ["10.0.0.7", "10.0.0.9"])
+        self.assertLessEqual(failures[0][0], failures[1][0])             # oldest first
+        for n in range(state.UserState.MAX_AUTHFAIL + 5):
+            st.note_auth_failure("10.0.1.%d" % n)
+        self.assertEqual(len(state.UserState(d).load_auth_failures()), state.UserState.MAX_AUTHFAIL)
 
     def test_unwritable_directory_reports_error(self):
         blocker = os.path.join(self.tmp, "file")

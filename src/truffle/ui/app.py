@@ -20,7 +20,7 @@ from ..credentials import Credentials
 from ..inventory import valid_host
 from ..logs import logs_since, prune_logs
 from ..ping import PING_ENV, BatchPing, ProcStream, ping_argv, stream_verdict
-from ..console import is_console_server
+from ..console import is_console_name, is_console_server
 from ..export import export_csv, export_path
 from ..results import KINDS, STATUS_COLUMNS
 from ..search import field_hint, known_field
@@ -431,20 +431,25 @@ class App(object):
 
     def mark_all(self):
         """Ctrl-A: mark every device in the current view - or, when they all are marked
-        already, unmark them (D50: the sweep was done by holding Tab).  Marks elsewhere stay."""
+        already, unmark them (D50: the sweep was done by holding Tab).  Marks elsewhere stay.
+        The typed-address row is left out, exactly as Tab refuses it (D55): a mark on it
+        could not be used by ssh or ping, and only made the counters disagree."""
         lst = self.list
-        if not lst.view:
-            self.message("Nothing to mark - the search shows no device")
+        view = [d for d in lst.view if d.origin != "typed"]
+        if not view:
+            typed = next((d for d in lst.view if d.origin == "typed"), None)
+            self.message(("%s is not in the list - ^N saves it, then it can be marked" % typed.name)
+                         if typed else "Nothing to mark - the search shows no device")
             return
-        if all(d.key in lst.marked for d in lst.view):
-            for d in lst.view:
+        if all(d.key in lst.marked for d in view):
+            for d in view:
                 lst.marked.pop(d.key, None)
-            self.message("Unmarked the %d devices of this view - %d still marked" % (len(lst.view), len(lst.marked)))
+            self.message("Unmarked the %d devices of this view - %d still marked" % (len(view), len(lst.marked)))
         else:
-            for d in lst.view:
+            for d in view:
                 lst.marked.setdefault(d.key, True)
             self.message("Marked the %d devices of this view - %d marked, ESC clears them"
-                         % (len(lst.view), len(lst.marked)))
+                         % (len(view), len(lst.marked)))
         if "is:marked" in lst.query.lower():
             lst.refilter()
 
@@ -510,8 +515,11 @@ class App(object):
             opened = self.actions.with_consoles(servers, [d for d in marked if d not in servers])
         else:
             opened = self.actions.many(marked)
-        if opened:
-            self.list.marked.clear()
+        # Only what got a pane: the devices past MAX_PANES were reported as NOT opened in
+        # the same breath, so their marks stay and the next Enter opens the rest.
+        for d in marked:
+            if d.key in opened:
+                self.list.marked.pop(d.key, None)
         return True
 
     def ping(self, dev):
@@ -566,7 +574,8 @@ class App(object):
         name = dev.name if saved else "" if dev.host.replace(".", "").isdigit() else dev.host.split(".")[0]
         login, user, error = dev.login, dev.user or self.cfg.manual_user or self.cfg.user, None
         while True:
-            choice = save_dialog(self.screen, dev.host, name, login, user, saved, error)
+            choice = save_dialog(self.screen, dev.host, name, login, user, saved, error,
+                                 lambda name: is_console_name(self.cfg, name))
             if choice is None:
                 self.message("Nothing changed" if saved else "Not saved")
                 return

@@ -2,6 +2,7 @@
 
 Run from the repository root:  python3 -m unittest discover -s tests -v
 """
+import atexit
 import os
 import shutil
 import subprocess
@@ -17,8 +18,21 @@ if SRC not in sys.path:
 
 import curses  # noqa: E402
 
+import truffle  # noqa: E402
+from truffle import config as _config  # noqa: E402
+
 LAUNCHER = os.path.join(ROOT, "truffle")
 FAKE_SSH = os.path.join(ROOT, "tests", "fake_ssh.py")
+
+# NEITHER config file of this machine may reach a test.  TempDir redirects
+# XDG_CONFIG_HOME, but `truffle.conf` in the INSTALL folder - the repository root while
+# the tests run from it - was still read: a developer's own `ssh_command = "ct ssh"` in it
+# failed the argv and --check tests, and on the server the site's real settings would.
+# The install folder is an empty directory for the whole run instead.
+CLEAN_INSTALL = tempfile.mkdtemp(prefix="truffle-tests-install-")
+truffle.INSTALL_DIR = _config.INSTALL_DIR = CLEAN_INSTALL
+os.environ["XDG_CONFIG_HOME"] = os.path.join(CLEAN_INSTALL, "xdg")
+atexit.register(shutil.rmtree, CLEAN_INSTALL, True)
 
 
 def args(**kw):

@@ -206,7 +206,9 @@ $ (attacker, running as you, with a stolen ticket)
 It is refused, because the ticket is **bound to the process ID that tmux started for that
 pane**. TRuffle asked tmux "what is this pane's process ID?" and will only answer a caller
 whose kernel-reported process ID matches. An attacker cannot present someone else's process
-ID — see point 4 above.
+ID — see point 4 above.  A ticket tmux has **not** reported a pane for yet is refused outright
+(`ERR unbound ticket`): there is no process ID to match, so no caller can be the right one, and TRuffle
+never waits for the binding to arrive.
 
 For it to succeed, the attacker would have to *be* that pane process (or its parent) — which
 means already controlling your tmux server. At that point they are inside your session and can

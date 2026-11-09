@@ -23,7 +23,11 @@ MODE_TEXT = {"radius": "your RADIUS login, TRuffle types it",
 
 def is_console_server(cfg, dev):
     """A terminal server is recognised by its NAME (console_hosts, e.g. *-*-ts?-*)."""
-    name = (dev.name or "").lower()
+    return is_console_name(cfg, dev.name)
+
+
+def is_console_name(cfg, name):
+    name = (name or "").lower()
     return bool(name) and any(glob_match(name, pattern) for pattern in cfg.console_hosts)
 
 

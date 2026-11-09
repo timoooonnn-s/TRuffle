@@ -137,9 +137,14 @@ class Handover(object):
                 return "ERR ticket expired"
             expected, host, switch, kind = entry["pid"], entry["host"], entry["switch"], entry["login"]
             manual_user = entry["user"]
-        # An unbound ticket is refused, never waited for (D29).  Outside the lock: the
-        # parent lookup runs `ps` on macOS.
-        if pid != expected and parent_pid(pid) != expected:    # ps only when it is needed
+        # An unbound ticket is refused, never waited for (D29) - and refused BEFORE the
+        # pid check: with no pid reported yet `expected` is None, and a parent lookup that
+        # fails returns None too, so `None != None` let the check pass and handed the login
+        # to a process tmux never started (a same-user process that connects, forks and
+        # exits).  Outside the lock: the parent lookup runs `ps` on macOS.
+        if expected is None:
+            return self._refuse("ticket for %s is not bound to a pane yet" % host, "ERR unbound ticket")
+        if pid is None or (pid != expected and parent_pid(pid) != expected):   # ps only when needed
             return self._refuse("pid %s is not the pane for %s" % (pid, host), "ERR wrong process")
         with self.lock:
             entry = self.tickets.get(ticket)

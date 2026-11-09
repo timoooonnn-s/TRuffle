@@ -184,6 +184,35 @@ class TestCsv(TempDir):
 
 
 
+class TestDelimiter(TempDir):
+    """The delimiter is read off the HEADER line - the reader skips blank and '#' lines,
+    and the guess has to skip exactly the same ones."""
+
+    def test_a_comment_above_the_header_does_not_decide_it(self):
+        """A '#' line with a comma in it beat the ';' header below it: the list then had
+        no 'IP' column at all, although nothing was wrong with it."""
+        path = self.write("sw.csv", "# exported 2026-11-01, by hand, from Infoblox\n"
+                                    "Name;IP;comment\nab-1;10.0.0.1;core\n")
+        report = {}
+        headers, rows = inventory.read_table(path, report)
+        self.assertEqual(report["delimiter"], ";")
+        self.assertEqual(headers, ["Name", "IP", "comment"])
+        self.assertEqual(rows, [{"Name": "ab-1", "IP": "10.0.0.1", "comment": "core"}])
+
+    def test_each_delimiter_is_still_found_on_the_header_line(self):
+        for delimiter in (";", ",", "\t", "|"):
+            path = self.write("d.csv", "# a note\n%s\nab-1%s10.0.0.1\n"
+                              % (delimiter.join(["Name", "IP"]), delimiter))
+            headers, rows = inventory.read_table(path)
+            self.assertEqual((headers, rows[0]["IP"]), (["Name", "IP"], "10.0.0.1"), repr(delimiter))
+
+    def test_a_file_of_nothing_but_comments_says_what_is_missing(self):
+        path = self.write("c.csv", "# only comments\n\n# and blank lines\n")
+        with self.assertRaises(inventory.DataError) as caught:
+            inventory.read_table(path)
+        self.assertIn("no header line", str(caught.exception))
+
+
 class TestTypedTarget(unittest.TestCase):
     """D55: which searches are an address to connect to, and which stay a search."""
 

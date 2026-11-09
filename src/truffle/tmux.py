@@ -82,10 +82,24 @@ def enter_session(session):
     return "" if code == 0 else "tmux attach ended with code %d" % code
 
 
+def format_text(text):
+    """Text for a tmux argument that expands formats, with every '#' doubled: a CSV name
+    like 'sw #{pane_id}' would otherwise be expanded by tmux itself (D44).  Needed for
+    pipe-pane (the shell command) and for `select-pane -T` (the pane title)."""
+    return text.replace("#", "##")
+
+
 def shell_command(argv):
     """argv quoted for the shell, every '#' doubled: pipe-pane expands tmux formats before
     the shell runs, so a CSV name like 'sw #{pane_id}' was expanded (D44)."""
-    return " ".join(shlex.quote(a) for a in argv).replace("#", "##")
+    return format_text(" ".join(shlex.quote(a) for a in argv))
+
+
+def back_key():
+    """The tmux key that brings you back to TRuffle.  Started from a plain terminal that
+    is `Ctrl-b d`, which detaches the pane session.  Inside tmux, TRuffle is a session of
+    the same client, so detaching would drop the whole client: `Ctrl-b L` is the way back."""
+    return "Ctrl-b L" if os.environ.get("TMUX") else "Ctrl-b d"
 
 
 def pipe_command(path, header):
@@ -95,8 +109,11 @@ def pipe_command(path, header):
 
 
 def record_pane(cfg, pane, name, host, user):
-    """Record one pane into a new session log via pipe-pane (-o: never twice).  The
-    recorder creates the file, so a pipe that fails leaves none.  Returns an error or None."""
+    """Record one pane into a new session log via pipe-pane.  `-o` TOGGLES - it opens a
+    pipe only when the pane has none and CLOSES an existing one - so the caller must know
+    the pane has no pipe: `PaneSessions.record` checks `#{pane_pipe}` first, and a pane
+    that is just starting up has none.  The recorder creates the file, so a pipe that
+    fails leaves none.  Returns an error or None."""
     try:
         path = session_log_path(cfg, name, host)
         if not os.access(cfg.log_dir, os.W_OK):
@@ -172,7 +189,7 @@ def open_panes(cfg, targets, handover, mode=None, server_mode="radius", local_us
         pid, _, pane_id = out.strip().partition(" ")
         handover.bind(ticket, int(pid or 0))
         panes[pane_id] = target
-        tmux_try("select-pane", "-t", pane_id, "-T", "%s (%s)" % (target.name, dev.host))
+        tmux_try("select-pane", "-t", pane_id, "-T", format_text("%s (%s)" % (target.name, dev.host)))
 
     rows, cols = terminal_size() or (24, 80)          # a detached session would default to 80x24
     try:
@@ -183,13 +200,18 @@ def open_panes(cfg, targets, handover, mode=None, server_mode="radius", local_us
     except BaseException:
         tmux_try("kill-session", "-t", "=" + session)       # never leave half a session behind
         raise
+    if os.environ.get("TMUX"):
+        # Inside tmux the client is in TRuffle's own session: with tmux's default
+        # detach-on-destroy the last pane logging out would drop the whole client instead
+        # of leaving the client where it was.
+        tmux_try("set-option", "-t", session, "detach-on-destroy", "off")
     tmux_try("set-window-option", "-t", session, "synchronize-panes", "off")   # never type into all
     tmux_try("set-window-option", "-t", session, "pane-border-status", "top")
     tmux_try("set-window-option", "-t", session, "pane-border-format", " #{pane_title} ")
     tmux_try("set-option", "-t", session, "status-left", "[TRuffle]  ")
     consoles = any(t.console for t in targets)
     tmux_try("set-option", "-t", session, "status-right",
-             " Ctrl-b d = back to TRuffle   Ctrl-b o = next pane   exit = leave one device "
+             " %s = back to TRuffle   Ctrl-b o = next pane   exit = leave one device " % back_key()
              + ("  console: log out, then Ctrl-Q " if consoles else ""))
     tmux_try("set-option", "-t", session, "status-right-length", "120" if consoles else "80")
     return session, panes

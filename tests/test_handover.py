@@ -142,15 +142,30 @@ class HandoverTest(unittest.TestCase):
         anything running as us could keep asking."""
         h = self.make()
         start = time.time()
-        self.assertEqual(self.ask(h, h.issue("10.0.0.1")), "ERR wrong process")
+        self.assertEqual(self.ask(h, h.issue("10.0.0.1")), "ERR unbound ticket")
         self.assertLess(time.time() - start, 1.0, "an unbound ticket must be refused at once")
+
+    def test_an_unbound_ticket_is_refused_even_when_the_parent_is_unknown(self):
+        """The hole this closes: an unbound ticket has no pid, and a caller whose parent
+        cannot be looked up has none either - `None == None` passed the check and the
+        login went out.  A process that connects, forks and exits is exactly that case."""
+        h = self.make()
+        ticket = h.issue("10.0.0.1")
+        parent_pid, handover.parent_pid = handover.parent_pid, lambda pid: None
+        try:
+            self.assertEqual(self.ask(h, ticket), "ERR unbound ticket")
+        finally:
+            handover.parent_pid = parent_pid
+        self.assertTrue(any("not bound" in r for r in h.take_refusals()))
+        h.bind(ticket, os.getpid())
+        self.assertTrue(self.ask(h, ticket).startswith("OK "))      # still usable afterwards
 
     def test_a_ticket_bound_after_the_request_is_still_refused(self):
         """The pane that lost the race asks the user for the password itself.  We do NOT
         hold the request open waiting for the binding - that only widens the window."""
         h = self.make()
         ticket = h.issue("10.0.0.1")
-        self.assertEqual(self.ask(h, ticket), "ERR wrong process")
+        self.assertEqual(self.ask(h, ticket), "ERR unbound ticket")
         h.bind(ticket, os.getpid())                   # tmux reports the pid a moment later
         self.assertTrue(self.ask(h, ticket).startswith("OK "))   # a later, bound ask works
 

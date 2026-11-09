@@ -101,14 +101,20 @@ class SessionResult(object):
 
     @property
     def cancelled(self):
-        """You stopped ssh (Ctrl-C, Ctrl-\\) before it was logged in."""
-        return not self.started and self.signal in (signal.SIGINT, signal.SIGQUIT)
+        """You stopped ssh before it was logged in - Ctrl-C, Ctrl-\\, or Ctrl-Q in a console
+        session.  None of them says anything about the device."""
+        return not self.started and (self.console_closed
+                                     or self.signal in (signal.SIGINT, signal.SIGQUIT))
 
     @property
     def failed(self):
         """ssh did not get in, or the session died.  Exit 255 is also a normal logout on
-        many switches (D9), so only a session that STARTED can be one (D45)."""
-        if self.exit_code == 0 or self.console_closed:
+        many switches (D9), so only a session that STARTED can be one (D45) - and Ctrl-Q
+        is a logout for the same reason: pressed while ssh was still connecting it is a
+        cancel, and must not be recorded as a login that worked."""
+        if self.exit_code == 0:
+            return False
+        if self.console_closed and self.started:
             return False
         return not self.started or SSH_FAILURE.search(self.last_line) is not None
 

@@ -313,8 +313,9 @@ and the top bar counts it. `ESC` (with an empty search) clears it.
 
 Mark devices with **`Tab`**, then run **ssh**. With **two or more** marked, TRuffle opens its
 own tmux session with **one pane per device** (a marked terminal server: one per line, see
-[Several consoles at once](#several-consoles-at-once)), up to **9** - with more marked, it opens the first 9 and
-says how many it left out. You type your password **once** and every pane logs in by itself.
+[Several consoles at once](#several-consoles-at-once)), up to **9** - with more marked, it opens the first 9, names the
+ones it left out and **keeps those marked**, so the next `Enter` opens the rest. You type your password
+**once** and every pane logs in by itself.
 
 | You want | Press |
 |---|---|
@@ -322,12 +323,17 @@ says how many it left out. You type your password **once** and every pane logs i
 | mark everything the search shows | `Ctrl-A` (again: unmark them) |
 | see what you've marked | search `is:marked` |
 | clear all marks | `ESC` (with an empty search) |
-| **back to TRuffle**, panes keep running | `Ctrl-b d` |
+| **back to TRuffle**, panes keep running | `Ctrl-b d` - `Ctrl-b L` if you started TRuffle inside tmux |
 | **back into the panes** | `Ctrl-T` in TRuffle |
 | **close them all**, from TRuffle | `Ctrl-K` (asks first) |
 | switch between panes | `Ctrl-b o`, or `Ctrl-b` and an arrow key |
 | make one pane full screen (and back) | `Ctrl-b z` |
 | log out of one device | `exit` in that pane; its pane closes |
+
+**TRuffle started inside tmux** uses your own tmux: it switches your client to the pane session instead of
+attaching a new one, so the way back is `Ctrl-b L` (the session you came from), not `Ctrl-b d` - that would
+detach your whole client. TRuffle says which key in the pane session's status bar and in its own footer, and
+sets `detach-on-destroy off` on the pane session so logging out of the last pane brings you back here as well.
 
 `Ctrl-K` in TRuffle is the reliable way to close everything: it needs no tmux key and works on any keyboard
 layout. tmux's own `Ctrl-b &` does the same from inside, but the `&` is awkward on some layouts.
@@ -487,7 +493,8 @@ sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#severa
   ([TMUX-SECURITY.md](TMUX-SECURITY.md)).
 - Every pane is titled `ab-12-ts1-01 line 7`. In a console pane, log out of the switch, then **`Ctrl-Q`**
   closes that pane.
-- More than 9 panes: the first 9 are opened, and TRuffle names the ones it left out.
+- More than 9 panes: the first 9 are opened, TRuffle names the ones it left out, and their marks stay -
+  `Enter` again opens the next 9.
 
 **`Ctrl-K` with consoles asks louder.** Closing a console pane only ends the ssh to the terminal
 server - **the switch console behind it stays logged in** for the next person on that line. When the
@@ -562,8 +569,9 @@ address in the search** and press **Enter**:
   none (you type it in that pane).
 - Saved devices are **yours only**: `~/.local/state/truffle/saved` (only readable by you). The shared
   device list (`data.csv`) is never written - add a device there for everyone.
-- A saved name that matches [`console_hosts`](#terminal-servers-console) makes it a terminal server; give
-  it the login `radius` then (and leave out the `user@`), the console window asks who logs in.
+- A name that matches [`console_hosts`](#terminal-servers-console) makes it a terminal server: the save
+  window then has no Login line (it shows up as soon as you type such a name), the console window asks who
+  logs in.
 
 ## Recent devices
 
@@ -749,8 +757,10 @@ git status                          # if it's a git checkout: review, commit, pu
 Off by default. Turn it on with `--log`, `session_log = yes`, or **`Ctrl-G`** inside TRuffle when
 you want it just for the next session (a change window, say). Each ssh session is written to
 `~/.local/state/truffle/logs/<date>-<time>_<device>.log` (a console:
-`..._<terminal server>_line_<n>.log`), readable only by you. [Where the log files are](#where-the-log-files-are)
-shows how to find them again.
+`..._<terminal server>_line_<n>.log`), readable only by you. That is the `logs` folder inside
+[`state_dir`](#configuration), so `XDG_STATE_HOME` or a `state_dir` of your own moves the session logs
+along with the rest of your state; `log_dir` in `truffle.conf` overrides it.
+[Where the log files are](#where-the-log-files-are) shows how to find them again.
 The log contains what was on screen, never the password TRuffle typed. Commands like
 `show running-config` can still put secrets into it.
 

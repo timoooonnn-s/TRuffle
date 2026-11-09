@@ -86,9 +86,10 @@ class Credentials(object):
 
     def forget_if_older(self, stamp):
         """A tmux pane reported a wrong password at `stamp`: forget ours if it was typed
-        before that - then it was THIS password that failed.  Returns True if forgotten."""
+        before that - then it was THIS password that failed.  Only ours goes: the local
+        accounts were not the ones refused (D54).  Returns True if forgotten."""
         if self.own is not None and stamp >= self.own.typed_at:
-            self.forget()
+            self.own = None
             return True
         return False
 
@@ -98,7 +99,8 @@ class Credentials(object):
         now = time.time() if now is None else now
         gone = []
         if self.own is not None and creds_expired(now, self.own.typed_at, self.lifetime):
-            self.forget()                      # the local account goes with the password
+            # Each login expires on its own clock, and `gone` has to name what really went
+            self.own = None
             gone.append("password")
         if self.local is not None and creds_expired(now, self.local.typed_at, self.lifetime):
             self.local = None

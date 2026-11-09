@@ -127,8 +127,14 @@ def read_table(path, report=None):
             hint = " - copy data.example.csv to data.csv to start"
         raise DataError("device list not found: %s%s" % (path, hint))
     text = read_text(path)
-    first = next((line for line in text.splitlines() if line.strip()), None)
+    # The header line by the same rule the reader below uses - blank and '#' lines are
+    # skipped.  A comment above the header used to decide the delimiter: one comma in it
+    # beat a ';' header, and the list then had "no 'IP' column".
+    first = next((line for line in text.splitlines()
+                  if line.strip() and not line.lstrip().startswith("#")), None)
     if first is None:
+        if text.strip():
+            raise DataError("device list has no header line, only blank and '#' lines: %s" % path)
         raise DataError("device list is empty: %s" % path)
     delimiter = detect_delimiter(first)
     reader = csv.reader(io.StringIO(text, newline=""), delimiter=delimiter)

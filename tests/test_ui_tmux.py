@@ -11,6 +11,7 @@ import time
 import unittest
 
 from support import FAKE_SSH, LAUNCHER, PrivateTmux
+from truffle.tmux import MAX_PANES
 
 SESSION = "uitest-%d" % os.getpid()     # not truffle-*: TRuffle would count it as its own
 TMUX = PrivateTmux()
@@ -46,13 +47,23 @@ class UiSmokeTest(unittest.TestCase):
                     "sw10;192.0.2.10;ber;Core Berlin;\n")
         self.start()
 
+    # Everything these tests rely on is set here: the launcher is the real one, so it
+    # reads the install folder's truffle.conf first, and whatever a developer or the
+    # server has put in it must not decide how the test runs.  A key in `extra_conf` is
+    # left out here - configparser refuses the same option twice in one file.
+    CONF = (("data", "data.csv"), ("user", "timmy"), ("tmux", "yes"), ("session_log", "no"),
+            ("charset", "unicode"), ("console_hosts", "*-*-ts?-*"), ("console_login", "{user}:{port}"),
+            ("console_port_base", "7000"), ("password_lifetime", "600"), ("log_keep_days", "180"))
+
     def start(self, extra_conf=""):
         """(Re)start TRuffle in the test session, with extra lines for its config."""
         tmux("kill-session", "-t", SESSION)
         conf = os.path.join(self.tmp, "test.conf")
+        given = set(line.split("=")[0].strip() for line in extra_conf.splitlines() if "=" in line)
+        base = "".join("%s = %s\n" % (k, v) for k, v in self.CONF if k not in given)
         with open(conf, "w") as f:
-            f.write("[truffle]\ndata = data.csv\nuser = timmy\nssh_command = %s %s\n%s"
-                    % (sys.executable, FAKE_SSH, extra_conf))
+            f.write("[truffle]\n%sssh_command = %s %s\n%s"
+                    % (base, sys.executable, FAKE_SSH, extra_conf))
         cmd = "env HOME=%s XDG_CONFIG_HOME=%s TERM=xterm %s %s --config %s; echo EXITED; sleep 30" % (
             shlex.quote(self.tmp), shlex.quote(self.tmp), shlex.quote(sys.executable),
             shlex.quote(LAUNCHER), shlex.quote(conf))
@@ -171,6 +182,21 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Forget saved device")
         self.keys("y")
         self.wait_for("Removed lab-box")
+
+    def test_a_terminal_server_is_saved_without_a_login_choice(self):
+        """D56: a name that matches console_hosts gets no Login line - the console window
+        asks who logs in; a user@ in front is dropped with it."""
+        self.keys("admin@ab-12-ts1-09.lab.example", literal=True)
+        self.wait_for("manual login as admin")
+        self.keys("C-n")
+        self.wait_for("terminal server - the console window asks")    # the suggested name is one
+        self.assertNotIn("ssh as the user below", self.screen())
+        self.keys("BSpace", "BSpace", "BSpace", "BSpace")                # ab-12-ts: no terminal server
+        self.wait_for("ssh as the user below")
+        self.keys("1-09", literal=True)
+        self.wait_for("terminal server - the console window asks")
+        self.keys("Enter")
+        self.wait_for("Saved ab-12-ts1-09 (ab-12-ts1-09.lab.example, your login)")
 
     def test_a_saved_device_with_the_local_account_alone_and_in_tmux(self):
         """D56: Login <local> - the switches' local account, asked once, logs in there
@@ -402,6 +428,42 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("ESC clear 3 marks", timeout=12)
         self.keys("Escape")
         self.wait_for("Marks cleared")
+
+    def test_mark_all_leaves_out_the_typed_address_row(self):
+        """^A marked the typed row too, which Tab refuses (D55) and neither ssh nor ping
+        can use: the top bar and the ESC hint then counted one mark more than there were."""
+        self.keys("192.0.2.1", literal=True)             # not in the list; sw10 is 192.0.2.10
+        self.wait_for("not in the list")
+        self.keys("C-a")
+        self.wait_for("1 marked")
+        self.assertIn("Marked the 1 devices of this view", self.screen())
+        self.keys("C-u")
+        self.keys("is:marked", literal=True)
+        self.wait_for("sw10")
+        self.assertNotIn("192.0.2.1 ", self.screen())
+
+    def test_more_marks_than_panes_leaves_the_rest_marked(self):
+        """9 panes at most: the devices that did not get one were reported as NOT opened
+        and had their marks cleared in the same breath, so the rest could not simply be
+        opened with the next Enter."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            for i in range(11):
+                f.write("cap-%02d;10.97.0.%d;lab;Capped;\n" % (i, i + 1))
+        self.start()
+        self.keys("cap-", literal=True)
+        self.keys("C-a")
+        self.wait_for("Marked the 11 devices")
+        self.keys("Enter")
+        self.wait_for("Username")
+        self.keys("secret", literal=True)
+        self.keys("Enter")
+        session = self.wait_for_session()
+        deadline = time.time() + 20
+        while len(self.panes(session)) < MAX_PANES and time.time() < deadline:
+            time.sleep(0.2)
+        self.assertEqual(len(self.panes(session)), MAX_PANES)
+        self.wait_for("2 marked", timeout=20)            # the two that did not get a pane
+        self.assertNotIn("11 marked", self.screen())
 
     def test_pinging_hundreds_asks_first(self):
         with open(os.path.join(self.tmp, "data.csv"), "a") as f:

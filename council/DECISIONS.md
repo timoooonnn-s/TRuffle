@@ -1296,6 +1296,9 @@ Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dia
 - *tmux:* the ticket carries the device's login - yours, the local account in its place, or for manual
   only the user (`Handover.issue(login=, user=)`); `--pane-login` / `--pane-user` for the fallback and
   the pane's note.  The own login is asked only when a `radius` device or a console needs it.
+- *Terminal servers* (user: "when I enter a device that matches the terminal server pattern, I don't want
+  that window"): a name that matches `console_hosts` - checked while you type it - hides the Login line
+  and saves `radius`; the console window asks who logs in (D51, D54).
 - *Saved file:* `host TAB name TAB login [TAB user]`; 2.4.0's `host TAB name [TAB user]` still loads
   (radius, or manual as that user).
 - *Tester:* the saved file (logins, rename, bad rows, 2.4.0 rows), the local account (dropped alone, pane

@@ -20,6 +20,28 @@ class TestConfig(TempDir):
         self.assertEqual(cfg.log_dir, os.path.join(self.tmp, "site", "logs"))
         self.assertEqual(cfg.state_dir, os.path.join(self.tmp, "site", "st"))
 
+    def test_the_logs_follow_the_state_folder(self):
+        """log_dir was hard-coded to ~/.local/state/truffle/logs: XDG_STATE_HOME or
+        state_dir moved the state and left the session logs behind."""
+        os.environ["XDG_STATE_HOME"] = os.path.join(self.tmp, "xdgstate")
+        cfg = config.load_config(args())
+        self.assertEqual(cfg.state_dir, os.path.join(self.tmp, "xdgstate", "truffle"))
+        self.assertEqual(cfg.log_dir, os.path.join(cfg.state_dir, "logs"))
+        conf = self.write("site/c.conf", "[truffle]\nstate_dir = st\n")
+        moved = config.load_config(args(config=conf))
+        self.assertEqual(moved.log_dir, os.path.join(self.tmp, "site", "st", "logs"))
+        # log_dir still wins where it is set, relative to its own config file
+        both = config.load_config(args(config=self.write("site/b.conf",
+                                                         "[truffle]\nstate_dir = st\nlog_dir = l\n")))
+        self.assertEqual(both.log_dir, os.path.join(self.tmp, "site", "l"))
+
+    def test_no_config_file_of_this_machine_is_read_in_a_test(self):
+        """The install folder's truffle.conf used to reach the tests: `ssh_command =
+        "ct ssh"` in a developer's own copy failed the argv and --check tests, and the
+        site's settings would do the same on the server (tests/support.py)."""
+        self.assertEqual(config.load_config(args()).files, [])
+        self.assertEqual(config.load_config(args()).ssh_command, ["ssh"])
+
     def test_defaults_resolve_data_next_to_script(self):
         cfg = config.load_config(args())
         self.assertEqual(cfg.data, os.path.join(truffle.INSTALL_DIR, "data.csv"))

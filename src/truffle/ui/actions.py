@@ -12,7 +12,7 @@ from ..credentials import minutes_text
 from ..handover import Handover
 from ..logs import log_note
 from ..terminal import which
-from ..tmux import MAX_PANES, TMUX_ERRORS, PaneTarget, enter_session, open_panes
+from ..tmux import MAX_PANES, TMUX_ERRORS, PaneTarget, back_key, enter_session, open_panes
 from .dialogs import console_dialog, login_dialog
 
 SESSION_POLL = 3.0          # seconds between looks at our tmux sessions
@@ -83,11 +83,12 @@ class Actions(object):
 
     def with_consoles(self, servers, devices):
         """ssh on terminal servers - alone, or marked together with other devices, which
-        get an ssh pane next to the console panes.  True when something was opened."""
+        get an ssh pane next to the console panes.  Returns the keys of the devices that
+        were opened (empty = nothing), so the caller keeps the marks of the rest."""
         choice = self.ask_lines(servers, len(devices))
         if choice is None:
             self.message("Console cancelled")
-            return False
+            return set()
         lines, mode, server_mode = choice
         server = servers[0].name if len(servers) == 1 else "the terminal servers"
         # In the order they happen: the terminal server, then the switch.  Your own login
@@ -97,7 +98,7 @@ class Actions(object):
                 or (needs_own and self.ask_login(server=server) is None)
                 or (mode == "local" and self.ask_local_login(server) is None)):
             self.message("Console cancelled")
-            return False
+            return set()
         targets = [PaneTarget(d) for d in devices] + [PaneTarget(s, n) for s, ls in zip(servers, lines) for n in ls]
         if len(targets) > 1:
             return self.many(targets, mode, server_mode)
@@ -106,7 +107,7 @@ class Actions(object):
                       console=lambda: ConsoleLogin(*self.switch_login(mode), mode=mode, server_mode=server_mode,
                                                    wait=self.cfg.console_login_wait, notes=self.screen.notes()),
                       mode=mode, server_local=server_mode == "local")
-        return True
+        return set([dev.key])
 
     def ask_lines(self, servers, others):
         """The console window, filled with what you used last on each terminal server.
@@ -200,7 +201,8 @@ class Actions(object):
     def many(self, targets, mode=None, server_mode="radius"):
         """One tmux session, a pane per device or terminal-server line (PaneTargets; a bare
         device is an ssh pane), one login.  mode: the switch login of the console panes,
-        server_mode: who logs in at their terminal servers (D54).  True when it was opened."""
+        server_mode: who logs in at their terminal servers (D54).  Returns the keys of the
+        devices that got a pane - the ones past MAX_PANES did not, and keep their mark."""
         targets = [t if isinstance(t, PaneTarget) else PaneTarget(t) for t in targets]
         if not self.cfg.tmux or not which("tmux"):
             why = "tmux mode is off (tmux = yes in truffle.conf)" if not self.cfg.tmux else "tmux is not installed"
@@ -210,7 +212,7 @@ class Actions(object):
             else:
                 self.message("%s - connecting to several devices at once needs it. Marks still decide what "
                              "ping checks; ESC (empty search) clears them to ssh one." % why, error=True, seconds=12)
-            return False
+            return set()
         left_out = [t.name for t in targets[MAX_PANES:]]
         targets = targets[:MAX_PANES]
         consoles = any(t.console for t in targets)
@@ -221,17 +223,17 @@ class Actions(object):
             server = self.ask_server_login("the terminal servers")
             if server is None:
                 self.message("ssh cancelled")
-                return False
+                return set()
         if "radius" in logins or (consoles and (not consoles_local or mode == "radius")):
             own = self.ask_login()
             if own is None:
                 self.message("ssh cancelled")
-                return False
+                return set()
         if "local" in logins:              # your devices that take the local account (D56)
             local = self.ask_local_login(device="your local devices")
             if local is None:
                 self.message("ssh cancelled")
-                return False
+                return set()
         try:
             # A console pane's ticket also carries the switch login (D51, TMUX-SECURITY.md),
             # and the terminal server's local account instead of yours when it takes one (D54);
@@ -242,14 +244,15 @@ class Actions(object):
                                 lambda: (local.user, local.password) if local else (None, None))
         except OSError as e:
             self.message("cannot open the login handover for the panes: %s" % e, error=True, seconds=15)
-            return False
+            return set()
         try:
             session, panes = open_panes(self.cfg, targets, handover, mode, server_mode,
                                         local.user if local else None)
         except TMUX_ERRORS + (ValueError,) as e:
             handover.close()
             self.message("tmux failed: %s" % e, error=True, seconds=15)
-            return False
+            return set()
+        opened = set(t.dev.key for t in targets)       # what a mark was actually spent on
         hosts = set(t.dev.host for t in targets if t.console)
         self.local_servers = (self.local_servers | hosts) if server else (self.local_servers - hosts)
         hosts = set(t.dev.host for t in targets if not t.console)
@@ -280,7 +283,7 @@ class Actions(object):
         if error:
             self.message("%stmux session %s started, but could not show it: %s" % (lead, session, error),
                          error=True, seconds=15)
-            return True
+            return opened
         consoles = sum(1 for t in targets if t.console)
         what = "%d pane%s" % (len(targets), "" if len(targets) == 1 else "s")
         if consoles:
@@ -289,13 +292,14 @@ class Actions(object):
         if not got_logins:
             note += " - some panes had to ask for the password themselves"
         if left_out:
-            note += " - NOT opened (%d panes at most): %s%s" % (
+            note += " - NOT opened (%d panes at most), still marked: %s%s" % (
                 MAX_PANES, ", ".join(left_out[:3]), "..." if len(left_out) > 3 else "")
         if refused:
             note += " - REFUSED: %s" % "; ".join(refused[:2])
-        note += "  %s  Ctrl-b d comes back here, Ctrl-T goes back in, Ctrl-K closes them" % self.screen.sym["sep"]
+        note += "  %s  %s comes back here, Ctrl-T goes back in, Ctrl-K closes them" % (
+            self.screen.sym["sep"], back_key())
         self.message(note, error=bool(refused or lost), seconds=20)
-        return True
+        return opened
 
     def enter(self, session):
         """Hand the terminal to tmux and come back.  Returns an error text or ''."""
@@ -379,23 +383,25 @@ class Actions(object):
         self.lst.status_changed(force=True)
 
     def check_pane_auth_failure(self):
-        """A tmux pane could not log in: drop the password instead of spending it on
-        switch after switch (a central TACACS+/RADIUS account would lock out)."""
-        stamp, host = self.store.load_auth_failure()
-        if stamp <= self.authfail_seen:
-            return
-        self.authfail_seen = stamp
-        if host in self.local_servers:                 # a terminal server's local account (D54)
-            if self.creds.forget_server_if_older(stamp):
-                self.message("The terminal server's local account was forgotten (a tmux pane could not "
-                             "log in to %s) - you will be asked again." % host, seconds=15)
-        elif host in self.local_hosts:                  # one of yours with the local account (D56)
-            if self.creds.forget_local_if_older(stamp):
-                self.message("The local account was forgotten (a tmux pane could not log in to %s) - "
+        """A tmux pane could not log in: drop the login it used instead of spending it on
+        switch after switch (a central TACACS+/RADIUS account would lock out).  EVERY
+        failure since the last look, not just the newest: two panes can fail with two
+        different logins between two polls, and both of them have to go."""
+        for stamp, host in self.store.load_auth_failures():
+            if stamp <= self.authfail_seen:
+                continue
+            self.authfail_seen = stamp
+            if host in self.local_servers:                 # a terminal server's local account (D54)
+                if self.creds.forget_server_if_older(stamp):
+                    self.message("The terminal server's local account was forgotten (a tmux pane could not "
+                                 "log in to %s) - you will be asked again." % host, seconds=15)
+            elif host in self.local_hosts:                  # one of yours with the local account (D56)
+                if self.creds.forget_local_if_older(stamp):
+                    self.message("The local account was forgotten (a tmux pane could not log in to %s) - "
+                                 "you will be asked again." % host, seconds=15)
+            elif self.creds.forget_if_older(stamp):          # it was THIS password that failed
+                self.message("Password forgotten (a tmux pane could not log in to %s) - "
                              "you will be asked again." % host, seconds=15)
-        elif self.creds.forget_if_older(stamp):          # it was THIS password that failed
-            self.message("Password forgotten (a tmux pane could not log in to %s) - "
-                         "you will be asked again." % host, seconds=15)
 
     def check_sessions(self):
         """Poll our tmux sessions; when one ended (noticed here or elsewhere), load what its

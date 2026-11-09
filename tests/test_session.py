@@ -288,6 +288,35 @@ class SessionTest(PtyTest):
         self.assertEqual(r.known_hosts, kh)
 
 
+class SessionOutcomeTest(unittest.TestCase):
+    """The rules the SSH column is built from, on a SessionResult alone."""
+
+    def result(self, **kw):
+        r = session.SessionResult()
+        r.exit_code, r.last_line = 143, ""        # SIGTERM, as Ctrl-Q sends it
+        for key, value in kw.items():
+            setattr(r, key, value)
+        return r
+
+    def test_ctrl_q_before_the_session_started_is_not_a_successful_login(self):
+        """`console_closed` short-circuited `failed` without asking `started`, so Ctrl-Q
+        on a terminal server while ssh was still connecting wrote ssh: ok and put the
+        device in is:recent.  It is a cancel, like Ctrl-C while connecting."""
+        early = self.result(console_closed=True, started=False)
+        self.assertTrue(early.failed)
+        self.assertTrue(early.cancelled)
+        self.assertEqual(connect.attempt_outcome(early)[0], "failed")
+        self.assertIn("cancelled while connecting", connect.attempt_outcome(early)[1])
+
+    def test_ctrl_q_after_the_session_started_is_a_logout(self):
+        """How a console session ends (D51): exit 255 from the terminal server included."""
+        for code in (0, 255, 143):
+            closed = self.result(console_closed=True, started=True, exit_code=code)
+            self.assertFalse(closed.failed, code)
+            self.assertFalse(closed.cancelled, code)
+            self.assertEqual(connect.attempt_outcome(closed)[0], "ok", code)
+
+
 class ConsoleSessionTest(PtyTest):
     """A terminal server (10.99.0.9 in fake_ssh) and the switch on the serial line behind it."""
 

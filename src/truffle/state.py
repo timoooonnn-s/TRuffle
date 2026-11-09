@@ -26,6 +26,7 @@ class UserState(object):
     """History, saved results and console choices of the current user.
     A file that cannot be read or written sets `error`; TRuffle keeps working in memory."""
 
+    MAX_AUTHFAIL = 20
     MAX_RECENT = 200
     MAX_CONSOLE = 500
     MAX_SAVED = 1000
@@ -198,15 +199,20 @@ class UserState(object):
     # -- a wrong password seen by a tmux pane: TRuffle then wipes its copy (D26) --------
 
     def note_auth_failure(self, host):
+        """Appended, never replacing: two panes can fail with two different logins between
+        two of TRuffle's looks, and it has to see both to drop both (D54, D56)."""
         # sub-second: a pane can fail in the same second the password was typed
-        self._write("authfail", ["%.3f\t%s" % (time.time(), host)])
+        with self._locked():
+            rows = [r.rstrip("\n") for r in self._read("authfail")]
+            self._write("authfail", (rows + ["%.3f\t%s" % (time.time(), host)])[-self.MAX_AUTHFAIL:])
 
-    def load_auth_failure(self):
-        """(time, host) of the last login failure reported by a pane, or (0, "")."""
+    def load_auth_failures(self):
+        """(time, host) of the login failures panes reported, oldest first."""
+        failures = []
         for line in self._read("authfail"):
             stamp, _, host = line.rstrip("\n").partition("\t")
             try:
-                return float(stamp), host
+                failures.append((float(stamp), host))
             except ValueError:
                 pass
-        return 0.0, ""
+        return sorted(failures)
