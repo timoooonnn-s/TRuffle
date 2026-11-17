@@ -1,7 +1,8 @@
 """The main list as data: what is loaded, searched, sorted, marked and selected.
 No curses here - App draws it and feeds it keys."""
 
-from ..inventory import IPV4_LIKE, DataError, Device, build_devices, data_issues, read_table, typed_target
+from ..inventory import (IPV4_LIKE, DataError, Device, build_devices, data_age, data_issues, read_table,
+                         typed_target)
 from ..results import KINDS, STATUS_COLUMNS
 from ..search import Fields, default_order, filter_devices
 from ..sorting import next_sort, sort_devices
@@ -21,6 +22,8 @@ class SwitchList(object):
         self.picked = {"name": "Name", "host": "IP"}     # the name and address columns
         self.issues = []
         self.load_error = None
+        self.data_age = None           # whole days since the device list was written
+        self.data_written = None       # when that was, for the exact date
         self.found = {}                # device -> (score, {column: positions}) of fuzzy words
         self.query = ""
         self.sort_col, self.sort_desc = None, False
@@ -35,6 +38,7 @@ class SwitchList(object):
         """(Re)read the switch list.  Returns the warnings worth a message (a list)."""
         keep = self.selected()
         warns = []
+        self.data_age, self.data_written = data_age(self.cfg.data)     # also after Ctrl-R
         try:
             report = {}
             headers, rows = read_table(self.cfg.data, report)
@@ -58,6 +62,12 @@ class SwitchList(object):
             keep = next((d for d in self.loaded if d.host == keep.host and d.name == keep.name), None)
         self.apply_sort(keep)
         return warns
+
+    def data_stale(self):
+        """The device list has not been written for longer than data_max_age_days: the
+        export behind it has stopped, and nothing else in TRuffle would show it."""
+        return (self.data_age is not None and self.cfg.data_max_age_days > 0
+                and self.data_age > self.cfg.data_max_age_days)
 
     def measure(self):
         self.widths = [min(40, max([len(label) + 2] + [len(d.cells[i]) for d in self.loaded]))

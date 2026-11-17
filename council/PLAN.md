@@ -12,7 +12,7 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 - [ ] The first start after the update deletes nothing younger than 180 days (`log_keep_days`)
 - [ ] The two newcomers: is the search section's "four you need" enough to start with?
 
-## Now: field test of 2.2.0 (D51)
+## Field test of 2.2.0 (D51)
 - [ ] Lab work: several lines of one terminal server (`3 7 12`) in tmux - all logged in?
 - [ ] A switch + a terminal-server line marked together: one session, ssh and console pane
 - [ ] `local` in console panes on the real switches; `Ctrl-K` warning read once by the newcomers
@@ -27,11 +27,24 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 - [ ] `admin@<ip>` (manual): ssh's own prompt, you type the password; `manual_user` pre-fills the User line
 - [ ] Devices saved with 2.4.0 still there after the update (`admin@` ones are now manual)
 
+## Now: field test of 2.6.0 (D57)
+- [ ] The age of the device list on the server: the top bar note, and `truffle --check` exit 1 from cron
+- [ ] A new export + `Ctrl-R` clears the note - and is 30 days (`data_max_age_days`) the right number for
+      how often the export really runs?
+- [ ] More than 9 marked: the ones left out stay marked, the next Enter opens them
+- [ ] TRuffle started inside tmux: `Ctrl-b L` comes back, and logging out of the last pane does too
+- [ ] A terminal server that does not answer: `Ctrl-Q` while connecting leaves no `ok` in the SSH column
+- [ ] Ruffy: a device name with a `#` in it - the pane border shows the name, not `%0`
+
 ## Still to confirm on RHEL
 - [ ] `truffle --check` prints `ssh results : ok` (the session detection of D45 / D46)
+- [ ] A `#(...)` in a device name on RHEL's tmux: pane title and log header show it literally, nothing
+      runs (D44 #3, D57 #4 - only tmux 3.8 was tried)
 
 ## Next
-Nothing planned.  Candidates from the feature review ([REVIEW-features.md](REVIEW-features.md)),
+Nothing planned.  Open from D57: the rest of "running inside tmux as a supported case" (`Ctrl-T` from
+inside tmux, the top bar saying you are in it).  The login matrix stays frozen until the 2.4.0 / 2.5.0
+boxes above are ticked.  Candidates from the feature review ([REVIEW-features.md](REVIEW-features.md)),
 none decided: "down since" next to the age (M7), copy an IP to the clipboard (M8).
 
 ## Delivery

@@ -3,6 +3,7 @@
 import glob
 import os
 import re
+import time
 import unittest
 
 from support import SRC, FakeWin, TempDir, args
@@ -59,6 +60,75 @@ class TestHelpPage(TempDir):
         self.assertIn(cfg.data, text)
         self.assertIn(cfg.state_dir, text)
         self.assertIn("42 devices", text)
+
+
+class TestHelpPageSetup(TempDir):
+    def test_the_setup_block_names_when_the_list_was_written(self):
+        """Where you look things up: the Setup block says the date and the age, also when
+        the age is nowhere else because data_max_age_days is 0."""
+        csv = self.write("sw.csv", "Name;IP\nab-1;10.0.0.1\n")
+        when = time.time() - 43 * 86400 - 60
+        os.utime(csv, (when, when))
+        conf = self.write("c.conf", "[truffle]\ndata = %s\ndata_max_age_days = 0\n" % csv)
+        cfg = config.load_config(args(config=conf))
+        text = "\n".join(" ".join(e[1:]) for e in pages.help_sections(cfg, 7, 1))
+        self.assertIn("43 days ago", text)
+        self.assertIn(time.strftime("%Y-%m-%d", time.localtime(when)), text)
+
+    def test_without_a_device_list_it_says_nothing_about_a_date(self):
+        conf = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)
+        cfg = config.load_config(args(config=conf))
+        text = "\n".join(" ".join(e[1:]) for e in pages.help_sections(cfg, 7, 0))
+        self.assertIn("nope.csv", text)
+        self.assertNotIn("written", text)
+
+
+class TestDeviceListAge(TempDir):
+    """The age of the device list (a hand-run export): when nobody runs it any more,
+    every device is still there and nothing in the list itself looks wrong."""
+
+    def list_aged(self, days, extra=""):
+        csv = self.write("sw.csv", "Name;IP\nab-1;10.0.0.1\n")
+        when = time.time() - days * 86400 - 60
+        os.utime(csv, (when, when))
+        conf = self.write("c.conf", "[truffle]\ndata = %s\ncolumns = Name, IP\n%s" % (csv, extra))
+        lst = switchlist.SwitchList(config.load_config(args(config=conf)),
+                                    state.UserState(os.path.join(self.tmp, "st")), Results())
+        lst.load()
+        return lst
+
+    def test_a_fresh_list_says_nothing(self):
+        lst = self.list_aged(2)
+        self.assertEqual(lst.data_age, 2)
+        self.assertFalse(lst.data_stale())
+
+    def test_the_threshold_is_the_last_good_day(self):
+        self.assertFalse(self.list_aged(30).data_stale())        # exactly 30: still fine
+        self.assertTrue(self.list_aged(31).data_stale())
+
+    def test_zero_switches_it_off(self):
+        lst = self.list_aged(400, "data_max_age_days = 0\n")
+        self.assertEqual(lst.data_age, 400)                      # still known, never shown
+        self.assertFalse(lst.data_stale())
+
+    def test_a_reload_picks_up_a_new_export(self):
+        """Ctrl-R: re-exporting the list must clear the note without a restart."""
+        lst = self.list_aged(43)
+        self.assertTrue(lst.data_stale())
+        with open(lst.cfg.data, "a") as f:
+            f.write("ab-2;10.0.0.2\n")
+        lst.load()
+        self.assertEqual(lst.data_age, 0)
+        self.assertFalse(lst.data_stale())
+
+    def test_without_a_list_there_is_no_age(self):
+        conf = self.write("c.conf", "[truffle]\ndata = %s/nope.csv\n" % self.tmp)
+        lst = switchlist.SwitchList(config.load_config(args(config=conf)),
+                                    state.UserState(os.path.join(self.tmp, "st")), Results())
+        lst.load()
+        self.assertIsNotNone(lst.load_error)
+        self.assertIsNone(lst.data_age)
+        self.assertFalse(lst.data_stale())
 
 
 class TestTheme(unittest.TestCase):

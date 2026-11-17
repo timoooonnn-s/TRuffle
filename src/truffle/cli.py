@@ -7,13 +7,14 @@ import locale
 import os
 import signal
 import sys
+import time
 
 from . import CREDIT, TITLE, VERSION
 from .config import ConfigError, load_config
 from .console import is_console_server
 from .credentials import minutes_text
 from .export import exports_since
-from .inventory import DEVICE_LOGINS, DataError, build_devices, data_issues, read_table
+from .inventory import DEVICE_LOGINS, DataError, build_devices, data_age, data_issues, days_ago, read_table
 from .logs import keep_text, list_logs, log_sink, logs_since
 from .pane import pane_main
 from .session import raw_mode_visible
@@ -23,6 +24,20 @@ from .tmux import truffle_sessions
 from .ui.app import App
 
 
+def data_age_line(cfg):
+    """("list written : ...", stale) for --check, or (None, False) when there is no file."""
+    days, written = data_age(cfg.data)
+    if days is None:
+        return None, False
+    when = time.strftime("%Y-%m-%d %H:%M", time.localtime(written))
+    if not cfg.data_max_age_days:
+        return "list written : %s  (%s, not checked: data_max_age_days = 0)" % (when, days_ago(days)), False
+    if days > cfg.data_max_age_days:
+        return ("list written : %s  (%s - OLDER than data_max_age_days = %d; has the export run?)"
+                % (when, days_ago(days), cfg.data_max_age_days)), True
+    return "list written : %s  (%s)" % (when, days_ago(days)), False
+
+
 def check(cfg):
     """--check: validate config and switch list without starting the UI.  Exit code
     0 = fine, 1 = warnings only (so a cron check can gate on it), 2 = cannot run."""
@@ -30,6 +45,9 @@ def check(cfg):
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
     print("config files : %s" % (", ".join(cfg.files) or "none (defaults)"))
     print("device list  : %s" % cfg.data)
+    line, stale = data_age_line(cfg)
+    if line:
+        print(line)
     try:
         report = {}
         headers, rows = read_table(cfg.data, report)
@@ -75,7 +93,7 @@ def check(cfg):
                                  else "kept until TRuffle exits (password_lifetime = 0)"))
     if not ok:
         return 2
-    return 0 if no_warnings else 1
+    return 0 if no_warnings and not stale else 1
 
 
 def parse_args(argv):

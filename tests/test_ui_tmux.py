@@ -52,6 +52,7 @@ class UiSmokeTest(unittest.TestCase):
     # server has put in it must not decide how the test runs.  A key in `extra_conf` is
     # left out here - configparser refuses the same option twice in one file.
     CONF = (("data", "data.csv"), ("user", "timmy"), ("tmux", "yes"), ("session_log", "no"),
+            ("data_max_age_days", "30"),
             ("charset", "unicode"), ("console_hosts", "*-*-ts?-*"), ("console_login", "{user}:{port}"),
             ("console_port_base", "7000"), ("password_lifetime", "600"), ("log_keep_days", "180"))
 
@@ -464,6 +465,22 @@ class UiSmokeTest(unittest.TestCase):
         self.assertEqual(len(self.panes(session)), MAX_PANES)
         self.wait_for("2 marked", timeout=20)            # the two that did not get a pane
         self.assertNotIn("11 marked", self.screen())
+
+    def test_an_old_device_list_says_so_and_a_new_export_clears_it(self):
+        """The list is a hand-run export: when it stops being run, nothing in TRuffle looks
+        wrong.  Past data_max_age_days the top bar says how old it is, and re-exporting it
+        plus Ctrl-R clears that again."""
+        data = os.path.join(self.tmp, "data.csv")
+        when = time.time() - 43 * 86400 - 60
+        os.utime(data, (when, when))
+        self.start()
+        self.wait_for("Device list: 43 days old, written")        # said once, at startup
+        self.wait_for("list 43d old")                             # and in the top bar, for good
+        with open(data, "a") as f:                                # the export runs again
+            f.write("cap-1;10.97.0.1;lab;Fresh;\n")
+        self.keys("C-r")
+        self.wait_for("Device list reloaded: 7 devices")
+        self.assertNotIn("list 43d old", self.screen())
 
     def test_pinging_hundreds_asks_first(self):
         with open(os.path.join(self.tmp, "data.csv"), "a") as f:

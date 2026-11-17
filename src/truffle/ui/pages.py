@@ -8,11 +8,20 @@ import time
 from .. import CREDIT, TITLE, VERSION
 from ..console import ConsoleLogin
 from ..credentials import minutes_text
+from ..inventory import data_age, days_ago
 from ..logs import keep_text
 from ..tmux import MAX_PANES, back_key
 from .theme import BANNER
 
 COMMANDS = ["ssh", "ping", "details", "help", "exit"]
+
+
+def written_text(cfg):
+    """', written 2026-09-25 - 43 days ago' for the help page's Setup block, or ''."""
+    days, written = data_age(cfg.data)
+    if days is None:
+        return ""
+    return ", written %s - %s" % (time.strftime("%Y-%m-%d", time.localtime(written)), days_ago(days))
 
 
 def help_sections(cfg, ncols, switches):
@@ -57,7 +66,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "Tab + ssh", "mark terminal servers (and other devices): one tmux session for all"),
         ("item", ConsoleLogin.EXIT_NAME, "back to TRuffle / close a console pane - log out of the switch FIRST"),
         ("section", "Setup"),
-        ("item", "Device list", "%s  (%d devices)" % (cfg.data, switches)),
+        ("item", "Device list", "%s  (%d devices%s)" % (cfg.data, switches, written_text(cfg))),
         ("item", "Config files", ", ".join(cfg.files) or "none (defaults)"),
         ("item", "State / results", cfg.state_dir),
         ("item", "Logs", "%s  (^G f lists them)" % cfg.log_dir),

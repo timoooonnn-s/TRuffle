@@ -17,7 +17,7 @@ import time
 
 from .. import CREDIT
 from ..credentials import Credentials
-from ..inventory import valid_host
+from ..inventory import days_text, valid_host
 from ..logs import logs_since, prune_logs
 from ..ping import PING_ENV, BatchPing, ProcStream, ping_argv, stream_verdict
 from ..console import is_console_name, is_console_server
@@ -68,6 +68,11 @@ class App(object):
         pruned, prune_error = prune_logs(cfg)
         if self.store.error or prune_error:
             self.message(self.store.error or prune_error, error=True, seconds=15)
+        elif self.list.data_stale() and not self.list.issues:
+            self.message("Device list: %s old, written %s (data_max_age_days in truffle.conf)"
+                         % (days_text(self.list.data_age),
+                            time.strftime("%Y-%m-%d", time.localtime(self.list.data_written))),
+                         error=True, seconds=20)
         elif pruned and not self.list.load_error and not self.list.issues:
             self.message("Deleted %d session log%s older than %d days (log_keep_days in truffle.conf)"
                          % (pruned, "" if pruned == 1 else "s", cfg.log_keep_days), seconds=10)
@@ -132,6 +137,8 @@ class App(object):
             right = "%d marked %s %s" % (len(lst.marked), sym["sep"], right)
         if self.panes.mine:
             right = "%d tmux %s %s" % (len(self.panes.mine), sym["sep"], right)
+        if lst.data_stale():        # the one thing about the list you cannot see in it
+            right = "list %dd old %s %s" % (lst.data_age, sym["sep"], right)
         hints = [("Enter", "run"), (sym["lr"], "command"), ("Tab", "mark"), ("^A", "all"), ("^E", "export"),
                  ("^G", "settings"), ("F1-F%d" % lst.ncols(), "sort"), ("^C", "quit")]
         if self.panes.mine:

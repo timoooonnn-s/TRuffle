@@ -154,7 +154,8 @@ From top to bottom:
   - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
     changes nothing - TRuffle says so instead of calling the device `down`.
   - **SSH** shows how your last real ssh attempt went: `ok` only when ssh actually got you logged in,
-    otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C`, or the password was refused.
+    otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C` or `Ctrl-Q`, or the password
+    was refused.
   - **Both say how old they are:** `now`, `5m`, `2h` (up to two days), then `3d`. A result older than
     a day is **faded** — `down` from three days ago says little about today, ping again. The exact time
     is in **details**. In a narrow window the age is left out before the word is cut.
@@ -177,7 +178,7 @@ From top to bottom:
 | `ESC` | step by step: 1. clears the search, 2. cancels a running ping, 3. clears the marks, 4. clears the sort. The footer says which step is next |
 | `F1` … `F12` | sort by that column: ▲ ascending → ▼ descending → original order |
 | `Tab` / `Shift-Tab` | mark / unmark a device for [several at once](#several-devices-at-once-tmux) (`+`). Marks survive a new search; `is:marked` lists them |
-| `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay |
+| `Ctrl-A` | mark **every device the search shows** - press it again to unmark them. Marks from other searches stay. An address you typed is not marked (`Ctrl-N` saves it first), like with `Tab` |
 | `Ctrl-E` | [export](#export) what the search shows, with the PING / SSH results, to a CSV in your home folder |
 | `Ctrl-N` | on an address you typed: [save it](#devices-that-are-not-in-the-list) to your own list, with its login (radius / local / manual). On one of yours (`*`): change its name and login, or `Ctrl-D` forgets it (asks first) |
 | `Ctrl-T` | back into the running [tmux session](#several-devices-at-once-tmux) |
@@ -615,6 +616,8 @@ ping:down  →  Ctrl-E   →  ~/truffle-export-20261025-141233.csv
 - missing IPs, unusable hosts, invalid IPv4 addresses (`10.0.0.300`), leading zeros (`010.0.0.5`, which ping reads as octal)
 - `ssh results`: whether this system lets TRuffle see that ssh started a session. The SSH column depends on it;
   `NOT RELIABLE` means every login would be recorded as failed
+- `list written`: when the device list was last written, and how long ago - see
+  [how old the list is](#how-old-the-list-is)
 
 TRuffle also says so at startup when the list has warnings.
 
@@ -625,7 +628,7 @@ An unknown or retired option in `truffle.conf` stops TRuffle at startup and name
 | Code | Meaning |
 |---|---|
 | `0` | everything fine |
-| `1` | warnings: the device list (duplicates, bad addresses, shifted columns), or `ssh results` not reliable |
+| `1` | warnings: the device list (duplicates, bad addresses, shifted columns), a list older than `data_max_age_days`, or `ssh results` not reliable |
 | `2` | cannot run: device list missing or unreadable, or `ssh` / `ping` not installed |
 
 ```bash
@@ -645,6 +648,20 @@ ber-core-01;192.0.2.1;ber;Core switch Berlin;5520;core;101;Ruffy;-
 - **New columns** (e.g. `location`) show up in **details** and `field:` [search](#search) right away.
   To show one in the table, add it to `columns` in the [configuration](#configuration).
 - `data.csv` is in `.gitignore`, so your inventory never ends up in git.
+
+### How old the list is
+
+The list is an export somebody runs by hand. When that stops happening, nothing in TRuffle looks
+wrong - every device is still there, the list is just older than the network. So TRuffle keeps an eye
+on the file's own date:
+
+- past **`data_max_age_days`** (30 by default, `0` switches it off) the top bar shows `list 43d old`,
+  and TRuffle says it once at startup with the date the file was written
+- `truffle --check` prints `list written` every time and **exits 1** when it is past that many days,
+  so a cron check can gate on it
+- the **help** page's Setup block always names the date, whatever the setting
+- the age is the file's modification time, read again on every `Ctrl-R` - re-exporting the list clears
+  the note without a restart
 
 ### A list whose columns are named differently
 
@@ -861,6 +878,8 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | F-keys don't sort | PuTTY *Terminal → Keyboard → Function keys* → `ESC[n~` (default) or `Xterm R6`. `ESC` with an empty search clears a sort |
 | TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
 | Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
+| `no 'IP' column` although the header has one | A `#` comment line above the header with a `,` in it - the delimiter was guessed from it. Fixed in 2.6; before that, move the comment below the header line |
+| The top bar says `list 43d old` | Nobody has re-exported the device list for that long - see [how old the list is](#how-old-the-list-is). `data_max_age_days = 0` in `truffle.conf` switches the note off |
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | `ssh : NOT FOUND` in `truffle --check` with a wrapper like `ssh_command = ct ssh` | The wrapper is not on the `PATH` of the server - give its full path (`ssh_command = /usr/local/bin/ct ssh`). With or without quotes around the value works the same since 2.2.1 |
 | With a wrapper (`ssh_command = ct ssh`) the password is not typed in, Enter gives `Permission denied` | Fixed in 2.2.1: the wrapper runs ssh on a terminal of its own, which before looked like a finished login. If it still happens, connect once with `truffle --debug` and look at the [debug log](#debug-log) |

@@ -20,6 +20,16 @@ class TestConfig(TempDir):
         self.assertEqual(cfg.log_dir, os.path.join(self.tmp, "site", "logs"))
         self.assertEqual(cfg.state_dir, os.path.join(self.tmp, "site", "st"))
 
+    def test_the_age_the_device_list_may_reach(self):
+        self.assertEqual(config.load_config(args()).data_max_age_days, config.DATA_MAX_AGE_DAYS)
+        self.assertEqual(config.DATA_MAX_AGE_DAYS, 30)
+        conf = self.write("c.conf", "[truffle]\ndata_max_age_days = 0\n")      # switched off
+        self.assertEqual(config.load_config(args(config=conf)).data_max_age_days, 0)
+        for bad in ("-1", "3651", "soon"):
+            conf = self.write("bad.conf", "[truffle]\ndata_max_age_days = %s\n" % bad)
+            with self.assertRaises(config.ConfigError, msg=bad):
+                config.load_config(args(config=conf))
+
     def test_the_logs_follow_the_state_folder(self):
         """log_dir was hard-coded to ~/.local/state/truffle/logs: XDG_STATE_HOME or
         state_dir moved the state and left the session logs behind."""

@@ -4,6 +4,7 @@ import csv
 import io
 import os
 import re
+import time
 
 from . import INSTALL_DIR
 from .config import valid_user
@@ -106,6 +107,29 @@ def read_text(path):
         except UnicodeDecodeError:
             pass
     return raw.decode("latin-1")
+
+
+def data_age(path):
+    """(whole days since the device list was last written, that time), or (None, None).
+
+    The list is a hand-run export: when nobody runs it any more, nothing in TRuffle looks
+    different - every device is still there, just older than the network.  The file's
+    mtime is the only sign, so it is read once per load and shown where it is noticed."""
+    try:
+        written = os.stat(path).st_mtime
+    except OSError:
+        return None, None
+    return max(0, int((time.time() - written) // 86400)), written
+
+
+def days_text(days):
+    """'today', '1 day', '43 days' - never '1 days'."""
+    return "today" if days == 0 else "1 day" if days == 1 else "%d days" % days
+
+
+def days_ago(days):
+    """'today', '1 day ago', '43 days ago' - never 'today ago'."""
+    return "today" if days == 0 else "%s ago" % days_text(days)
 
 
 def detect_delimiter(header_line):

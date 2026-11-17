@@ -1,6 +1,7 @@
 """The switch list: CSV reading, which column is which, the data check."""
 
 import os
+import time
 import unittest
 
 from support import args, TempDir
@@ -182,6 +183,33 @@ class TestCsv(TempDir):
         with self.assertRaises(inventory.DataError):
             inventory.build_devices(*inventory.read_table(p), cfg=cfg)
 
+
+
+class TestDataAge(TempDir):
+    """How old the device list is.  It is a hand-run export: when it stops being run,
+    every device is still in the list, so nothing else in TRuffle can show it."""
+
+    def aged(self, days):
+        path = self.write("sw.csv", "Name;IP\nab-1;10.0.0.1\n")
+        when = time.time() - days * 86400 - 60        # a minute past the full day
+        os.utime(path, (when, when))
+        return path
+
+    def test_the_age_comes_from_the_files_own_date(self):
+        for days in (0, 1, 2, 43, 400):
+            age, written = inventory.data_age(self.aged(days))
+            self.assertEqual(age, days)
+            self.assertAlmostEqual(written, time.time() - days * 86400 - 60, delta=5)
+
+    def test_no_file_no_age(self):
+        """A missing list is reported by read_table; the age must not raise over it."""
+        self.assertEqual(inventory.data_age(os.path.join(self.tmp, "nope.csv")), (None, None))
+
+    def test_the_words_for_it(self):
+        self.assertEqual([inventory.days_text(n) for n in (0, 1, 2, 43)],
+                         ["today", "1 day", "2 days", "43 days"])
+        self.assertEqual([inventory.days_ago(n) for n in (0, 1, 43)],
+                         ["today", "1 day ago", "43 days ago"])     # never "today ago"
 
 
 class TestDelimiter(TempDir):

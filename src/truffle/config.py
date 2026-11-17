@@ -20,8 +20,14 @@ CONFIG_SECTION = "truffle"
 # day, 0 = until exit.  Expiry never touches a running session or tmux pane.
 PASSWORD_LIFETIME_MINUTES = 600
 
+# How old the device list may get before TRuffle says so, in days from when the file was
+# last written (truffle.conf: data_max_age_days).  The list is a hand-run export, so an
+# export nobody runs any more is invisible otherwise.  0 = never mention it.
+DATA_MAX_AGE_DAYS = 30
+
 DEFAULTS = {
     "data": "data.csv",
+    "data_max_age_days": str(DATA_MAX_AGE_DAYS),
     "columns": "Name, IP, subnet, aliases:Alias, comment",
     "user": "",
     "manual_user": "",
@@ -55,6 +61,7 @@ class Config:
     charset_setting while TRuffle runs; nothing is ever written back to truffle.conf."""
     files: list                 # the config files that were read, in order
     data: str                   # the switch list
+    data_max_age_days: int      # say so when the list is older than this, 0 = never
     columns: list               # [(CSV header, table label)]
     user: str
     ssh_command: list
@@ -231,6 +238,7 @@ def load_config(args):
     return Config(
         files=files,
         data=data,
+        data_max_age_days=parse_int(raw["data_max_age_days"], "data_max_age_days", 0, 3650),
         columns=parse_columns(raw["columns"]),
         user=user,
         ssh_command=ssh_command,

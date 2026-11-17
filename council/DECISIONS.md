@@ -1307,3 +1307,96 @@ Code: +304 / -134 lines, net **+170** (estimated 200-240; the old one-server dia
   -> `Ctrl-D`; `local` alone then marked next to a normal switch (each pane its login); `labadmin@`
   manual with ssh's own prompt -> saved -> changed to radius.
 - `VERSION` **2.5.0**.
+
+## D57: Review round 11 fixed, and how old the device list is (user, 2026-11-09 / 11-17)
+A full review of `src/truffle/`, `tests/`, `tools/make-bundle.py` and D1-D56 - not just the diff.  Every
+finding was checked against the decision log first; what turned out to be decided already is listed at the
+end of this entry, not fixed.  **Status: all of it fixed the same day** (user: "fix all the bugs"), and
+30 tests added - 15 for the fixes, 15 for the feature below.  Every new test was verified by re-breaking
+the code it covers and watching it fail, so none of them is a test of nothing: 237 tests -> 267, green on
+Python 3.14.7 / tmux 3.8 / macOS 27.  The three that failed before the round were finding 5 itself.
+
+### The nine bugs no decision covered
+1. **An unbound ticket could be answered with the login** (*Warden*; the hole inside D29's "refused at
+   once, never waited for", and it contradicted TMUX-SECURITY.md's "another program running as you:
+   practically no").  `pid != expected and parent_pid(pid) != expected` - with no pid reported yet
+   `expected` is `None`, and a parent lookup that fails returns `None` too, so `None != None` was false and
+   the check passed.  Reproduced on macOS with a real fork: `OK {"user": ...}`.  An unbound ticket is now
+   refused before the pid check, by its own name (`ERR unbound ticket`), and a caller with no pid at all
+   with it.  TMUX-SECURITY.md says so where it explains the process check.
+2. **`Ctrl-Q` while ssh was still connecting was recorded as a login that worked** (against D45's rule that
+   only a session that STARTED can be judged).  `console_closed` short-circuited `failed` without asking
+   `started`, so a terminal server that never answered got `ssh: ok` and a place in `is:recent`.  It is a
+   cancel now, like `Ctrl-C` while connecting (`cancelled` covers it, so no "press a key" either).
+3. **The CSV delimiter was guessed from a `#` comment line** above the header: one comma in it beat a `;`
+   header, and the list then had "no 'IP' column" although nothing was wrong with it.  The guess now skips
+   blank and `#` lines, exactly as the reader below it does.  A file of only comments says "no header line".
+4. **A switch name from the shared CSV was tmux-format-expanded in the pane title** - the same class as D44
+   finding 3, which was fixed for `pipe-pane` only.  `select-pane -T` expands formats too, so `sw
+   #{pane_id}` stood on the pane border as `sw %0`.  One `format_text()` doubles every `#` for both, and a
+   test asks the real tmux what `#{pane_title}` gives back.
+5. **The tests read the machine's own `truffle.conf`** (*Tester*).  They isolate `~/.config` but not the
+   INSTALL folder's config - the repository root while they run from it.  Ruffy's `ssh_command = "ct ssh"`
+   in it failed `test_ssh_argv` and both `--check` tests, and the site's settings would do the same on the
+   server.  The install folder is an empty directory for the whole run now, and the tmux UI tests - which
+   start the real launcher - set every option they depend on in their own config file.
+6. **`Ctrl-A` marked the typed-address row** (D55: `Tab` refuses it, and neither ssh nor ping can use it),
+   so the top bar and the ESC hint counted one mark more than there were: 4 counted, 3 usable.
+7. **9 panes at most, but all the marks were cleared** - including the ones the same message had just
+   reported as NOT opened, so the rest could not be opened with the next Enter.  `many()` / `with_consoles()`
+   return the device keys they opened; only those marks are spent, and the note says "still marked".
+8. **Inside tmux the hints were wrong and the way out was a trap.**  TRuffle in tmux switches the client
+   instead of attaching, so `Ctrl-b d` - what the status bar, the footer and the help page all said -
+   detaches the whole client, and with tmux's default `detach-on-destroy` logging out of the last pane did
+   the same.  `back_key()` says `Ctrl-b L` there, and the pane session gets `detach-on-destroy off`.
+9. **A rebuilt bundle reported "DIFFERENT contents"** for the same files: the checksum covers the gzip
+   stream, which carries the build time - and it has to stay the payload's checksum, because that is what
+   the extractor verifies.  So the timestamps go instead: `mtime = 0` in the tar members and in the gzip
+   header.  Two builds two seconds apart, with source mtimes touched in between, now say "already up to
+   date"; the bundle still verifies and lists its files.
+
+### The four smaller points
+- **The logs did not follow the state folder:** `log_dir` was hard-coded to `~/.local/state/truffle/logs`,
+  so `XDG_STATE_HOME` or a `state_dir` of your own moved the state and left the session logs behind.  Unset
+  it is `<state_dir>/logs` now - the same path as before by default.
+- **Only the last pane login failure was seen:** `authfail` held one line, so of two panes failing with two
+  different logins between two polls only one login was dropped.  It keeps the last 20 lines (under the
+  state lock), and TRuffle acts on every one since its last look.
+- **A pane's RADIUS failure dropped the local accounts too** (against D54's "only the login that failed").
+  `forget_if_older` drops ours alone now; `expire()` no longer takes the others with it either, where it
+  would have made its own "password forgotten" message a lie.
+- **`pipe-pane -o` does not mean "never twice"** - it TOGGLES, and closes an existing pipe.  It is safe
+  only because `#{pane_pipe}` is checked first; the docstring says so instead of the opposite.
+
+### How old the device list is (user's choice from the review's shortlist, 11-17)
+The list is a hand-run Infoblox export.  When nobody runs it any more, nothing in TRuffle looks wrong -
+every device is still there, the list is just older than the network.  The file's own date is the only
+sign, so TRuffle reads it on every load (`Ctrl-R` included) and shows it where it is noticed:
+- **`data_max_age_days = 30`** in `truffle.conf` (0 = never mention it): one number for the whole team,
+  like `password_lifetime`.  On by default - off by default would have left the silent failure silent,
+  which was the point.  The threshold is the last good day: 30 is still fine, 31 is old.
+- Past it the top bar carries **`list 43d old`** for as long as it is true, and TRuffle says it once at
+  startup with the date the file was written.  Re-exporting the list and `Ctrl-R` clears both.
+- **`truffle --check`** prints `list written` every time, and a stale list is a warning, so the exit code
+  is 1 and a cron check can gate on it (C3's exit codes finally have a use).
+- The **help** page's Setup block names the date whatever the setting is - the one place the fact is always
+  there, including with the check switched off.
+- *Tester:* the age off the file's mtime (0, 1, 2, 43, 400 days, no file), the words for it ("1 day", never
+  "today ago"), the option and its bounds, the three `--check` lines with their exit codes, the threshold
+  edge (30 vs. 31), a reload that picks up a new export, and a tmux UI run: a 43-day-old `data.csv` ->
+  the startup message and the top bar -> append a device -> `Ctrl-R` -> the note is gone.
+
+### Found, but decided - not fixed
+An unbound ticket refused at once without waiting (D29), `-` not escaped in the export, one mark alone
+ignored by ssh and ping (D35/D36), pane results before "press a key" and the second-prompt kill (D3, D45),
+and TMUX-SECURITY.md's `/run/user` wording (open in D40).
+
+### The rest of the feature shortlist
+- **The login matrix is frozen:** three held credentials, three logins for saved devices, two for terminal
+  servers, a ticket variant for each - D55 was half replaced by D56 within five days and neither is
+  field-tested (the boxes in PLAN.md are open).  Nothing is added there until they are ticked.
+- **Running inside tmux as a supported case** is half done with finding 8; what is left is `Ctrl-T` from
+  inside tmux and the top bar saying you are in it.
+- **Clipboard copy (M8) stays out:** since the mouse was removed, selecting text works natively, and
+  PuTTY's OSC 52 support is weak.  M7 ("down since") untouched.
+- `VERSION` **2.6.0**.

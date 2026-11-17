@@ -14,6 +14,13 @@
 # Can also be set with --data.
 #data = data.csv
 
+# How old the device list may get before TRuffle says so, in days since the file was last
+# written. The list is a hand-run export, so one that nobody exports any more looks exactly
+# like a list that is simply correct - every device still there, just older than the network.
+# Past this many days TRuffle notes "list 43d old" in the top bar, says it once at startup,
+# and "truffle --check" exits 1, so a cron check can gate on it. 0 = never mention it.
+#data_max_age_days = 30
+
 # Columns shown in the table, in this order. "csvheader:Label" renames a column.
 # Header names are matched case-insensitively. Search looks at these columns.
 # Columns not listed here are still shown by "details".
