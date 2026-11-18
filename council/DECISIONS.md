@@ -1511,3 +1511,55 @@ The help page and `truffle --check` say the same sentence.
   frame, and a 46-column screen where every window row must still have both of its borders.  Each one was
   re-broken to confirm it fails without its fix.  278 tests, green.
 - `VERSION` stays **2.6.0**: still nothing built or delivered (D22's rule, as in D58).
+
+### Still cut: the save and console windows (second report, 2026-11-18)
+User, on a manually added host: "I still have this issue ... With the local account.  On my macbook 14"
+screen it says 'the devices' local account, asked once - kept'.  This looks cut off."
+The round above fixed the **login** window (wraps, grows, marks a cut) and the subtitle and key row of
+every window.  It did not fix the two windows that put a sentence in a second column:
+- **Save window** (`^N`, and every manually typed address): the line under `Login` starts at column 15 of
+  a window at most 66 wide, so it had 48 columns.  `local` needs 45 - it fit at 80 columns and was cut
+  from **68 columns down**, reproduced at 64: "the devices' local account - asked once…".  The sentence
+  also read as if it had been cut even when it was whole, so it is one now: **"the devices' local
+  account, asked once and kept"**.
+- **Console window**: both login lines start at column 21 of a window at most 74 wide, leaving 50
+  columns, and all four of their texts are 41-43 long - cut on **every terminal under 80 columns**, which
+  includes the 74-wide default of many terminals.  Same for its `Line = the port ...` line (67 long,
+  budget `bw - 6`): cut under 74.
+- Now both windows do what the login window does: `wrapped()` returns the lines a sentence needs, the
+  window **grows** by them (`bh` is computed from the wrapped blocks, and every row below shifts with
+  them), and only a screen too **short** to grow falls back to a cut marked with `…`.  Verified at 80,
+  74, 64 and 56 columns and on a 14-row screen.
+- `wrapped()` wraps with `break_on_hyphens=False`: a device or account name (`ber-core-ts1-a`) must not
+  be torn apart at its hyphens.  A name longer than the window is still broken rather than drawn over the
+  frame - that is the one case where a word is split.
+- *Why it was missed:* the earlier round measured the texts the **login** window draws (which is why
+  `login_hints()` exists as data) and then only the window frames of the others.  The save and console
+  sentences lived inline in the drawing code, where nothing could measure them.  They are data now too -
+  `SAVE_LOGIN_TEXT`, `SAVE_CONSOLE_TEXT`, `SAVE_NOTE`, `server_login_text()`, `device_login_text()` - and
+  a test walks all of them, including the ones built from a login name.
+- *Tester:* four new tests, each re-broken to confirm it fails without its fix: every save / console
+  sentence fits the widest window; every one survives wrapping at 40 columns with nothing lost and
+  nothing past the frame; and two tmux UI runs - the save window at 64 columns, where the whole
+  local-account sentence must be on screen with no `…`, and the console window at 56, where both login
+  sentences must be.
+
+### The settings window's log path (same round, found while reading)
+`Ctrl-G` showed the session log's directory as **`on  /var/folders/4n/7ktpb9t…`** at every width - its
+value column is `window width - 46`, about 28 columns at 80.  A path is the one value in that window you
+cannot guess from its first half, and it was cut from the **right**, which keeps the part that says
+nothing.  The same window was also **56 columns wide on a 46-column screen**: its right border was off
+the screen, which nobody had noticed because no test opened it on a narrow one.
+- `draw.short_path()`: `$HOME` as `~`, and when it still does not fit, the **end** kept, marked with a
+  leading `…` and started at a folder boundary where one is near - `…/by-user/timmy/logs`.  The usual
+  `~/.local/state/truffle/logs` (27) now fits whole.
+- The window is **as wide as its longest row needs**, between 56 and 96 columns and never wider than the
+  screen; a screen too narrow for that pays from the **label** column (down to 10, cuts marked), not
+  from the value.  Its "Not saved - ..." line wraps like the other windows' sentences.
+- `f`'s hint went from "f shows the full paths" to **`f: paths`** so the row fits the narrowest window;
+  the key is on the row anyway, and `f` itself prints every path in full.
+- *Tester:* three new tests, each re-broken to confirm it fails without its fix: `short_path` at every
+  width from 4 up (nothing longer than its room, always a tail of the real path, `…` whenever something
+  was dropped), a settings row shortening a path but not a hint, and a tmux run that reads the
+  `Session log` row - the end of a deep log path must be on it, and at 46 columns every row of the
+  window must still have both of its borders.

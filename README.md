@@ -33,9 +33,11 @@ TRuffle keeps its menu, but runs ssh inside your terminal instead of a new deskt
 On the server: Linux, **Python 3.8 or newer** (`python3 --version`), the OpenSSH client and `ping`.
 
 **Terminal size:** the list draws from **40x10** on (below that TRuffle says so instead of drawing a
-mess). The windows - login, save a device, console - show all of their text from about **80x16**; on
-anything smaller they wrap it, mark what they had to shorten with `…` and drop their least important
-line, so nothing ever runs over a window frame. A full-screen PuTTY or Tabby window is well past that.
+mess). The windows - login, save a device, console - **wrap** their sentences and grow a row for every
+wrapped line, so a narrow screen loses none of the text and nothing ever runs over a window frame. What
+a window cannot do is grow past the screen: on a **short** one it shortens a line, marks it with `…` and
+drops its least important hint. From about **80x24** on, nothing has to wrap at all - a full-screen
+PuTTY or Tabby window is well past that.
 
 ### 2. Get TRuffle
 
@@ -515,7 +517,7 @@ that won't log in. **`Ctrl-G`** opens them without restarting TRuffle:
 
 | Key | Setting | What it does |
 |---|---|---|
-| `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on |
+| `l` | Session log | start/stop recording ssh sessions to files ([details](#session-logging)), **including tmux panes that are already running**. Shows the folder while on - `~` for your home directory, and a path too long for the window keeps its end (`…/by-user/logs`) |
 | `d` | Debug log | start/stop recording what happens around each login ([details](#debug-log)). Shows the file while on |
 | `p` | Forget the stored password | drops it now, e.g. before you leave your desk — the [local accounts](#terminal-servers-console) too. Running sessions and tmux panes are untouched |
 | `f` | Log files of this session | lists every log file written since TRuffle started, with its [full path](#where-the-log-files-are) |
@@ -891,6 +893,8 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | With a wrapper (`ssh_command = ct ssh`): `Ctrl-C` on a connect that hangs showed `ok` in the SSH column | Fixed in 2.6. The wrapper exits `0` when the ssh inside it is interrupted, and that `0` was read as a clean session. It is recorded as `failed` / *cancelled while connecting* now |
 | With a wrapper (`ssh_command = ct ssh`) the password is not typed in, Enter gives `Permission denied` | Fixed in 2.2.1: the wrapper runs ssh on a terminal of its own, which before looked like a finished login. If it still happens, connect once with `truffle --debug` and look at the [debug log](#debug-log) |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
+| `Ctrl-G` shows the log directory as `…/truffle/logs` | The window is only so wide: a path that does not fit keeps its **end**, with `…` for what was dropped (`~` stands for your home directory). `f` in that window, `truffle --logs` and `truffle --check` print every path in full |
+| A sentence in a window stops mid-word, with or without a `…` | Fixed in 2.6: the windows wrap their text and grow for it. A `…` is now left only when the screen is too **short** for the window to grow - make the terminal a few rows taller. See [terminal size](#1-check-the-requirements) |
 | Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |
 | Every ssh shows `failed`, even good logins | Run `truffle --check`: if `ssh results` says `NOT RELIABLE`, TRuffle cannot see sessions start on this system - send the output. Also check `ssh_options` has no `-T` / `RequestTTY=no` |
 | Not sure what's wrong | `truffle --check` |

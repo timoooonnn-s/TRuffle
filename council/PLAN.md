@@ -36,8 +36,13 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 - [ ] A terminal server that does not answer: `Ctrl-Q` while connecting leaves no `ok` in the SSH column
 - [ ] Ruffy: a device name with a `#` in it - the pane border shows the name, not `%0`
 - [ ] D59: the texts - anything left that says "switch" where it is not one (Ruffy and the newcomers)
-- [ ] D59: the local-account window on the MacBook - the whole sentence, and the password line read once
-      by someone who has not seen it before
+- [x] D59: the local-account window on the MacBook - the whole sentence.  Reported cut a second time
+      (2026-11-18): the SAVE window (and the console window) still cut their sentences; both wrap now.
+- [ ] D59: the password line read once by someone who has not seen it before
+- [ ] D59: the save window on the MacBook at its real width - the local-account sentence whole, and the
+      console window's two login lines whole; if a window ever grows past the screen, say so
+- [ ] D59: `Ctrl-G` on the server - the real `log_dir` whole, or its end with a `…`; and `f` still
+      prints every path in full
 - [ ] Ruffy (D58): `Ctrl-C` on a switch that does not answer, through `ct ssh` - the SSH column says
       `failed`, not `ok`; and a normal login through `ct ssh` is still `ok` afterwards
 

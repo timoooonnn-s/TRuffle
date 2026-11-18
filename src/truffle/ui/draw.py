@@ -1,6 +1,7 @@
 """Small drawing helpers: text that never raises, fits its cell, and the PING / SSH cell."""
 
 import curses
+import os
 
 from ..results import STALE_SECONDS, WAIT
 
@@ -31,6 +32,29 @@ def fit(text, width, more="~"):
     if len(text) <= width:
         return text.ljust(width)
     return text[:width - 1] + more
+
+
+def short_path(path, width=None, more="\u2026"):
+    """A path for a narrow column: $HOME written as `~`, and when it still does not fit,
+    the END of it kept.  The last folders say what a path is ("\u2026/state/truffle/logs");
+    the first ones never do, and cutting a path from the right leaves nothing to go on
+    (user, 2026-11-18: the settings window showed "on  /var/folders/4n/7ktpb9t\u2026").
+    width=None only writes $HOME as `~`."""
+    home = os.path.expanduser("~")
+    if home and home != os.sep:
+        if path == home:
+            path = "~"
+        elif path.startswith(home + os.sep):
+            path = "~" + path[len(home):]
+    if width is None or len(path) <= width:
+        return path
+    if width <= len(more) + 1:
+        return path[-width:] if width > 0 else ""
+    tail = path[-(width - len(more)):]
+    cut = tail.find(os.sep)
+    if 0 < cut <= 12:                    # start the tail at a folder boundary when one is near
+        tail = tail[cut:]
+    return more + tail
 
 
 def fit_widths(widths, available, minimum=6):

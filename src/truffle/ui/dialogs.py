@@ -1,6 +1,7 @@
 """The dialog windows: login, terminal-server line, your own devices, settings.  Each one draws on a
 Screen, reads keys until it is done and returns what was chosen - no TRuffle state."""
 
+import os
 import textwrap
 
 from ..config import valid_user
@@ -8,7 +9,7 @@ from ..console import console_user, parse_console_lines
 from ..credentials import minutes_text
 from ..inventory import DEVICE_LOGINS, clean
 from ..state import CONSOLE_MODES, SERVER_MODES
-from .draw import fit, put
+from .draw import fit, put, short_path
 
 
 def edit_field(text, key, keep=None, limit=None):
@@ -26,6 +27,43 @@ def edit_field(text, key, keep=None, limit=None):
         return None
     added = "".join(c for c in added if keep is None or keep(c))
     return (text + added)[:limit] if limit else text + added
+
+
+def wrapped(text, width):
+    """A hint as the lines it needs.  These texts are sentences: a window WRAPS them and
+    grows for them instead of cutting the end off, which is what the save and console
+    windows did on any terminal under ~74 columns (user, 2026-11-18, on the local-account
+    line of a manually added host: "This looks cut off")."""
+    # break_on_hyphens: a device or account name (ber-core-ts1-a) must not be torn apart
+    # at its hyphens; a word longer than the window is still broken, never drawn over it.
+    return textwrap.wrap(text, max(10, width), break_on_hyphens=False) or [""]
+
+
+# The sentences the save and console windows print under their fields.  They live here,
+# next to login_hints(), so a test can measure every one of them against the room its
+# window has without a terminal.
+SAVE_LOGIN_TEXT = {"radius": "your RADIUS login, like the devices in the list",
+                   "local": "the devices' local account, asked once and kept",
+                   "manual": "ssh as the user below, you type the password"}
+SAVE_CONSOLE_TEXT = "terminal server - the console window asks"
+SAVE_NOTE = "Only for you - the device list stays as it is."
+
+
+def server_login_text(server_mode, who, sep="·"):
+    """The line under the console window's Terminal server field.  who: the user it logs
+    in as ("timmy:7012"), or "" when no login is held yet."""
+    return "%s  %s  %s" % ("your RADIUS login" if server_mode == "radius" else "its local account",
+                           sep, who or "asked once and kept")
+
+
+def device_login_text(mode, user, local_user=None):
+    """The line under the console window's Device login field."""
+    if mode == "radius":
+        return "RADIUS (%s), TRuffle types it" % user
+    if mode == "local":
+        return ("its local account %s, TRuffle types it" % local_user if local_user
+                else "its local account, asked once and kept")
+    return "you log in at the device yourself"
 
 
 def login_hints(lifetime=0, local_for=None, which=""):
@@ -125,12 +163,23 @@ def save_dialog(screen, address, name, login, user, saved=False, error=None, is_
         console = is_console(clean(entry[0]))
         login = "radius" if console else DEVICE_LOGINS[li]
         manual = login == "manual"
-        bw, bh = min(66, scr.getmaxyx()[1] - 6), 15
+        bw = min(66, scr.getmaxyx()[1] - 6)
+        # The line under Login is a whole sentence, so it is wrapped to the window and the
+        # window grows for it; only a screen too SHORT to grow falls back to a marked cut.
+        what = SAVE_CONSOLE_TEXT if console else SAVE_LOGIN_TEXT[login]
+        note = SAVE_NOTE
+        hints, foot = wrapped(what, bw - 18), wrapped(note, bw - 6)
+        if 15 + (len(hints) - 1) + (len(foot) - 1) > scr.getmaxyx()[0]:
+            foot = [fit(note, max(0, bw - 6), sym["more"]).rstrip()]
+        if 15 + (len(hints) - 1) > scr.getmaxyx()[0]:
+            hints = [fit(what, max(0, bw - 18), sym["more"]).rstrip()]
+        hs = len(hints) - 1
+        bh = 15 + hs + len(foot) - 1
         y0, x0 = screen.draw_window("Device" if saved else "Save device", "your own list", bh, bw)
         fw = max(6, bw - 18)
         put(scr, y0 + 2, x0 + 3, "Address", th.win)
         put(scr, y0 + 2, x0 + 15, address[:fw], th.win_label)
-        for i, (label, y) in enumerate((("Name", 4), ("User", 8))):
+        for i, (label, y) in enumerate((("Name", 4), ("User", 8 + hs))):
             if i and not manual:
                 continue
             active = field == i * 2
@@ -141,21 +190,19 @@ def save_dialog(screen, address, name, login, user, saved=False, error=None, is_
                 put(scr, y0 + y, x0 + 15 + len(shown), " ", th.cursor)
         if console:
             put(scr, y0 + 6, x0 + 3, "Login", th.win)
-            put(scr, y0 + 6, x0 + 15, fit("terminal server - the console window asks", max(0, bw - 18),
-                                          sym["more"]).rstrip(), th.win_hint)
+            hy = y0 + 6
         else:
             put(scr, y0 + 6, x0 + 3, "Login", th.win_label if field == 1 else th.win)
             put(scr, y0 + 6, x0 + 14, " %s %s %s" % (sym["lt"], login.ljust(6), sym["gt"]),
                 th.field if field == 1 else th.field_idle)
-            what = {"radius": "your RADIUS login, like the devices in the list",
-                    "local": "the devices' local account - asked once, kept",
-                    "manual": "ssh as the user below, you type the password"}[login]
-            put(scr, y0 + 7, x0 + 15, fit(what, max(0, bw - 18), sym["more"]).rstrip(), th.win_hint)
+            hy = y0 + 7
+        for i, line in enumerate(hints):
+            put(scr, hy + i, x0 + 15, line, th.win_hint)
         if error:
-            put(scr, y0 + 10, x0 + 3, fit(sym["dot"] + " " + error, max(0, bw - 6), sym["more"]).rstrip(),
+            put(scr, y0 + 10 + hs, x0 + 3, fit(sym["dot"] + " " + error, max(0, bw - 6), sym["more"]).rstrip(),
                 th.win_err)
-        put(scr, y0 + 11, x0 + 3, fit("Only for you - the device list stays as it is.", max(0, bw - 6),
-                                      sym["more"]).rstrip(), th.win_hint)
+        for i, line in enumerate(foot):
+            put(scr, y0 + 11 + hs + i, x0 + 3, line, th.win_hint)
         keys = [("Enter", "save")] + ([] if console else [("Tab", "next"), (sym["lr"], "login")])
         screen.draw_keys(y0 + bh - 2, x0 + 3, keys + ([("^D", "forget")] if saved else []) + [("ESC", "cancel")],
                          right=x0 + bw - 2)
@@ -203,10 +250,33 @@ def console_dialog(screen, cfg, servers, mode, user, local_user, others=0, serve
     while True:
         mode, server_mode = CONSOLE_MODES[mi], SERVER_MODES[si]
         bw = min(74, scr.getmaxyx()[1] - 6)
-        bh = 13 + n
+        parsed = [parse_console_lines(cfg, t)[0] if t.strip() else None for t in texts]
+        first = next((ls[0] for ls in parsed if ls), None)
+        ts_user = user if server_mode == "radius" else server_user
+        # The three sentences under the fields, wrapped to the window, which grows for them
+        # (they were cut off on any terminal under 80 columns).
+        who = (console_user(cfg, ts_user, first) if ts_user and first else
+               "%s:<port>" % ts_user if ts_user else "")
+        server_what = server_login_text(server_mode, who, sym["sep"])
+        device_what = device_login_text(mode, user, local_user)
+        panes = sum(len(ls) for ls in parsed if ls) + others
+        if error:
+            info_text, attr = sym["dot"] + " " + error, th.win_err
+        elif panes > 1:
+            info_text, attr = "%d tmux panes%s, the same two logins for all consoles" % (
+                panes, " (%d of them ssh)" % others if others else ""), th.win_hint
+        else:
+            info_text, attr = "Line = the port on the terminal server: 12 -> %d. Several: 3 7 12" % (
+                cfg.console_port_base + 12), th.win_hint
+        blocks = [wrapped(server_what, bw - 24), wrapped(device_what, bw - 24), wrapped(info_text, bw - 6)]
+        if 13 + n + sum(len(b) - 1 for b in blocks) > scr.getmaxyx()[0]:
+            blocks = [[fit(t, max(0, bw - w), sym["more"]).rstrip()]        # too short to grow: mark the cut
+                      for t, w in ((server_what, 24), (device_what, 24), (info_text, 6))]
+        server_hint, device_hint, info = blocks
+        sh, dh = len(server_hint) - 1, len(device_hint) - 1
+        bh = 13 + n + sh + dh + len(info) - 1
         title = "Consoles" if many else "Console"
         y0, x0 = screen.draw_window(title, "%d terminal servers" % n if many else servers[0][0], bh, bw)
-        parsed = [parse_console_lines(cfg, t)[0] if t.strip() else None for t in texts]
         for i, (name, _) in enumerate(servers):
             y = y0 + 2 + i
             put(scr, y, x0 + 3, fit(name if many else "Lines", 17).rstrip(), th.win_label if i == field else th.win)
@@ -218,36 +288,21 @@ def console_dialog(screen, cfg, servers, mode, user, local_user, others=0, serve
         # The two logins, in the order they happen (D47); the terminal server's is a choice
         # since D54 - lab terminal servers have a local account instead of RADIUS.
         y = y0 + 3 + n
-        first = next((ls[0] for ls in parsed if ls), None)
-        ts_user = user if server_mode == "radius" else server_user
         put(scr, y, x0 + 3, "Terminal server", th.win_label if field == n else th.win)
         put(scr, y, x0 + 21, "%s %s %s" % (sym["lt"], server_mode.ljust(6), sym["gt"]),
             th.field if field == n else th.field_idle)
-        what = ("your RADIUS login  %s  " % sym["sep"] if server_mode == "radius"
-                else "its local account  %s  " % sym["sep"])
-        what += (console_user(cfg, ts_user, first) if ts_user and first else
-                 "%s:<port>" % ts_user if ts_user else "asked once, then kept")
-        put(scr, y + 1, x0 + 21, fit(what, max(0, bw - 24), sym["more"]).rstrip(), th.win_hint)
-        put(scr, y + 2, x0 + 3, "Device login", th.win_label if field == n + 1 else th.win)
-        put(scr, y + 2, x0 + 21, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]),
+        for i, line in enumerate(server_hint):
+            put(scr, y + 1 + i, x0 + 21, line, th.win_hint)
+        put(scr, y + 2 + sh, x0 + 3, "Device login", th.win_label if field == n + 1 else th.win)
+        put(scr, y + 2 + sh, x0 + 21, "%s %s %s" % (sym["lt"], mode.ljust(6), sym["gt"]),
             th.field if field != n else th.field_idle)
-        what = {"radius": "RADIUS (%s), TRuffle types it" % user,
-                "local": ("its local account %s, TRuffle types it" % local_user) if local_user
-                         else "its local account - asked once, then kept",
-                "manual": "you log in at the device yourself"}[mode]
-        put(scr, y + 3, x0 + 21, fit(what, max(0, bw - 24), sym["more"]).rstrip(), th.win_hint)
-        panes = sum(len(ls) for ls in parsed if ls) + others
-        if error:
-            info, attr = sym["dot"] + " " + error, th.win_err
-        elif panes > 1:
-            info, attr = "%d tmux panes%s, the same two logins for all consoles" % (
-                panes, " (%d of them ssh)" % others if others else ""), th.win_hint
-        else:
-            info, attr = "Line = the port on the terminal server: 12 -> %d. Several: 3 7 12" % (
-                cfg.console_port_base + 12), th.win_hint
-        put(scr, y + 5, x0 + 3, fit(info, max(0, bw - 6), sym["more"]).rstrip(), attr)
-        screen.draw_keys(y + 7, x0 + 3, (("Enter", "connect"), ("Tab", "next"),
-                                         (sym["lr"], "login"), ("ESC", "cancel")), right=x0 + bw - 2)
+        for i, line in enumerate(device_hint):
+            put(scr, y + 3 + sh + i, x0 + 21, line, th.win_hint)
+        for i, line in enumerate(info):
+            put(scr, y + 5 + sh + dh + i, x0 + 3, line, attr)
+        screen.draw_keys(y + 7 + sh + dh + len(info) - 1, x0 + 3,
+                         (("Enter", "connect"), ("Tab", "next"),
+                          (sym["lr"], "login"), ("ESC", "cancel")), right=x0 + bw - 2)
         scr.refresh()
 
         key = screen.read_key(-1)
@@ -281,21 +336,43 @@ def console_dialog(screen, cfg, servers, mode, user, local_user, others=0, serve
                 texts[field], error = edited, None
 
 
+def row_text(value, extra, room=None, more="\u2026"):
+    """One settings row's right-hand side: the value, and after it the extra - a path
+    shortened to `room` from its end, anything else as it is."""
+    if not extra:
+        return value
+    return "%s  %s" % (value, short_path(extra, room, more) if os.path.isabs(extra) else extra)
+
+
 def settings_window(screen, rows):
     """Draw the settings window once and return the key pressed.  rows are
-    (key, label, value, extra); a value of "on" is highlighted."""
-    scr, th = screen.scr, screen.th
-    width = min(80, max(56, scr.getmaxyx()[1] - 6))
-    label_w, value_x = 34, 3 + 4 + 34 + 2
-    y0, x0 = screen.draw_window("Settings", "for this TRuffle only", len(rows) + 7, width)
+    (key, label, value, extra); a value of "on" is highlighted.  An `extra` that is an
+    absolute path is written with `~` for $HOME and, if the column is still too narrow,
+    kept from its END - the log directory is the one value in here that says nothing at
+    all when it is cut from the right."""
+    scr, th, sym = screen.scr, screen.th, screen.sym
+    room = max(40, scr.getmaxyx()[1] - 6)
+    # As wide as the longest row needs (paths with $HOME as ~), between 56 and 96 columns,
+    # and never wider than the screen.  3 for the key, 4 + 2 of gaps, 3 of right margin.
+    texts = [row_text(value, extra) for _, _, value, extra in rows]
+    label_w = min(34, max(len(label) for _, label, _, _ in rows))
+    width = min(room, max(56, min(96, 12 + label_w + max(len(t) for t in texts))))
+    label_w = min(label_w, max(10, width - 12 - 12))      # a narrow screen pays from the labels
+    value_x = 3 + 4 + label_w + 2
+    budget = max(0, width - value_x - 3)
+    note = wrapped("Not saved - put it in truffle.conf to keep it", width - 6)
+    if len(rows) + 7 + len(note) - 1 > scr.getmaxyx()[0]:
+        note = [fit(note[0], width - 6, sym["more"]).rstrip()]
+    y0, x0 = screen.draw_window("Settings", "for this TRuffle only", len(rows) + 7 + len(note) - 1, width)
     for i, (key, label, value, extra) in enumerate(rows):
         y = y0 + 2 + i
         put(scr, y, x0 + 3, key, th.win_key)
-        put(scr, y, x0 + 7, fit(label, label_w).rstrip(), th.win_label)
-        text = value if not extra else "%s  %s" % (value, extra)
-        put(scr, y, x0 + value_x, fit(text, width - value_x - 3, screen.sym["more"]).rstrip(),
+        put(scr, y, x0 + 7, fit(label, label_w, sym["more"]).rstrip(), th.win_label)
+        text = row_text(value, extra, max(0, budget - len(value) - 2), sym["more"])
+        put(scr, y, x0 + value_x, fit(text, budget, sym["more"]).rstrip(),
             th.win_key if value == "on" else th.win_hint)
-    put(scr, y0 + len(rows) + 3, x0 + 3, "Not saved - put it in truffle.conf to keep it"[:width - 6], th.win_hint)
-    screen.draw_keys(y0 + len(rows) + 5, x0 + 3, (("ESC", "close"),), right=x0 + width - 2)
+    for i, line in enumerate(note):
+        put(scr, y0 + len(rows) + 3 + i, x0 + 3, line, th.win_hint)
+    screen.draw_keys(y0 + len(rows) + 4 + len(note), x0 + 3, (("ESC", "close"),), right=x0 + width - 2)
     scr.refresh()
     return screen.read_key(-1)

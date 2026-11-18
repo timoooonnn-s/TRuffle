@@ -504,6 +504,73 @@ class UiSmokeTest(unittest.TestCase):
         # the name is cut, it says so, and the window's own top-right corner is still there
         self.assertIn("\u2026\u256e", title)
 
+    def test_the_settings_window_shows_the_end_of_the_log_path(self):
+        """Ctrl-G cut the session log's directory from the right - "on  /var/folders/4n/
+        7ktpb9t\u2026", which says nothing about where the logs are (2026-11-18).  The window
+        is as wide as its rows need now, and a path that still does not fit keeps its END."""
+        deep = os.path.join(self.tmp, "srv", "netops", "shared", "truffle", "sessions", "by-user", "logs")
+        self.start("session_log = yes\nlog_dir = %s\n" % deep)
+        self.keys("C-g")
+        self.wait_for("Session log")
+        row = next(line for line in self.screen().splitlines() if "Session log" in line)
+        self.assertIn("by-user/logs", row, self.screen())       # the end of it, whatever the width
+        self.assertTrue(row.rstrip().endswith("\u2502"), row)    # and inside the window frame
+        # at 46 columns the window used to be 56 wide - its right border was off the screen
+        tmux("resize-window", "-t", SESSION, "-x", "46", "-y", "20")
+        try:
+            self.wait_for("Session log")
+            rows = [line for line in self.screen().splitlines() if line.lstrip().startswith("\u2502")]
+            self.assertGreaterEqual(len(rows), 6, self.screen())
+            for line in rows:
+                self.assertGreaterEqual(line.count("\u2502"), 2, "%r\n%s" % (line, self.screen()))
+            row = next(line for line in self.screen().splitlines() if "Session log" in line)
+            self.assertIn("/logs", row, self.screen())          # still says where the logs are
+        finally:
+            tmux("resize-window", "-t", SESSION, "-x", "110", "-y", "30")
+
+    def test_the_local_account_line_wraps_instead_of_being_cut(self):
+        """On a 64-column terminal the save window cut its Login sentence: the user read
+        "the devices\u2019 local account, asked once" and the rest was gone (2026-11-18).
+        The window wraps the sentence and grows a row for it."""
+        tmux("resize-window", "-t", SESSION, "-x", "64", "-y", "24")
+        try:
+            self.keys("10.99.0.77", literal=True)
+            self.wait_for("not in the list")
+            self.keys("C-n")
+            self.wait_for("Save device")
+            self.keys("Down", "Right")                   # radius -> local
+            self.wait_for("local")
+            inside = " ".join(line.strip().strip("\u2502").strip() for line in self.screen().splitlines())
+            inside = " ".join(inside.split())
+            self.assertIn("the devices' local account, asked once and kept", inside, self.screen())
+            self.assertNotIn("\u2026", inside, self.screen())      # nothing was cut
+        finally:
+            tmux("resize-window", "-t", SESSION, "-x", "110", "-y", "30")
+
+    def test_the_console_window_wraps_its_two_login_lines(self):
+        """The console window cut both login sentences on any terminal under 80 columns
+        (the hints start at column 21 of the window).  At 56 they take two rows each and
+        the window grows for them."""
+        with open(os.path.join(self.tmp, "data.csv"), "a") as f:
+            f.write("ab-12-ts1-01;10.99.0.9;lab;Terminal server;\n")
+        self.start()
+        tmux("resize-window", "-t", SESSION, "-x", "56", "-y", "26")
+        try:
+            self.keys("ts1", literal=True)           # the name itself is cut in the table here
+            self.keys("Enter")
+            self.wait_for("Terminal server")
+            self.keys("12", literal=True)
+            self.keys("Down", "Right")                   # terminal server: radius -> local
+            self.keys("Down", "Right")                   # device login: radius -> local
+            self.wait_for("Device login")
+            inside = " ".join(line.strip().strip("\u2502").strip() for line in self.screen().splitlines())
+            inside = " ".join(inside.split())
+            self.assertIn("its local account \u00b7 asked once and kept", inside, self.screen())
+            self.assertIn("its local account, asked once and kept", inside, self.screen())
+            self.assertNotIn("\u2026", inside, self.screen())
+        finally:
+            tmux("resize-window", "-t", SESSION, "-x", "110", "-y", "30")
+
     def test_a_window_stays_inside_its_frame_on_a_narrow_screen(self):
         """At 46 columns the key row ("Enter save  Tab next  ←→ login  ESC cancel") ran
         straight through the right border and out across the screen (user: "the

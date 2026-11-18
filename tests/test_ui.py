@@ -162,6 +162,38 @@ class TestLoginWindowText(unittest.TestCase):
             for line in lines:
                 self.assertLessEqual(len(line), room, line)
 
+    def test_every_hint_of_the_save_and_console_windows_fits_too(self):
+        """The save window's line under Login and the console window's two login lines
+        were cut off on every terminal under ~74 columns - the user saw "the devices'
+        local account, asked once" with the rest gone (2026-11-18).  They are sentences:
+        at its widest a window must show each one whole, and narrower it wraps."""
+        for text, room in self.save_and_console_hints():
+            self.assertLessEqual(len(text), room, "%r has only %d columns" % (text, room))
+
+    def test_the_save_and_console_hints_wrap_without_losing_a_word(self):
+        for text, room in self.save_and_console_hints(long_names=True):
+            room -= 26                                    # the room left on a 40-column screen
+            lines = dialogs.wrapped(text, room)
+            # nothing is lost, and nothing reaches past the frame.  A login name longer
+            # than the window is the one thing that has to be broken mid-word.
+            self.assertEqual("".join(lines).replace(" ", ""), text.replace(" ", ""), text)
+            for line in lines:
+                self.assertLessEqual(len(line), room, "%r of %r" % (line, text))
+
+    def save_and_console_hints(self, long_names=False):
+        """(sentence, the columns its window has for it at its widest).  A login name is
+        the user's own and may be any length - only wrapping can save those."""
+        users = ["admin", "lab-local"] + (["a-long-local-account-name"] if long_names else [])
+        for text in list(dialogs.SAVE_LOGIN_TEXT.values()) + [dialogs.SAVE_CONSOLE_TEXT]:
+            yield text, 66 - 18                           # window 66 wide, hint at column 15
+        yield dialogs.SAVE_NOTE, 66 - 6
+        for server_mode in ("radius", "local"):
+            for who in [""] + ["%s:7012" % u for u in users]:
+                yield dialogs.server_login_text(server_mode, who), 74 - 24
+        for mode in ("radius", "local", "manual"):
+            for local_user in [None] + users:
+                yield dialogs.device_login_text(mode, "timmy", local_user), 74 - 24
+
     def test_the_password_line_says_how_long_it_is_kept(self):
         """It used to say "Kept in memory only - forgotten when TRuffle exits", whatever
         password_lifetime said - which also reads as if it were kept at exit."""
@@ -275,6 +307,30 @@ class TestDrawingHelpers(unittest.TestCase):
 
     def test_wrap(self):
         self.assertEqual(draw.wrap_lines(["a" * 25, ""], 10), ["a" * 10, "a" * 10, "a" * 5, ""])
+
+    def test_short_path_keeps_the_end_not_the_start(self):
+        """Ctrl-G showed "on  /var/folders/4n/7ktpb9t…": a path cut from the right says
+        nothing at all (user, 2026-11-18).  The last folders are the ones that do."""
+        home = os.path.expanduser("~")
+        self.assertEqual(draw.short_path(home + "/.local/state/truffle/logs"),
+                         "~/.local/state/truffle/logs")
+        self.assertEqual(draw.short_path(home), "~")
+        self.assertEqual(draw.short_path("/var/log/truffle", 20), "/var/log/truffle")
+        self.assertEqual(draw.short_path("/var/log/truffle", 16), "/var/log/truffle")
+        long = "/srv/netops/shared/truffle/sessions/by-user/timmy/logs"
+        for width in range(4, len(long) + 2):
+            shown = draw.short_path(long, width)
+            self.assertLessEqual(len(shown), width, "%d: %r" % (width, shown))
+            self.assertTrue(long.endswith(shown.lstrip("\u2026")), "%d: %r" % (width, shown))
+            if len(shown) < len(long):
+                self.assertTrue(shown.startswith("\u2026"), "%d: %r" % (width, shown))
+        self.assertEqual(draw.short_path(long, 12), "\u2026/timmy/logs")
+
+    def test_a_settings_row_shortens_a_path_but_not_a_hint(self):
+        self.assertEqual(dialogs.row_text("0", "f: paths", 8), "0  f: paths")
+        self.assertEqual(dialogs.row_text("on", "/srv/a/very/long/way/down/to/logs", 12),
+                         "on  \u2026/to/logs")
+        self.assertEqual(dialogs.row_text("off", ""), "off")
 
 
 class TestStatusAge(unittest.TestCase):

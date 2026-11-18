@@ -661,7 +661,7 @@ class App(object):
         held = self.creds.held_names()        # it drops them all, so it names them all
         rows.append(("p", "Forget the stored logins now", "held" if held else "not held", " + ".join(held)))
         written = logs_since(cfg, cfg.started)
-        rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
+        rows.append(("f", "Log files of this session", "%d" % len(written), "f: paths"))
         return rows
 
     def toggle(self, option):
