@@ -39,7 +39,7 @@ def data_age_line(cfg):
 
 
 def check(cfg):
-    """--check: validate config and switch list without starting the UI.  Exit code
+    """--check: validate config and device list without starting the UI.  Exit code
     0 = fine, 1 = warnings only (so a cron check can gate on it), 2 = cannot run."""
     ok, no_warnings = True, True
     print("%s v%s  %s" % (TITLE, VERSION, CREDIT))
@@ -88,9 +88,10 @@ def check(cfg):
     print("state dir    : %s" % cfg.state_dir)
     print("session log  : %s" % (cfg.log_dir if cfg.session_log else "off"))
     print("old logs     : %s" % keep_text(cfg))
-    print("password     : %s" % ("forgotten %s after you type it, sessions untouched"
+    print("password     : %s" % ("in memory only; forgotten %s after you typed it, or when you quit "
+                                 "(running sessions and panes are not touched)"
                                  % minutes_text(cfg.password_lifetime) if cfg.password_lifetime
-                                 else "kept until TRuffle exits (password_lifetime = 0)"))
+                                 else "in memory only; forgotten when you quit (password_lifetime = 0)"))
     if not ok:
         return 2
     return 0 if no_warnings and not stale else 1
@@ -129,7 +130,7 @@ def run_ui(cfg):
     signal.signal(signal.SIGTERM, lambda signum, frame: sys.exit(143))
     # Closing the PuTTY window or killing the tmux session sends SIGHUP.  Its default
     # kills TRuffle on the spot - a ping running or still on screen was then never saved,
-    # and after a restart ping:down could not find those switches (D48).  As an exit, the
+    # and after a restart ping:down could not find those devices (D48).  As an exit, the
     # results are saved on the way out like after Ctrl-C.
     signal.signal(signal.SIGHUP, lambda signum, frame: sys.exit(129))
     try:

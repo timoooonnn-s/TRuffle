@@ -1,7 +1,7 @@
 """Ctrl-E: the devices on screen and their results as a CSV in your home folder (D50) -
 the dead-host list for the IPAM owners.  Every CSV column, then PING / SSH with when they
 were taken and why ssh failed.  0600, never over an existing file, with a BOM so Excel
-opens the umlauts right, in the switch list's own delimiter."""
+opens the umlauts right, in the device list's own delimiter."""
 
 import csv
 import glob
@@ -11,7 +11,7 @@ import time
 EXTRA_HEADERS = ["Ping", "Ping checked", "SSH last try", "SSH tried", "SSH reason"]
 PREFIX = "truffle-export-"
 # Excel runs a cell that starts with one of these as a formula.  The CSV comes from the
-# IPAM and the ssh reason from a switch's output, so neither is trusted (Warden).  "-" is
+# IPAM and the ssh reason from a device's output, so neither is trusted (Warden).  "-" is
 # left alone: it is the usual "empty" in an inventory, and Excel shows "-x" as text.
 FORMULA_START = ("=", "+", "@")
 

@@ -35,7 +35,7 @@ class SwitchList(object):
     # -- loading ----------------------------------------------------------------
 
     def load(self):
-        """(Re)read the switch list.  Returns the warnings worth a message (a list)."""
+        """(Re)read the device list.  Returns the warnings worth a message (a list)."""
         keep = self.selected()
         warns = []
         self.data_age, self.data_written = data_age(self.cfg.data)     # also after Ctrl-R
@@ -181,7 +181,7 @@ class SwitchList(object):
     # -- marks --------------------------------------------------------------------
 
     def marked_devices(self):
-        """Every marked switch in marking order - NOT filtered by the search, so a
+        """Every marked device in marking order - NOT filtered by the search, so a
         selection can be collected over several searches (D34)."""
         first = {}
         for d in self.loaded:

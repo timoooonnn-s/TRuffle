@@ -3,13 +3,14 @@
 import glob
 import os
 import re
+import textwrap
 import time
 import unittest
 
 from support import SRC, FakeWin, TempDir, args
 from truffle import config, results, state, tmux
 from truffle.results import Results
-from truffle.ui import draw, keys, pages, switchlist, theme
+from truffle.ui import dialogs, draw, keys, pages, switchlist, theme
 
 
 START, END = "\x1b[200~", "\x1b[201~"
@@ -129,6 +130,46 @@ class TestDeviceListAge(TempDir):
         self.assertIsNotNone(lst.load_error)
         self.assertIsNone(lst.data_age)
         self.assertFalse(lst.data_stale())
+
+
+class TestLoginWindowText(unittest.TestCase):
+    """The hints under the login fields.  They were cut off mid-word on every screen,
+    however wide, and the password line said something else than the truth."""
+
+    WIDEST = 66 - 6          # the room the window has for a hint at its widest
+
+    def all_hints(self):
+        for lifetime in (0, 45, 90, 600, 1440):
+            for local_for in (None, "ab-12-ts1-01"):
+                for which in ("", "Only the device - not the terminal server in front of it.",
+                              "Only the terminal server, not the device behind it.",
+                              "Your devices set to local, and consoles that take it.",
+                              "For the terminal server ab-12-ts1-01."):
+                    for hint in dialogs.login_hints(lifetime, local_for, which):
+                        yield lifetime, hint
+
+    def test_every_hint_fits_the_window(self):
+        for lifetime, hint in self.all_hints():
+            self.assertLessEqual(len(hint), self.WIDEST, "%r (lifetime %s)" % (hint, lifetime))
+
+    def test_a_narrow_window_wraps_instead_of_cutting(self):
+        """40 columns is the smallest screen TRuffle draws on: a hint may take two lines
+        there, but no word may be lost."""
+        for lifetime, hint in self.all_hints():
+            room = 40 - 6 - 6
+            lines = textwrap.wrap(hint, room)
+            self.assertEqual(" ".join(lines).split(), hint.split(), hint)
+            for line in lines:
+                self.assertLessEqual(len(line), room, line)
+
+    def test_the_password_line_says_how_long_it_is_kept(self):
+        """It used to say "Kept in memory only - forgotten when TRuffle exits", whatever
+        password_lifetime said - which also reads as if it were kept at exit."""
+        self.assertEqual(dialogs.login_hints(600)[1], "Forgotten 10 h after you typed it, or when you quit")
+        self.assertEqual(dialogs.login_hints(90)[1],
+                         "Forgotten 1 h 30 min after you typed it, or when you quit")
+        self.assertEqual(dialogs.login_hints(0)[1], "Forgotten when TRuffle exits")
+        self.assertIn("never written to disk", dialogs.login_hints(600)[0])
 
 
 class TestTheme(unittest.TestCase):

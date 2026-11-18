@@ -122,12 +122,30 @@ class Screen(object):
         put(scr, y0 + bh - 1, x0, bl + hl * (bw - 2) + br, th.win_frame)
         put(scr, y0, x0 + 2, " %s " % title, th.win_title)
         if subtitle:
-            put(scr, y0, x0 + 4 + len(title), "%s %s " % (self.sym["sep"], subtitle), th.win_frame)
+            # Inside the frame, never over it: a saved device may be named with 64 characters,
+            # and the title line then ran over the window's corner and across the screen.
+            room = max(0, bw - 5 - len(title))
+            shown = fit("%s %s" % (self.sym["sep"], subtitle), room, self.sym["more"]).rstrip()
+            if len(shown) < room:
+                shown += " "          # one space before the frame line picks up again
+            put(scr, y0, x0 + 4 + len(title), shown, th.win_frame)
         return y0, x0
 
-    def draw_keys(self, y, x, keys):
-        """A row of key hints inside a window: [("Enter", "OK"), ("ESC", "cancel")]."""
+    def draw_keys(self, y, x, keys, right=None):
+        """A row of key hints inside a window: [("Enter", "OK"), ("ESC", "cancel")].
+        `right` is the first column the row may NOT reach - the window's frame.  Without
+        room for all of them the ones in the middle go: the first (what the window does)
+        and the last (ESC) are the two you cannot do without.  The row used to run straight
+        through the frame and out across the screen on a narrow terminal."""
+        keys = list(keys)
+        if right is not None:
+            def width(hints):
+                return sum(len(k) + len(t) + 4 for k, t in hints) - 4
+            while len(keys) > 2 and x + width(keys) > right:
+                del keys[-2]
         for key, label in keys:
+            if right is not None and x + len(key) + 1 + len(label) > right:
+                return
             put(self.scr, y, x, key, self.th.win_key)
             put(self.scr, y, x + len(key) + 1, label, self.th.win_hint)
             x += len(key) + len(label) + 4
@@ -143,7 +161,8 @@ class Screen(object):
             for i, line in enumerate(lines):
                 put(self.scr, y0 + 1 + i, x0 + 3, line[:width - 6], self.th.win_hint if i else self.th.win_label)
             put(self.scr, y0 + len(lines) + 2, x0 + 3, "y", self.th.win_key)
-            put(self.scr, y0 + len(lines) + 2, x0 + 5, "yes      any other key: no", self.th.win_hint)
+            put(self.scr, y0 + len(lines) + 2, x0 + 5,
+                "yes      any other key: no"[:max(0, width - 8)], self.th.win_hint)
             self.scr.refresh()
             key = self.read_key(-1)
             if key != "RESIZE":
@@ -206,7 +225,7 @@ class Screen(object):
         finally:
             if stream:
                 stream.stop()
-            # full repaint: a laggy link left ping lines in the switch list (D37)
+            # full repaint: a laggy link left ping lines in the device list (D37)
             self.scr.clear()
 
     def _text_rows(self, content, width):

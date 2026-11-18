@@ -18,7 +18,7 @@ import time
 from .results import CHECKED_STATES, KINDS, Results
 from .inventory import DEVICE_LOGINS, clean, typed_target
 
-CONSOLE_MODES = ("radius", "local", "manual")      # the switch behind a terminal server
+CONSOLE_MODES = ("radius", "local", "manual")      # the device behind a terminal server
 SERVER_MODES = ("radius", "local")                 # the terminal server itself (D54)
 
 
@@ -128,7 +128,7 @@ class UserState(object):
 
     def save_results(self, results):
         """Merge our results into the saved ones - newest wins, another TRuffle or a tmux
-        pane may have checked other switches meanwhile - and write them back."""
+        pane may have checked other devices meanwhile - and write them back."""
         with self._locked():
             merged = self.load_results()
             merged.merge_newer(results)
@@ -142,7 +142,7 @@ class UserState(object):
     # -- terminal servers -----------------------------------------------------------
 
     def console_choice(self, key):
-        """([lines], switch login, server login) you used last on this terminal server, or
+        """([lines], device login, server login) you used last on this terminal server, or
         ([], "radius", "radius").  Only a suggestion: lines get re-cabled, so the dialog
         always lets you change it.  A line is `server TAB lines TAB login [TAB server
         login]`, lines space-separated ("12" before D51, no server login before D54)."""

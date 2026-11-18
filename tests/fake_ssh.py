@@ -11,6 +11,8 @@
   10.99.0.8  like .1, but the password prompt takes 0.6 s (a slow connect)
   10.99.0.4  hangs while connecting until it is killed (press Ctrl-C), like an
              unreachable switch before ConnectTimeout
+  10.99.0.20 takes the password, then nothing comes back (a switch whose RADIUS server is
+             away): the session never starts, so Ctrl-C there is a cancel
   10.99.0.9  terminal server: user "<name>:70NN", password "secret" - or its local
              account "labts:70NN" / "lab123" (D54) - then silent until Enter; behind
              it, by line NN (the switch's RADIUS knows people, so behind labts it is timmy):
@@ -177,6 +179,10 @@ def main():
                 "Host key verification failed.\n" % kh)
             return 255
 
+    if host == "10.99.0.20":
+        read_secret("%s@%s's password: " % (user, host))
+        time.sleep(30)            # the password went in, the session never starts
+        return 255
     if host == "10.99.0.8":
         time.sleep(0.6)
     tries = 0

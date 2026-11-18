@@ -208,11 +208,12 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Save device")
         self.keys("lab-box", literal=True)
         self.keys("Down", "Right")                      # radius -> local
-        self.wait_for("the switches' local account")
+        self.wait_for("the devices' local account")
         self.keys("Enter")
         self.wait_for("Saved lab-box")
         self.keys("Enter")
-        self.wait_for("Your devices set to local")      # the local account window, not yours
+        self.wait_for("Your devices set to local, and consoles that take it.")   # whole, not cut off
+        self.assertIn("Forgotten 10 h after you typed it, or when you quit", self.screen())
         self.keys("labadmin", literal=True)
         self.keys("Tab")
         self.keys("lab123", literal=True)
@@ -222,6 +223,10 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Enter")
         self.wait_for("Disconnected from lab-box")
         self.assertIn("local: labadmin", self.screen())
+        self.keys("C-g")                                 # it names what it would drop
+        self.wait_for("Forget the stored logins now")
+        self.assertIn("held  local account", self.screen())     # not yours: a local device asks for it alone
+        self.keys("Escape")
         self.keys("Tab")
         self.keys("C-u")
         self.keys("fake-good", literal=True)
@@ -274,7 +279,7 @@ class UiSmokeTest(unittest.TestCase):
         self.start("session_log = yes\n")
         self.keys("ts1", literal=True)
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.assertIn("your RADIUS login", self.screen())       # the terminal server's login: radius by default
         self.keys("1", literal=True)
         self.wait_for("timmy:7001")
@@ -314,7 +319,7 @@ class UiSmokeTest(unittest.TestCase):
         self.start()
         self.keys("ts1", literal=True)
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.keys("1", literal=True)
         self.keys("Down", "Right")                       # the terminal server's login: radius -> local
         self.wait_for("its local account")
@@ -345,7 +350,7 @@ class UiSmokeTest(unittest.TestCase):
         self.start()
         self.keys("ts1", literal=True)
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.keys("3", literal=True)
         self.keys("Right")                               # on the line: the switch login, radius -> local
         self.keys("Down", "Right")                       # the terminal server: radius -> local
@@ -357,7 +362,7 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Tab")
         self.keys("lab123", literal=True)
         self.keys("Enter")
-        self.wait_for("switch behind ab-12-ts1-01")
+        self.wait_for("device behind ab-12-ts1-01")
         self.keys("C-u")
         self.keys("admin", literal=True)
         self.keys("Tab")
@@ -437,7 +442,7 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("not in the list")
         self.keys("C-a")
         self.wait_for("1 marked")
-        self.assertIn("Marked the 1 devices of this view", self.screen())
+        self.assertIn("Marked the 1 device of this view", self.screen())
         self.keys("C-u")
         self.keys("is:marked", literal=True)
         self.wait_for("sw10")
@@ -482,6 +487,41 @@ class UiSmokeTest(unittest.TestCase):
         self.wait_for("Device list reloaded: 7 devices")
         self.assertNotIn("list 43d old", self.screen())
 
+    def test_a_long_device_name_stays_inside_the_window(self):
+        """A saved name may be 64 characters long, and the window title ran over the
+        window's own corner and on across the screen (user, 2026-11-17)."""
+        self.keys("10.99.0.12", literal=True)
+        self.wait_for("not in the list")
+        self.keys("C-n")
+        self.wait_for("Save device")
+        self.keys("lab-box-in-the-second-rack-of-row-twelve-berlin-and-further", literal=True)
+        self.keys("Down", "Right")                       # radius -> local
+        self.keys("Enter")
+        self.wait_for("Saved lab-box")
+        self.keys("Enter")                               # connect: the local account window opens
+        self.wait_for("Local account")
+        title = next(line for line in self.screen().splitlines() if "Local account" in line)
+        # the name is cut, it says so, and the window's own top-right corner is still there
+        self.assertIn("\u2026\u256e", title)
+
+    def test_a_window_stays_inside_its_frame_on_a_narrow_screen(self):
+        """At 46 columns the key row ("Enter save  Tab next  ←→ login  ESC cancel") ran
+        straight through the right border and out across the screen (user: "the
+        scalability fails").  Every row of a window has both of its borders."""
+        tmux("resize-window", "-t", SESSION, "-x", "46", "-y", "20")
+        try:
+            self.keys("10.99.0.21", literal=True)
+            self.wait_for("not in the list")
+            self.keys("C-n")
+            self.wait_for("Save device")
+            rows = [line for line in self.screen().splitlines() if line.lstrip().startswith("\u2502")]
+            self.assertGreaterEqual(len(rows), 8, self.screen())
+            for row in rows:
+                self.assertGreaterEqual(row.count("\u2502"), 2, "%r\n%s" % (row, self.screen()))
+            self.assertIn("ESC cancel", self.screen())       # the way out is never the one dropped
+        finally:
+            tmux("resize-window", "-t", SESSION, "-x", "110", "-y", "30")
+
     def test_pinging_hundreds_asks_first(self):
         with open(os.path.join(self.tmp, "data.csv"), "a") as f:
             for i in range(210):
@@ -507,7 +547,7 @@ class UiSmokeTest(unittest.TestCase):
         self.add_terminal_server()
         self.keys("ts1", literal=True)
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.keys("1 4", literal=True)
         self.wait_for("2 tmux panes")
         self.keys("Enter")
@@ -533,7 +573,7 @@ class UiSmokeTest(unittest.TestCase):
         self.add_terminal_server()
         self.keys("ts1", literal=True)
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.keys("1 4", literal=True)
         self.keys("Down", "Right")
         self.wait_for("its local account")
@@ -564,7 +604,7 @@ class UiSmokeTest(unittest.TestCase):
         self.keys("Tab")
         self.wait_for("2 marked")
         self.keys("Enter")
-        self.wait_for("Switch login")
+        self.wait_for("Device login")
         self.keys("3", literal=True)
         self.keys("Right")                               # radius -> local
         self.wait_for("1 of them ssh")

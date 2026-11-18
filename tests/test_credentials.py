@@ -36,6 +36,21 @@ class TestLocalAccountForDevices(unittest.TestCase):
     """D56: your devices set to local take the switches' local account - one login, held
     next to yours, dropped alone when it was the one refused."""
 
+    def test_what_is_held_is_named_the_same_way_everywhere(self):
+        """Ctrl-G's row and the "... forgotten" message both name what is really held -
+        the row used to read "held  + local account", with a dangling +."""
+        c = credentials.Credentials(60)
+        self.assertEqual(c.held_names(), [])
+        c.set_local("labadmin", "lab123")
+        self.assertEqual(c.held_names(), ["local account"])
+        c.set_own("timmy", "secret")
+        c.set_server("labts", "lab123")
+        self.assertEqual(c.held_names(), ["password", "local account", "terminal server account"])
+        self.assertEqual(credentials.join_words(c.held_names()).capitalize(),
+                         "Password, local account and terminal server account")
+        self.assertEqual(credentials.join_words(["password"]), "password")
+        self.assertEqual(credentials.join_words([]), "")
+
     def test_refused_it_goes_alone(self):
         c = credentials.Credentials(60)
         c.set_own("timmy", "secret")

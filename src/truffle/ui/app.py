@@ -1,4 +1,4 @@
-"""The main screen: the switch list, its keys, and the commands of the command bar.
+"""The main screen: the device list, its keys, and the commands of the command bar.
 
  TRuffle  Device Manager                          timmy · 2/29 devices    top bar
 ───────────────────────────────────────────────────────────────────────  rule
@@ -333,7 +333,7 @@ class App(object):
         lst = self.list
         moves = {"UP": -1, "DOWN": 1, "PGUP": -self.body_h, "PGDN": self.body_h}
         if key == "PASTE":
-            # Pasted text is text: no Enter runs a command, no Tab marks a switch.
+            # Pasted text is text: no Enter runs a command, no Tab marks a device.
             if key.as_text():
                 lst.set_query(lst.query + key.as_text())
         elif key in moves:
@@ -376,7 +376,8 @@ class App(object):
         elif key == "CTRL_R":
             self.load()
             if not lst.load_error:
-                self.message("Device list reloaded: %d devices" % len(lst.devices))
+                self.message("Device list reloaded: %d device%s"
+                             % (len(lst.devices), "" if len(lst.devices) == 1 else "s"))
         elif key == "CTRL_L":
             self.screen.sync_size()
         elif len(key) == 1:
@@ -451,12 +452,13 @@ class App(object):
         if all(d.key in lst.marked for d in view):
             for d in view:
                 lst.marked.pop(d.key, None)
-            self.message("Unmarked the %d devices of this view - %d still marked" % (len(view), len(lst.marked)))
+            self.message("Unmarked the %d device%s of this view - %d still marked"
+                         % (len(view), "" if len(view) == 1 else "s", len(lst.marked)))
         else:
             for d in view:
                 lst.marked.setdefault(d.key, True)
-            self.message("Marked the %d devices of this view - %d marked, ESC clears them"
-                         % (len(view), len(lst.marked)))
+            self.message("Marked the %d device%s of this view - %d marked, ESC clears them"
+                         % (len(view), "" if len(view) == 1 else "s", len(lst.marked)))
         if "is:marked" in lst.query.lower():
             lst.refilter()
 
@@ -474,7 +476,8 @@ class App(object):
             return
         home = os.path.expanduser("~")
         shown = "~" + path[len(home):] if path.startswith(home + os.sep) else path
-        self.message("Exported %d devices to %s" % (len(lst.view), shown), seconds=15)
+        self.message("Exported %d device%s to %s"
+                     % (len(lst.view), "" if len(lst.view) == 1 else "s", shown), seconds=15)
 
     # -- commands -----------------------------------------------------------------------
 
@@ -550,7 +553,7 @@ class App(object):
         self.list.status_changed(dev)
 
     def start_batch(self, devices):
-        """ping the marked switches at once, into the PING column (D35)."""
+        """ping the marked devices at once, into the PING column (D35)."""
         if self.ping_running():
             self.message("A ping is already running (ESC cancels it once the search is empty)")
             return
@@ -655,9 +658,8 @@ class App(object):
             on = getattr(cfg, option)
             extra = {"session_log": cfg.log_dir, "debug": cfg.debug_log}.get(option, "") if on else ""
             rows.append((key, label, "on" if on else "off", extra))
-        rows.append(("p", "Forget the stored password now", "held" if self.creds.held else "not held",
-                     " + ".join(["+ local account"] * bool(self.creds.local)
-                                + ["terminal server account"] * bool(self.creds.server))))
+        held = self.creds.held_names()        # it drops them all, so it names them all
+        rows.append(("p", "Forget the stored logins now", "held" if held else "not held", " + ".join(held)))
         written = logs_since(cfg, cfg.started)
         rows.append(("f", "Log files of this session", "%d" % len(written), "f shows the full paths"))
         return rows

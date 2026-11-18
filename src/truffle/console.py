@@ -1,5 +1,5 @@
 """Terminal servers: ssh to the terminal server as user:<port> (port = line + 7000), then
-the switch's own login on the serial line behind it - two logins in one session (D42)."""
+the device's own login on the serial line behind it - two logins in one session (D42)."""
 
 import re
 
@@ -7,7 +7,7 @@ from .search import glob_match
 from .session import clean_output, is_password_prompt
 from .terminal import Notes
 
-# "Login:", "ber-core-01 login:", "Username:", "User Name:" - the switch asking, never
+# "Login:", "ber-core-01 login:", "Username:", "User Name:" - the device asking, never
 # "Last login: Mon ..." (that one does not end with the colon).
 LOGIN_PROMPT = re.compile(r"\b(?:login|user(?:\s?name)?)\s*:\s*$", re.IGNORECASE)
 LOGIN_REFUSED = re.compile(r"login incorrect|authentication failed|incorrect password|invalid password",
@@ -17,7 +17,7 @@ CONSOLE_WAKE = 5.0           # seconds for the line to show its login prompt aft
 CONSOLE_WAITING_NOTE = 8.0   # no answer this long after the password: say why it takes so long
 SERVER_MODE_TEXT = {"radius": "your RADIUS login", "local": "its local account, TRuffle types it"}
 MODE_TEXT = {"radius": "your RADIUS login, TRuffle types it",
-             "local": "the switch's local account, TRuffle types it",
+             "local": "the device's local account, TRuffle types it",
              "manual": "you type it"}
 
 
@@ -72,18 +72,18 @@ def console_user(cfg, user, line):
 
 
 class ConsoleLogin(object):
-    """The switch's login behind a terminal server, as a step machine (testable without
-    a pty).  It returns actions for run_session: ("send", bytes) to the switch, ("show",
+    """The device's login behind a terminal server, as a step machine (testable without
+    a pty).  It returns actions for run_session: ("send", bytes) to the device, ("show",
     text) to your screen only.
 
     Steps: ts (server password) -> quiet (Enter wakes the line) -> login -> user -> pass
-    -> watch (types nothing more; points at Ctrl-Q after you log out of the switch).
+    -> watch (types nothing more; points at Ctrl-Q after you log out of the device).
 
     Warden (D42): it types ONLY at a prompt it recognises - a console still logged in
     would otherwise get the password into its CLI history.  Anything unexpected hands
     over to you; a refused login is never typed twice.  user None = manual."""
 
-    # Ctrl-Q ends the session, because logging out of the switch does not.
+    # Ctrl-Q ends the session, because logging out of the device does not.
     # Not Ctrl-]: that is AltGr on a Swiss keyboard.
     EXIT_KEY, EXIT_NAME = b"\x11", "Ctrl-Q"
 
@@ -95,9 +95,9 @@ class ConsoleLogin(object):
         self.notes = notes or Notes()
         self.step, self.at, self.wakes = "ts", 0.0, 0
         self.tail = ""
-        self.answered = False        # the switch said something after the password
+        self.answered = False        # the device said something after the password
         self.waiting_shown = False
-        self.refused = False         # the switch turned the login down
+        self.refused = False         # the device turned the login down
         self.you_typed = False
         self.hinted = False
         self.prompts = 0             # login prompts (or a logged-in CLI) the line has shown so far
@@ -150,20 +150,20 @@ class ConsoleLogin(object):
     def _at_login(self, last, now):
         if LOGIN_PROMPT.search(last):
             self.prompts += 1
-            self.events.append("switch login prompt seen: %r" % last)
+            self.events.append("device login prompt seen: %r" % last)
             if self.user is None:
                 return self._hand_over("manual login", show=False)
             self.step, self.at, self.tail = "user", now, ""
             self.events.append("username typed (%s)" % self.mode)
             return [("send", self.user.encode("utf-8") + b"\r")]
         if is_password_prompt(last):
-            return self._hand_over("The switch asks for a password without asking for a "
+            return self._hand_over("The device asks for a password without asking for a "
                                    "username first - TRuffle typed nothing, over to you.")
         return []
 
     def _after_user(self, last, now):
         if is_password_prompt(last):
-            self.events.append("switch password prompt seen: %r" % last)
+            self.events.append("device password prompt seen: %r" % last)
             if self.password is None:
                 return self._hand_over("no password stored", show=False)
             self.step, self.at, self.tail = "pass", now, ""
@@ -171,7 +171,7 @@ class ConsoleLogin(object):
             return [("send", self.password.encode("utf-8") + b"\r")]
         if LOGIN_PROMPT.search(last):
             self.refused, self.prompts = True, self.prompts + 1
-            return self._hand_over("The switch did not take the %s username - log in by hand." % self.mode)
+            return self._hand_over("The device did not take the %s username - log in by hand." % self.mode)
         return []
 
     def _after_password(self, text, last):
@@ -180,13 +180,13 @@ class ConsoleLogin(object):
         if LOGIN_REFUSED.search(clean_output(self.tail)) or LOGIN_PROMPT.search(last) \
                 or is_password_prompt(last):
             self.refused, self.prompts = True, self.prompts + 1
-            return self._hand_over("The switch refused the %s login - log in by hand "
+            return self._hand_over("The device refused the %s login - log in by hand "
                                    "(TRuffle keeps the password)." % self.mode)
         return []
 
     def _watch(self, last):
-        # You logged out of the switch, and its login prompt is BACK - not the first one,
-        # which is simply the switch asking.  tail is cleared, so one prompt counts once.
+        # You logged out of the device, and its login prompt is BACK - not the first one,
+        # which is simply the device asking.  tail is cleared, so one prompt counts once.
         if LOGIN_PROMPT.search(last):
             self.tail = ""
             earlier, self.prompts = self.prompts, self.prompts + 1
@@ -212,11 +212,11 @@ class ConsoleLogin(object):
             return self._hand_over("No login prompt on the line (still logged in, or busy?) - "
                                    "TRuffle typed nothing, over to you.")
         if self.step == "user" and now - self.at >= self.wait:
-            return self._hand_over("No password prompt from the switch - over to you.")
+            return self._hand_over("No password prompt from the device - over to you.")
         if self.step == "pass":
             if not self.waiting_shown and not self.answered and now - self.at >= CONSOLE_WAITING_NOTE:
                 self.waiting_shown = True
-                return [("show", self.note("Waiting for the switch - one that cannot reach its RADIUS "
+                return [("show", self.note("Waiting for the device - one that cannot reach its RADIUS "
                                            "server can take a few minutes.", "Any key takes over."))]
             if now - self.at >= self.wait:
                 self.events.append("no refusal within %ds -> logged in" % self.wait)

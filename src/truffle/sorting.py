@@ -1,4 +1,4 @@
-"""Sorting the switch list by a column: F1, F2, ... (ascending -> descending -> off)."""
+"""Sorting the device list by a column: F1, F2, ... (ascending -> descending -> off)."""
 
 import re
 

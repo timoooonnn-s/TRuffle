@@ -1,4 +1,4 @@
-"""The switch list: a CSV file -> Device objects, plus the plausibility check."""
+"""The device list: a CSV file -> Device objects, plus the plausibility check."""
 
 import csv
 import io
@@ -45,7 +45,7 @@ def segments_of(text):
     return parts
 
 
-# Who logs in at a device you saved yourself (D56): your RADIUS login, the switch's local
+# Who logs in at a device you saved yourself (D56): your RADIUS login, the device's local
 # account (the one the console window uses), or you by hand - ssh as a user, you type the password.
 DEVICE_LOGINS = ("radius", "local", "manual")
 
@@ -69,17 +69,17 @@ def typed_target(text):
 
 
 class Device(object):
-    """One row of the switch list.  The lower-case cells and their segments are worked
+    """One row of the device list.  The lower-case cells and their segments are worked
     out once here, so the search does no per-keystroke preparation.  origin: "csv", one
     of your saved devices ("saved"), or the address you typed in the search ("typed", D55);
     login: who logs in (DEVICE_LOGINS, D56) - "radius" for every CSV device; user: the ssh
-    user of a "manual" one, who types the password at the switch."""
+    user of a "manual" one, who types the password at the device."""
     __slots__ = ("values", "host", "name", "cells", "lcells", "lsegments", "search", "origin", "login", "user")
 
     def __init__(self, values, host, name, cells, origin="csv", login="radius", user=None):
         self.values = values                  # every CSV column, header -> value
         self.host = host                      # the ssh / ping target
-        self.name = name                      # the switch name, or the host without one
+        self.name = name                      # the device name, or the host without one
         self.cells = cells                    # the visible columns, in table order
         self.origin, self.login, self.user = origin, login, user
         self.lcells = [c.lower() for c in cells]
@@ -88,7 +88,7 @@ class Device(object):
 
     @property
     def key(self):
-        """Identity for favourites, history and marks - the seam between who a switch is
+        """Identity for favourites, history and marks - the seam between who a device is
         and how it is displayed (D30 was an identity bug)."""
         return self.name or self.host
 
@@ -271,11 +271,11 @@ def address_issue(host):
 
 
 def data_issues(devices, lines, issues=(), name_header=None):
-    """Plausibility checks for the switch list -> warnings with CSV line numbers."""
+    """Plausibility checks for the device list -> warnings with CSV line numbers."""
     out = list(issues)
     names, hosts, nameless = {}, {}, []
     for d, line in zip(devices, lines):
-        # An empty name column shows an empty NAME cell while the switch itself falls back
+        # An empty name column shows an empty NAME cell while the device itself falls back
         # to its IP, so the row looks half-broken without anything saying why.
         if name_header and not d.values.get(name_header, ""):
             nameless.append(line)

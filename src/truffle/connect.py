@@ -76,8 +76,8 @@ def ssh_flow(cfg, name, host, user, password, notes, record, back="return to TRu
         else:
             notes.say("Connecting to %s (%s) as %s" % (name, host, user),
                       "terminal server: %s" % SERVER_MODE_TEXT[login.server_mode],
-                      "switch behind it: %s" % MODE_TEXT[login.mode],
-                      "log out of the switch FIRST, then %s to %s" % (ConsoleLogin.EXIT_NAME, back),
+                      "device behind it: %s" % MODE_TEXT[login.mode],
+                      "log out of the device FIRST, then %s to %s" % (ConsoleLogin.EXIT_NAME, back),
                       "(%s while logged in leaves the console logged in for the next person)"
                       % ConsoleLogin.EXIT_NAME)
         write("\r\n\r\n")
@@ -105,7 +105,7 @@ def ssh_flow(cfg, name, host, user, password, notes, record, back="return to TRu
                       "Please check %s by hand." % known_hosts, "Press any key to %s ..." % back)
             return result
         answer = notes.ask("The host key of %s (%s) has CHANGED." % (name, host),
-                           "Expected if the switch was replaced - otherwise do NOT continue.",
+                           "Expected if the device was replaced - otherwise do NOT continue.",
                            "Remove the old key from %s and connect again? [y/N] " % known_hosts)
         if answer not in (b"y", b"Y"):
             return result

@@ -1,9 +1,9 @@
 """`truffle --pane ...`: what runs inside one tmux pane.  Fetch the login once, connect,
 record the outcome, then the pane closes.  With --pane-console LINE LOGIN the pane is one
-line of a terminal server (D51): ssh as user:<port>, then the switch's login behind it.
+line of a terminal server (D51): ssh as user:<port>, then the device's login behind it.
 The user:<port> login is yours or the terminal server's local account (D54) - the ticket
 holds the one to use, --pane-server-login only says which for the note.  --pane-login: a
-saved device that takes the switch's local account or a manual login (D56), with
+saved device that takes the device's local account or a manual login (D56), with
 --pane-user its ssh user for when the ticket cannot be fetched."""
 
 import json
@@ -51,14 +51,14 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="r
                          "Connecting anyway - ssh will ask you for the password."]
     user, password = login["user"], login.get("password") or None
     if login_kind == "manual":
-        problems.append("Manual login: you type the password for %s at the switch." % user)
+        problems.append("Manual login: you type the password for %s at the device." % user)
     label, ssh_user, switch_login = name, user, None
     if console:
         line, mode = int(console[0]), console[1]
         label, ssh_user = "%s line %d" % (name, line), console_user(cfg, user, line)
         switch = (login.get("switch_user") or None, login.get("switch_password") or None)
         if mode != "manual" and switch[0] is None:
-            problems.append("No %s login for the switch - you log in at the switch yourself." % mode)
+            problems.append("No %s login for the device - you log in there yourself." % mode)
 
         def switch_login():
             return ConsoleLogin(switch[0], switch[1], mode, cfg.console_login_wait, notes=notes,
@@ -77,14 +77,14 @@ def pane_main(cfg, socket_path, ticket, host, name, console=None, server_mode="r
     password = login = None        # the only copies of the logins this pane holds
     if result.auth_failed:
         # Tell TRuffle too, so it drops the password instead of spending it on the
-        # next switch as well - the socket is already closed by now.
+        # next device as well - the socket is already closed by now.
         store.note_auth_failure(host)
         notes.ask("Login failed on %s - wrong password?" % label,
                   "TRuffle will ask for the %s again." % ("local account" if login_kind == "local" else "password"),
                   "Press any key to %s ..." % close)
     elif result.prompt_missed:
         notes.ask("No password prompt recognised on %s - you had to type it." % label,
-                  "Run TRuffle with --debug and connect again to see what the switch sent.",
+                  "Run TRuffle with --debug and connect again to see what the device sent.",
                   "Press any key to %s ..." % close)
     else:
         pause_on_failure(notes, label, result, close)

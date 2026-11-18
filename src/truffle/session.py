@@ -1,5 +1,5 @@
 """The system ssh in a pseudo-terminal (D3): TRuffle types the password once, relays
-every byte and reports what happened.  No curses, no switch list here."""
+every byte and reports what happened.  No curses, no device list here."""
 
 import codecs
 import errno
@@ -25,6 +25,7 @@ SSH_FAILURE = re.compile(r"Permission denied|Connection (timed out|refused|reset
                          r"Host key verification failed|no matching|Too many authentication failures|"
                          r"not responding|Broken pipe|cannot run", re.IGNORECASE)
 ANSI_ESCAPES = re.compile(rb"\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07]*\x07|\x1b[()][0-9A-Za-z]|\x1b[=>78]|\r")
+INTERRUPT_KEYS = (b"\x03", b"\x1c")           # Ctrl-C, Ctrl-\: "stop this connect"
 TICK = 0.2                     # the relay wakes at least this often (window size, console steps)
 
 
@@ -96,27 +97,38 @@ class SessionResult(object):
         self.events = []             # what happened around the login, for --debug
         self.pre_login = ""          # output before your first keystroke (no secrets)
         self.console_closed = False  # console: you pressed Ctrl-Q
-        self.switch_refused = False  # console: the switch behind the terminal server said no
+        self.interrupt_typed = False  # you pressed Ctrl-C / Ctrl-\ before it was logged in
+        self.switch_refused = False  # console: the device behind the terminal server said no
         self.log_path = None         # the session log of this connection, if one was written
 
     @property
     def cancelled(self):
         """You stopped ssh before it was logged in - Ctrl-C, Ctrl-\\, or Ctrl-Q in a console
-        session.  None of them says anything about the device."""
-        return not self.started and (self.console_closed
+        session.  None of them says anything about the device.  The KEYSTROKE counts, not
+        only the signal: a wrapper that relays ssh (D53) may swallow the interrupt and exit
+        0 itself, and that 0 is about the wrapper, not about the device."""
+        return not self.started and (self.console_closed or self.interrupt_typed
                                      or self.signal in (signal.SIGINT, signal.SIGQUIT))
 
     @property
     def failed(self):
-        """ssh did not get in, or the session died.  Exit 255 is also a normal logout on
-        many switches (D9), so only a session that STARTED can be one (D45) - and Ctrl-Q
-        is a logout for the same reason: pressed while ssh was still connecting it is a
-        cancel, and must not be recorded as a login that worked."""
-        if self.exit_code == 0:
+        """ssh did not get in, or the session died.
+
+        A session that never STARTED is never `ok` - not on any exit code (D44 #1, D45).
+        Exit 0 used to say "fine" before anything else was asked, and through a wrapper that
+        relays ssh (D53) that is exactly what a cancelled connect looks like: the wrapper's
+        ssh is killed, the wrapper itself exits 0 (user's field report: Ctrl-C on a connect
+        that was going nowhere came out as `ok`).  Whatever the exit code says then, TRuffle
+        never saw a session, so it knows nothing about the device.
+
+        Once a session HAS started: exit 0 is a logout, exit 255 is a normal logout on many
+        devices (D9), Ctrl-Q is one in a console session, and only ssh's own failure wording
+        in the last line still makes it a failure."""
+        if not self.started:
+            return True
+        if self.exit_code == 0 or self.console_closed:
             return False
-        if self.console_closed and self.started:
-            return False
-        return not self.started or SSH_FAILURE.search(self.last_line) is not None
+        return SSH_FAILURE.search(self.last_line) is not None
 
     @property
     def prompt_missed(self):
@@ -270,6 +282,11 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
         pass
     decoder = codecs.getincrementaldecoder("utf-8")("replace")
     strip = EscapeStripper()
+    # Can the output still show that a session started (D53)?  Not after you took over
+    # blindly - into a connect that had asked you nothing - and not after you asked for it
+    # to stop: your own keystrokes come back in the output, and a bare "^C" echoed back read
+    # as "a line that is not ssh's" turned a cancelled connect into a login that worked.
+    output_can_start = True
     armed = bool(password)       # watching for the password prompt
     wrapper, relayed = is_wrapper(argv), False
     tail = captured = before_input = after_login = ""
@@ -286,7 +303,10 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                 except OSError:
                     pass
             if not result.started and not relayed and _in_raw_mode(master):
-                if wrapper and armed and not result.prompt_seen:
+                # Whether the wrapper relays ssh has nothing to do with whether WE hold a
+                # password: with a manual login (D56) `armed` is false, and raw mode alone
+                # then counted as a session start before the connect had even happened.
+                if wrapper and not result.prompt_seen:
                     relayed = True
                     result.events.append("%s switched the terminal to raw mode before any password "
                                          "prompt -> it relays ssh, session start taken from the output"
@@ -315,10 +335,10 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                 if not result.user_typed:
                     before_input = (before_input + text)[-16384:]
                 # Prompts are ssh's only until the session starts: a banner ending in
-                # "password:" must not abort it.  The switch's own are ConsoleLogin's.
-                if relayed and not result.started and (result.password_sent or not armed):
+                # "password:" must not abort it.  The device's own are ConsoleLogin's.
+                if relayed and not result.started and output_can_start and (result.password_sent or not armed):
                     # Not before the password went in: until then it is ssh's banner.  Before
-                    # the prompt check: the switch's banner may end in "password:" (D45).
+                    # the prompt check: the device's banner may end in "password:" (D45).
                     after_login = (after_login + text)[-4096:]
                     if started_text(after_login):
                         result.started = True
@@ -344,7 +364,7 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                             result.events.append("password typed (once)")
                             if console is not None:
                                 console.password_sent(now)
-                                text = ""            # the prompt is the terminal server's, not the switch's
+                                text = ""            # the prompt is the terminal server's, not the device's
                 if console is not None:
                     actions += console.output(text, now)
             if in_fd in ready:
@@ -368,6 +388,12 @@ def run_session(argv, password=None, log=None, in_fd=None, out_fd=None, console=
                     except OSError:
                         pass
                     break
+                if not result.started:
+                    if not result.prompt_seen:
+                        output_can_start = False          # you typed, nothing had asked you
+                    if any(key in data for key in INTERRUPT_KEYS):
+                        result.interrupt_typed = True     # Ctrl-C / Ctrl-\: stop this connect
+                        output_can_start = False
                 if console is not None:
                     console.typed()
                 if armed:

@@ -21,6 +21,10 @@ from truffle.console import ConsoleLogin
 from truffle.terminal import Notes
 
 
+HANGS = "10.99.0.4"            # fake_ssh: hangs while connecting until it is killed
+STALLS = "10.99.0.20"          # fake_ssh: takes the password, then nothing comes back
+
+
 class User(threading.Thread):
     """Waits for each expected text, then types the answer. Records everything shown."""
 
@@ -132,6 +136,20 @@ class SessionTest(PtyTest):
         self.assertTrue(r.started)
         self.assertFalse(r.failed)
         self.assertEqual(out.count("secret"), 0)
+
+    def test_a_wrapper_that_relays_ssh_with_a_manual_login(self):
+        """D56 through D53's wrapper, and the guard on D58: TRuffle holds no password, so
+        you answer ssh's own prompt - and the switch's first line after that still has to
+        count as the session starting.  Raw mode cannot say it here (the wrapper was raw
+        from the start), and your typing must not break the detection either."""
+        r, out = self.session("10.99.0.1", None, [("password: ", "secret\r"), ("FAKE-SW:1>", "exit\r")],
+                              argv=self.relayed("10.99.0.1"), one_try=False)
+        self.assertTrue(r.prompt_seen)
+        self.assertFalse(r.password_sent)                  # you typed it, not TRuffle
+        self.assertTrue(r.user_typed)
+        self.assertTrue(r.started, r.events)
+        self.assertFalse(r.failed)
+        self.assertEqual(connect.attempt_outcome(r)[0], "ok")
 
     def test_a_wrapper_that_relays_ssh_and_a_wrong_password(self):
         r, _ = self.session("10.99.0.1", "wrong", argv=self.relayed("10.99.0.1"))
@@ -256,6 +274,60 @@ class SessionTest(PtyTest):
         state, reason = connect.attempt_outcome(r)
         self.assertEqual(state, "failed")
         self.assertIn("cancelled while connecting", reason)
+
+    def test_ctrl_c_through_a_relaying_wrapper_is_a_failure(self):
+        """The user's field report: Ctrl-C on a connect that is not going anywhere was
+        recorded as ok.  Through a wrapper that relays ssh (D53) the wrapper, not ssh, is
+        our child - and one that exits 0 after its ssh was interrupted made `failed` say
+        no before anything else was asked."""
+        self.type_later(b"\x03", 0.6)
+        r, _ = self.session(HANGS, "secret", argv=self.relayed(HANGS))
+        self.assertFalse(r.started)
+        self.assertEqual((r.exit_code, r.signal), (0, None))      # the wrapper's own clean exit
+        self.assertTrue(r.interrupt_typed)                        # what we DO know happened
+        self.assertTrue(r.cancelled)
+        self.assertTrue(r.failed, (r.exit_code, r.signal, r.events))
+        state, reason = connect.attempt_outcome(r)
+        self.assertEqual(state, "failed")
+        self.assertIn("cancelled while connecting", reason)
+
+    def test_ctrl_c_through_a_relaying_wrapper_without_a_password_is_a_failure(self):
+        """The same with a manual login (D56): nothing is typed for you, so the session
+        start can only come from the output - the wrapper's own lines are not it."""
+        self.type_later(b"\x03", 0.6)
+        r, _ = self.session(HANGS, None, argv=self.relayed(HANGS))
+        self.assertFalse(r.started, r.events)        # raw mode alone is not a session here
+        self.assertTrue(r.cancelled)
+        self.assertTrue(r.failed, (r.exit_code, r.signal, r.events))
+        state, reason = connect.attempt_outcome(r)
+        self.assertEqual(state, "failed")
+        self.assertIn("cancelled while connecting", reason)
+
+    def test_ctrl_c_after_the_password_went_in_is_still_a_failure(self):
+        """The switch's RADIUS server is away: TRuffle typed the password, nothing comes
+        back, you press Ctrl-C.  A prompt WAS seen here, so only the interrupt itself says
+        the output cannot be trusted any more - the echoed "^C" was read as the first line
+        after the login (Ctrl-C and an Enter behind it, the way one presses them when
+        nothing is happening: that is what completes the echoed line)."""
+        self.type_later(b"\x03\r", 1.0)
+        r, _ = self.session(STALLS, "secret", argv=self.relayed(STALLS))
+        self.assertTrue(r.password_sent, r.events)
+        self.assertTrue(r.prompt_seen)
+        self.assertFalse(r.started, r.events)
+        self.assertTrue(r.interrupt_typed)
+        self.assertTrue(r.failed)
+        self.assertIn("cancelled while connecting", connect.attempt_outcome(r)[1])
+
+    def test_typing_into_a_connect_that_asked_nothing_is_no_session_start(self):
+        """Your keystrokes come back as output.  Through a relaying wrapper a typed line
+        was read as "a line after the login that is not ssh's" (D53) and made a connect
+        that never answered look like a login."""
+        self.type_later(b"hello\r", 0.6)
+        self.type_later(b"\x03", 1.2)
+        r, out = self.session(HANGS, None, argv=self.relayed(HANGS))
+        self.assertIn("hello", out)                  # it was echoed back to us ...
+        self.assertFalse(r.started, r.events)        # ... and proves nothing
+        self.assertTrue(r.failed)
 
     def test_manual_login_logout_is_not_a_failure(self):
         """No stored password (or the prompt was missed): the user types it by hand, and

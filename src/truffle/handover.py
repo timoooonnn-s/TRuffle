@@ -53,7 +53,7 @@ def parent_pid(pid):
 
 class Handover(object):
     """A ticket is answered once: our uid, the process tmux started for it, younger than
-    TICKET_LIFETIME.  A console pane's ticket also carries the login for the switch behind
+    TICKET_LIFETIME.  A console pane's ticket also carries the login for the device behind
     the terminal server (D51) - only that ticket, never an ssh pane's - and, when the
     terminal server takes its local account, that one in place of yours (D54).  A saved
     device set to the local account gets that in place of yours, one set to manual only
@@ -81,7 +81,7 @@ class Handover(object):
 
     def issue(self, host, switch=False, login="radius", user=None):
         """A ticket for one pane.  bind() must follow once tmux reports the pane's pid.
-        switch: a console pane - its answer includes the switch login.  login: the
+        switch: a console pane - its answer includes the device login.  login: the
         device's (DEVICE_LOGINS) - "local" gets the local account, "manual" only `user`."""
         ticket = secrets.token_hex(16)
         with self.lock:

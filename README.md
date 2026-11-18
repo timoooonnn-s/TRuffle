@@ -10,13 +10,13 @@
 
 *by Timmy & Ruffy*
 
-Search your device list, ssh into a switch, log out, and you're back in the list,
+Search your device list, ssh into a device, log out, and you're back in the list,
 all inside the terminal of a Linux server you reach over SSH (PuTTY, Tabby, ...).
 Switches, terminal servers and whatever else your IPAM export holds.
 
 - **One folder, Python 3 standard library only.** No pip, no venv, no root. Sent around as [one bundle file](#single-file-bundle) if needed ;)
 - **Password asked once per session.** It stays in memory only, and is forgotten 10 hours after you typed it or when TRuffle exits, whichever comes first.
-- **After you log out of a switch, you're back in TRuffle.**
+- **After you log out of a device, you're back in TRuffle.**
 
 Inspired by [V-Li: Switch Manager](https://github.com/seismicindustries/switch-manager).
 TRuffle keeps its menu, but runs ssh inside your terminal instead of a new desktop window.
@@ -31,6 +31,11 @@ TRuffle keeps its menu, but runs ssh inside your terminal instead of a new deskt
 ### 1. Check the requirements
 
 On the server: Linux, **Python 3.8 or newer** (`python3 --version`), the OpenSSH client and `ping`.
+
+**Terminal size:** the list draws from **40x10** on (below that TRuffle says so instead of drawing a
+mess). The windows - login, save a device, console - show all of their text from about **80x16**; on
+anything smaller they wrap it, mark what they had to shorten with `…` and drop their least important
+line, so nothing ever runs over a window frame. A full-screen PuTTY or Tabby window is well past that.
 
 ### 2. Get TRuffle
 
@@ -72,13 +77,13 @@ echo "alias truffle='python3 $HOME/git/truffle/truffle'" >> ~/.bashrc
 1. **Type** to filter the list. A few letters are enough: `bc01` finds `ber-core-01`.
 2. Pick a device with **↑ ↓**. **ssh** is already selected, so press **Enter**.
 3. Enter your username and password **once**. TRuffle logs you in, now and for every following device.
-4. **Log out** of the switch, and you're back in the list.
+4. **Log out** of the device, and you're back in the list.
 5. **← →** selects the other commands (ping, details, help, exit).
 6. Several devices at once: **`Tab`** marks them (`+`), **`Ctrl-A`** marks everything the search shows,
    and marks are kept while you search for more. With two or more marked, **ssh** opens one
    [tmux pane per device](#several-devices-at-once-tmux) and **ping** pings them all.
 7. A **terminal server** (a name like `ab-12-ts1-01`): **Enter** asks for the line, then TRuffle logs
-   you into the [console](#terminal-servers-console) of the switch behind it. **`Ctrl-Q`** brings you back.
+   you into the [console](#terminal-servers-console) of the device behind it. **`Ctrl-Q`** brings you back.
 8. **`is:recent`** lists the devices you connected to, newest first - TRuffle remembers them by itself.
 9. **Not in the list?** Type the address - `10.1.2.3`, `sw-lab-17.example.net` or `admin@10.1.2.3` - and
    press **Enter**. **`Ctrl-N`** [saves it](#devices-that-are-not-in-the-list) to your own list - with the
@@ -140,7 +145,7 @@ From top to bottom:
 - **Top bar:** your login user once you've connected, how many devices are shown, and — when there
   are any — how many devices you've [marked](#several-devices-at-once-tmux), how many
   [tmux sessions](#several-devices-at-once-tmux) are still running, `local: <user>` while a
-  switch's [local account](#terminal-servers-console) is stored, and `ts local: <user>` while a
+  device's [local account](#terminal-servers-console) is stored, and `ts local: <user>` while a
   terminal server's own local account is.
 - **Command tabs.**
 - **Search line.**
@@ -153,9 +158,10 @@ From top to bottom:
   - `▲`/`▼` shows the sorted column.
   - **PING** shows the last ping result. A ping that could not run at all (not allowed, unknown host)
     changes nothing - TRuffle says so instead of calling the device `down`.
-  - **SSH** shows how your last real ssh attempt went: `ok` only when ssh actually got you logged in,
-    otherwise `failed` - also when you stopped a hanging connect with `Ctrl-C` or `Ctrl-Q`, or the password
-    was refused.
+  - **SSH** shows how your last real ssh attempt went: `ok` only when TRuffle saw the session actually
+    start, otherwise `failed` - also when you stopped a connect that was going nowhere with `Ctrl-C` or
+    `Ctrl-Q`, or the password was refused. A connect TRuffle never saw reach a session is never `ok`,
+    whatever exit code it ended with: it says nothing about the device.
   - **Both say how old they are:** `now`, `5m`, `2h` (up to two days), then `3d`. A result older than
     a day is **faded** — `down` from three days ago says little about today, ping again. The exact time
     is in **details**. In a narrow window the age is left out before the word is cut.
@@ -187,7 +193,7 @@ From top to bottom:
 | `Ctrl-R` | reload the device list |
 | `Ctrl-L` | redraw the screen |
 | `Ctrl-C` | quit |
-| `Ctrl-Q` | in a [terminal server](#terminal-servers-console) session: back to TRuffle (log out of the switch first) |
+| `Ctrl-Q` | in a [terminal server](#terminal-servers-console) session: back to TRuffle (log out of the device first) |
 
 In full-screen output (ping, details, help, log files): `↑` `↓` `PgUp` `PgDn` scroll, and `ESC` / `Enter` / `q` closes.
 
@@ -376,14 +382,14 @@ to a colleague who doesn't work in Linux every day.
 
 > Only for rows whose name matches `console_hosts` (default `*-*-ts?-*`). Turn it off with `console_hosts =`.
 
-A terminal server is reached with ssh like a switch, but the **username carries the line**:
-`timmy:7012@ab-12-ts1-01` is line 12. Behind it, the switch on that serial line asks for its
+A terminal server is reached with ssh like any other device, but the **username carries the line**:
+`timmy:7012@ab-12-ts1-01` is line 12. Behind it, the device on that serial line asks for its
 own login. TRuffle does both logins in one go:
 
 | Login | Who | Your choice |
 |---|---|---|
 | 1. the terminal server | your RADIUS login, or its local account (lab terminal servers) | `radius` / `local` |
-| 2. the switch behind it | RADIUS, its local account, or you yourself | `radius` / `local` / `manual` |
+| 2. the device behind it | RADIUS, its local account, or you yourself | `radius` / `local` / `manual` |
 
 **Which rows are terminal servers** is decided by their **name**, with the same `*` / `?` patterns as
 the [search](#search): `ab-12-ts1-01` is one, `ab-12-s34-w4` is not. `truffle --check` prints how many it
@@ -397,7 +403,7 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
   │                                                              │
   │  Terminal server   ‹ radius ›                                │
   │                    your RADIUS login  ·  timmy:7012          │
-  │  Switch login      ‹ radius ›                                │
+  │  Device login      ‹ radius ›                                │
   │                    RADIUS (timmy), TRuffle types it          │
   ╰──────────────────────────────────────────────────────────────╯
 ```
@@ -409,48 +415,48 @@ Press **Enter** (ssh) on a terminal server and TRuffle asks:
   - **radius**: your RADIUS login — the same one as for ssh, asked once per session.
   - **local**: the terminal server's own local account, for **lab terminal servers without
     RADIUS**. Asked once, then kept in memory like your password; the top bar shows
-    `ts local: <user>`. It is only for the terminal server: the switch behind it still gets the
-    switch login below, so a lab with local accounts everywhere never asks for your RADIUS login.
+    `ts local: <user>`. It is only for the terminal server: the device behind it still gets the
+    device login below, so a lab with local accounts everywhere never asks for your RADIUS login.
 
   The window shows the username it will send (`timmy:7012`, `labadmin:7012`). The choice is
   remembered per terminal server, like its lines.
-- **Switch login** (`←` `→` on the lines or on this row), only for the switch behind it:
+- **Device login** (`←` `→` on the lines or on this row), only for the device behind it:
   - **radius**: your RADIUS login again.
-  - **local**: the switch's local account, for a switch that can't reach its RADIUS server. Asked
+  - **local**: the device's local account, for one that can't reach its RADIUS server. Asked
     once, then kept in memory like your password (same lifetime, `Ctrl-G` `p` forgets it). The
     top bar shows `local: <user>` while it is held.
-  - **manual**: TRuffle logs you into the terminal server and wakes the line, you log in at the switch.
+  - **manual**: TRuffle logs you into the terminal server and wakes the line, you log in at the device.
 
 | You want | Press |
 |---|---|
 | choose the line | type its number (`Backspace` / `Ctrl-U` deletes); several: `3 7 12` or `3-5` |
 | move between the lines and the two logins | `↑` `↓` / `Tab` |
 | choose who logs in at the terminal server | `↓` to *Terminal server*, then `←` `→` |
-| choose who logs in at the switch | `←` `→` (on the lines or on *Switch login*) |
+| choose who logs in at the device | `←` `→` (on the lines or on *Device login*) |
 | connect | `Enter` |
 | cancel | `ESC` |
-| **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the switch (in a tmux pane: closes that pane) |
+| **back to TRuffle** | `Ctrl-Q` in the session — after you've logged out of the device (in a tmux pane: closes that pane) |
 
 What TRuffle then does, in one ssh session:
 
 1. types the password for the terminal server (yours, or its local account's),
 2. presses **Enter** to wake the serial line,
-3. at the switch's `Login:` prompt types the username, at `Password:` the password,
-4. waits — a switch whose RADIUS server is out of reach can take **minutes**. After a few seconds
+3. at the device's `Login:` prompt types the username, at `Password:` the password,
+4. waits — a device whose RADIUS server is out of reach can take **minutes**. After a few seconds
    without an answer it says so; any key takes over. (`console_login_wait = 240` seconds.)
 
 **TRuffle types only at a prompt it recognises.** A console can still be logged in from the last
 person. Enter then shows a CLI prompt, and typing your username and password there would put
-them into the switch's command history, its syslog and onto the screen of anyone else on that
+them into the device's command history, its syslog and onto the screen of anyone else on that
 line. So when no login prompt shows up, TRuffle types nothing and hands over to you. Same when
-the switch **refuses** the login: it is typed **once**, never again, and the password is kept,
+the device **refuses** the login: it is typed **once**, never again, and the password is kept,
 because the terminal server has just accepted it. You log in by hand. A wrong password at the
 **terminal server** is dropped and asked again, like a wrong ssh password — only the one that
 failed: a wrong local account of the terminal server never costs you your RADIUS password.
 
-**Getting back to TRuffle:** logging out of the switch does not end the session, it only brings
-back the switch's `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q goes back to
-TRuffle."* **`Ctrl-Q`** ends the session at any time. **Log out of the switch first**: `Ctrl-Q`
+**Getting back to TRuffle:** logging out of the device does not end the session, it only brings
+back its `Login:` prompt — TRuffle then shows *"Logged out? Ctrl-Q goes back to
+TRuffle."* **`Ctrl-Q`** ends the session at any time. **Log out of the device first**: `Ctrl-Q`
 while you're still logged in leaves the console logged in for the next person.
 
 - The **SSH** column of a terminal server says whether the terminal server let you in.
@@ -468,7 +474,7 @@ sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#severa
 |---|---|
 | several lines of **one** terminal server | `Lines: 3 7 12` (or `3-5`) in its window |
 | lines of **several** terminal servers | mark them with `Tab`, then **ssh**: one window, a lines field per terminal server (`Tab` / `↑` `↓` moves between them) |
-| consoles **and** normal ssh sessions together | mark the switches and the terminal servers, then **ssh**: the switches get an ssh pane, every line a console pane |
+| consoles **and** normal ssh sessions together | mark the devices and the terminal servers, then **ssh**: the devices get an ssh pane, every line a console pane |
 
 ```
   ╭─ Consoles · 2 terminal servers ──────────────────────────────────╮
@@ -477,7 +483,7 @@ sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#severa
   │                                                                  │
   │  Terminal server   ‹ radius ›                                    │
   │                    your RADIUS login  ·  timmy:7003              │
-  │  Switch login      ‹ local  ›                                    │
+  │  Device login      ‹ local  ›                                    │
   │                    its local account admin, TRuffle types it     │
   │                                                                  │
   │  5 tmux panes (1 of them ssh), the same two logins for all       │
@@ -485,22 +491,22 @@ sessions - in **one tmux session**, one pane each, up to 9 (needs [tmux](#severa
 ```
 
 - **The same two logins for all consoles**: one terminal-server login (`radius` / `local`) and one
-  switch login (`radius` / `local` / `manual`). Where a switch refuses it, that pane hands over and
+  device login (`radius` / `local` / `manual`). Where a device refuses it, that pane hands over and
   you log in there by hand - the others are not affected. The ssh panes always use your RADIUS
   login. A lab terminal server and a RADIUS one in the same session: open them one after the other.
-- With `local`, the local account (the switch's, or the terminal server's) travels to the
+- With `local`, the local account (the device's, or the terminal server's) travels to the
   **console panes only**, through the same one-time,
   your-user-only login handover as your password - an ssh pane next to them never receives it
   ([TMUX-SECURITY.md](TMUX-SECURITY.md)).
-- Every pane is titled `ab-12-ts1-01 line 7`. In a console pane, log out of the switch, then **`Ctrl-Q`**
+- Every pane is titled `ab-12-ts1-01 line 7`. In a console pane, log out of the device, then **`Ctrl-Q`**
   closes that pane.
 - More than 9 panes: the first 9 are opened, TRuffle names the ones it left out, and their marks stay -
   `Enter` again opens the next 9.
 
 **`Ctrl-K` with consoles asks louder.** Closing a console pane only ends the ssh to the terminal
-server - **the switch console behind it stays logged in** for the next person on that line. When the
+server - **the console of the device behind it stays logged in** for the next person on that line. When the
 sessions you close hold console panes, the window says so in capitals and names them: log out of
-those switches first, then `Ctrl-Q`.
+those devices first, then `Ctrl-Q`.
 
 ## Settings
 
@@ -542,7 +548,7 @@ address in the search** and press **Enter**:
   shows that device instead; a hostname gets a row only when nothing in the list matches it.
 - **`ssh`, `ping` and `details` work** on it like on any device, with your login.
 - **`user@address`** (`admin@10.1.2.3`) is a **manual** login: ssh logs in as that user and **you type
-  the password** at the switch - TRuffle neither asks nor keeps it. This works even for a device that is
+  the password** at the device - TRuffle neither asks nor keeps it. This works even for a device that is
   in the list.
 - **`Ctrl-N` saves it** under a name you give (a hostname suggests its first part). It's then in the list
   with a `*`, found by its name and by `is:saved`, can be marked for [tmux](#several-devices-at-once-tmux),
@@ -561,8 +567,8 @@ address in the search** and press **Enter**:
   | Login | who | asked |
   |---|---|---|
   | `radius` | your RADIUS login, like every device in the list (the default) | once, like always |
-  | `local` | the switches' **local account** - the same one a [console](#terminal-servers-console) uses for the switch behind a terminal server | once, then kept like yours (`local: <user>` in the top bar, `Ctrl-G` `p` forgets it); a wrong one drops only it |
-  | `manual` | ssh as the **User** line, you type the password at the switch | never - nothing is kept |
+  | `local` | the devices' **local account** - the same one a [console](#terminal-servers-console) uses for the device behind a terminal server | once, then kept like yours (`local: <user>` in the top bar, `Ctrl-G` `p` forgets it); a wrong one drops only it |
+  | `manual` | ssh as the **User** line, you type the password at the device | never - nothing is kept |
 
   The User line is pre-filled with `manual_user` from [`truffle.conf`](#configuration) (else your user
   name). Devices in the list always use your RADIUS login; your normal login gets no extra step. In
@@ -667,7 +673,7 @@ on the file's own date:
 
 An export from another system rarely has columns called `Name` and `IP`. You don't have to rename
 anything — **the label you give a column in `columns` decides what it is**: the column you label
-`Name` becomes the switch name, the one you label `IP` becomes the ssh target.
+`Name` becomes the device name, the one you label `IP` becomes the ssh target.
 
 For an Infoblox network export, where the hostname is in `PRIMARY_DN_CODE`, the host address is in
 `ADDRESS`, and the **first** column is the network address (`SUBNET`):
@@ -688,14 +694,14 @@ can add more to the table later (`columns = PRIMARY_DN_CODE:Name, ADDRESS:IP, lo
 as soon as the export carries them.
 
 **Check it before you trust it.** `truffle --check` prints which column it uses for each job, every
-header it found, and the first switch's resolved values — which is all you need to see what went wrong:
+header it found, and the first device's resolved values — which is all you need to see what went wrong:
 
 ```
 columns      : PRIMARY_DN_CODE (Name), ADDRESS (IP)
-switch name  : PRIMARY_DN_CODE
+device name  : PRIMARY_DN_CODE
 ssh target   : ADDRESS
 headers found: SUBNET, MASK, VLAN_ID, PRIMARY_DN_CODE, ..., ADDRESS
-first switch : name 'cd-34-s56-r1.example.net'  ssh to '198.51.100.20'
+first device : name 'cd-34-s56-r1.example.net'  ssh to '198.51.100.20'
 data check   : ok
 ```
 
@@ -704,7 +710,7 @@ give every device in a subnet the same identity, and the history and marks go by
 It also tells you when:
 
 - **fewer than two of your `columns` exist in the list** — the table then falls back to showing the
-  switch name and its address, instead of one near-useless column;
+  device name and its address, instead of one near-useless column;
 - **rows have nothing in the name column** — their NAME cell stays empty and they fall back to their
   IP, which otherwise just looks broken.
 
@@ -800,7 +806,7 @@ want to restart — appends a short report of every ssh login to `~/.local/state
 - the ssh command
 - which password prompts TRuffle saw
 - whether it typed the password
-- on a [terminal server](#terminal-servers-console): each step of the switch's login — the prompts it
+- on a [terminal server](#terminal-servers-console): each step of the device's login — the prompts it
   saw, what it typed (never the password itself) and why it handed over
 - whether the session started (ssh switched the terminal to raw mode), the exit code and the reason for a failure
 - the device's output **before** the login (banner, prompts)
@@ -844,23 +850,23 @@ A second TRuffle window of yours that logs at the same time shows up in the list
   - On Linux it also marks itself "not dumpable", so other programs of your own user can't attach to it or read its memory.
   - root still can, as with every program.
 - **Typed once, only at a real prompt.** TRuffle types it once per connection, only at a real password prompt,
-  and never at an SSH-key passphrase prompt. If it does not recognise the switch's prompt it types **nothing**
+  and never at an SSH-key passphrase prompt. If it does not recognise the device's prompt it types **nothing**
   and says so afterwards, so you always know whether the auto-login fired.
 - **Wrong password:** ssh is stopped right away instead of retrying, the stored password is wiped,
   and you're asked again. This protects a central (TACACS+/RADIUS) account from lockouts.
   A [tmux pane](#several-devices-at-once-tmux) that can't log in reports it back, so one mistyped
-  password is not spent on switch after switch.
-  A switch behind a [terminal server](#terminal-servers-console) that refuses the login is different:
+  password is not spent on device after device.
+  A device behind a [terminal server](#terminal-servers-console) that refuses the login is different:
   the terminal server has just accepted the password, so it is kept, and you log in by hand.
 - **Forgotten after 10 hours.** The password is dropped 10 hours after you **typed** it and you're asked
   again (`password_lifetime` in minutes, `0` turns it off). It's measured from when you typed it, not from
   your last keypress, so a window left running for days can't keep a live login — but it never expires in
   the middle of a working day.
-  **It only deletes the password inside TRuffle.** A switch session you're sitting in keeps running, and
+  **It only deletes the password inside TRuffle.** A session you're sitting in keeps running, and
   tmux panes keep running and stay logged in. Nothing in your workspace is touched.
-- **Once you type in a session,** TRuffle stops watching. A later `Password:` prompt on the switch is never answered for you.
-- **Terminal servers:** the switch's login is typed only at a `Login:` / `Password:` prompt TRuffle
-  recognises, once, and never into a console that is still logged in. A switch's **local account** is
+- **Once you type in a session,** TRuffle stops watching. A later `Password:` prompt on the device is never answered for you.
+- **Terminal servers:** the device's login is typed only at a `Login:` / `Password:` prompt TRuffle
+  recognises, once, and never into a console that is still logged in. A device's **local account** is
   kept like your password: in memory only, forgotten with it.
 - **Host keys:** new devices are added to `~/.ssh/known_hosts` automatically. If a key **changes**,
   TRuffle asks before removing the old one. That's expected after a hardware swap, but can also mean an attack.
@@ -876,12 +882,13 @@ A second TRuffle window of yours that logs at the same time shows up in the list
 | Lines or symbols look like `â”€` or `?` | `--ascii` / `charset = ascii`, or PuTTY *Window → Translation* → UTF-8 |
 | Only a few colours in PuTTY | PuTTY *Connection → Data → Terminal-type string* → `xterm-256color` |
 | F-keys don't sort | PuTTY *Terminal → Keyboard → Function keys* → `ESC[n~` (default) or `Xterm R6`. `ESC` with an empty search clears a sort |
-| TRuffle says *"no password prompt recognised"* | The switch words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
+| TRuffle says *"no password prompt recognised"* | The device words its prompt differently, so you have to type the password yourself. Run `truffle --debug`, connect again, and send the "before login" part of the [debug log](#debug-log) — the prompt pattern can then be adjusted |
 | Terminal server: *"No login prompt on the line"* | The console is still logged in (you see a CLI prompt) or busy. TRuffle typed nothing — log out of what's there or log in by hand. `truffle --debug` shows what the line sent |
 | `no 'IP' column` although the header has one | A `#` comment line above the header with a `,` in it - the delimiter was guessed from it. Fixed in 2.6; before that, move the comment below the header line |
 | The top bar says `list 43d old` | Nobody has re-exported the device list for that long - see [how old the list is](#how-old-the-list-is). `data_max_age_days = 0` in `truffle.conf` switches the note off |
 | Terminal server: a row is not recognised | Its name doesn't match `console_hosts` (default `*-*-ts?-*`). `truffle --check` counts the terminal servers it found |
 | `ssh : NOT FOUND` in `truffle --check` with a wrapper like `ssh_command = ct ssh` | The wrapper is not on the `PATH` of the server - give its full path (`ssh_command = /usr/local/bin/ct ssh`). With or without quotes around the value works the same since 2.2.1 |
+| With a wrapper (`ssh_command = ct ssh`): `Ctrl-C` on a connect that hangs showed `ok` in the SSH column | Fixed in 2.6. The wrapper exits `0` when the ssh inside it is interrupted, and that `0` was read as a clean session. It is recorded as `failed` / *cancelled while connecting* now |
 | With a wrapper (`ssh_command = ct ssh`) the password is not typed in, Enter gives `Permission denied` | Fixed in 2.2.1: the wrapper runs ssh on a terminal of its own, which before looked like a finished login. If it still happens, connect once with `truffle --debug` and look at the [debug log](#debug-log) |
 | Login works with plain ssh but not in TRuffle | Start with `truffle --debug`, try again, and look at the [debug log](#debug-log) |
 | Screen garbled, or still the old size after resizing the window | `Ctrl-L`. TRuffle follows a resize within a fraction of a second, also after an ssh session; if not, `Ctrl-L` redraws |

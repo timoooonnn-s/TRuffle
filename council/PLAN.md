@@ -35,6 +35,11 @@ that no longer exists, checks done weeks ago) are how settled topics came back u
 - [ ] TRuffle started inside tmux: `Ctrl-b L` comes back, and logging out of the last pane does too
 - [ ] A terminal server that does not answer: `Ctrl-Q` while connecting leaves no `ok` in the SSH column
 - [ ] Ruffy: a device name with a `#` in it - the pane border shows the name, not `%0`
+- [ ] D59: the texts - anything left that says "switch" where it is not one (Ruffy and the newcomers)
+- [ ] D59: the local-account window on the MacBook - the whole sentence, and the password line read once
+      by someone who has not seen it before
+- [ ] Ruffy (D58): `Ctrl-C` on a switch that does not answer, through `ct ssh` - the SSH column says
+      `failed`, not `ok`; and a normal login through `ct ssh` is still `ok` afterwards
 
 ## Still to confirm on RHEL
 - [ ] `truffle --check` prints `ssh results : ok` (the session detection of D45 / D46)

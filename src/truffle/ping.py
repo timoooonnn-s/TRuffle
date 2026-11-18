@@ -1,4 +1,4 @@
-"""ping: one switch with live output, or the marked ones at once into the PING column."""
+"""ping: one device with live output, or the marked ones at once into the PING column."""
 
 import codecs
 import os
@@ -22,7 +22,7 @@ REPLY_RE = re.compile(r"\btime[=<]\s*[0-9]", re.IGNORECASE)
 # reply, 2 = an error.  macOS: 2 = no reply, anything else non-zero = an error.
 NO_REPLY_EXIT = 2 if sys.platform == "darwin" else 1
 # LC_ALL=C because the reply line is parsed - on a German server the translated output
-# broke the old " bytes from " test and every switch showed "down" (D17).
+# broke the old " bytes from " test and every device showed "down" (D17).
 PING_ENV = dict(os.environ, LC_ALL="C")
 
 

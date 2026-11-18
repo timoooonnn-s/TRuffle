@@ -1,4 +1,4 @@
-"""The read-only pages: help, details of one switch, the log files.  Each builds the
+"""The read-only pages: help, details of one device, the log files.  Each builds the
 lines Screen.show_text draws; the help page is plain data first, so tests can check it."""
 
 import os
@@ -27,8 +27,8 @@ def written_text(cfg):
 def help_sections(cfg, ncols, switches):
     """The help page as plain data, so it renders and tests the same: ("section", title)
     and ("item", key, text).  Short on purpose - the README explains."""
-    lifetime = ("%s after you typed it" % minutes_text(cfg.password_lifetime)
-                if cfg.password_lifetime else "when TRuffle exits")
+    lifetime = ("%s after you typed it, or when you quit" % minutes_text(cfg.password_lifetime)
+                if cfg.password_lifetime else "when you quit")
     return [
         ("section", "Keys"),
         ("item", "Up Down PgUp PgDn Home End", "select a device"),
@@ -56,7 +56,7 @@ def help_sections(cfg, ncols, switches):
         ("item", "details", "every field, and why the last ssh failed"),
         ("item", "help", "this page"),
         ("item", "exit", "quit and forget the credentials"),
-        ("item", "SSH column", "ok = you got logged in; Ctrl-C while connecting = failed"),
+        ("item", "SSH column", "ok = TRuffle saw you logged in; stopped while connecting = failed"),
         ("section", "tmux (%s)" % ("on" if cfg.tmux else "off: tmux = yes in truffle.conf")),
         ("item", "%s  ^T  ^K" % back_key(), "back here, back into tmux, close the sessions"),
         ("item", "^G l", "session log on/off, also for running panes"),
@@ -64,9 +64,10 @@ def help_sections(cfg, ncols, switches):
         ("item", "Enter (ssh)", "asks the lines (12 = port %d; several: 3 7 12 = one tmux pane each)"
                                 % (cfg.console_port_base + 12)),
         ("item", "Tab + ssh", "mark terminal servers (and other devices): one tmux session for all"),
-        ("item", ConsoleLogin.EXIT_NAME, "back to TRuffle / close a console pane - log out of the switch FIRST"),
+        ("item", ConsoleLogin.EXIT_NAME, "back to TRuffle / close a console pane - log out of the device FIRST"),
         ("section", "Setup"),
-        ("item", "Device list", "%s  (%d devices%s)" % (cfg.data, switches, written_text(cfg))),
+        ("item", "Device list", "%s  (%d device%s%s)"
+                                % (cfg.data, switches, "" if switches == 1 else "s", written_text(cfg))),
         ("item", "Config files", ", ".join(cfg.files) or "none (defaults)"),
         ("item", "State / results", cfg.state_dir),
         ("item", "Logs", "%s  (^G f lists them)" % cfg.log_dir),
@@ -91,7 +92,7 @@ def when(stamp):
 
 
 def details_lines(th, dev, results, last_connected, width):
-    """Every CSV field of one switch, its results with their time, and why the last ssh
+    """Every CSV field of one device, its results with their time, and why the last ssh
     attempt failed - wrapped onto its own lines, it is why the reason is kept at all."""
     def result(kind):
         stamp = results.taken(kind, dev.host)
@@ -99,7 +100,7 @@ def details_lines(th, dev, results, last_connected, width):
         return text + ("   (%s)" % when(stamp) if stamp else "")
     values = list(dev.values.items())
     if dev.origin != "csv":
-        values.append(("Login", {"radius": "your RADIUS login", "local": "the switches' local account",
+        values.append(("Login", {"radius": "your RADIUS login", "local": "the devices' local account",
                                   "manual": "manual - ssh as %s, you type the password" % dev.user}[dev.login]))
         values.append(("From", "your own devices (^N changes or forgets it)" if dev.origin == "saved"
                        else "typed in the search - not in the list (^N saves it)"))

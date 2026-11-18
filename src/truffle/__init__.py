@@ -5,7 +5,7 @@ Python 3.8+, standard library only (R1).  The `truffle` file next to `src/` star
 How the package is cut, from the bottom up - a module only imports the ones above it:
 
     config        truffle.conf -> Config
-    inventory     the switch list (CSV) -> Device
+    inventory     the device list (CSV) -> Device
     search        the search language            sorting      column sort
     results       PING / SSH results in memory   state        the per-user files (locked)
     credentials   the password and how long it is kept
@@ -21,7 +21,7 @@ How the package is cut, from the bottom up - a module only imports the ones abov
 
 import os
 
-VERSION = "2.6.0"           # bump before building a bundle
+VERSION = "2.7.0"           # bump before building a bundle
 TITLE = "TRuffle: Device Manager"
 CREDIT = "by Timmy & Ruffy"
 

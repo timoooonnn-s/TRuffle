@@ -60,7 +60,7 @@ class Config:
     """The resolved settings.  The Ctrl-G screen changes session_log, debug, tmux and
     charset_setting while TRuffle runs; nothing is ever written back to truffle.conf."""
     files: list                 # the config files that were read, in order
-    data: str                   # the switch list
+    data: str                   # the device list
     data_max_age_days: int      # say so when the list is older than this, 0 = never
     columns: list               # [(CSV header, table label)]
     user: str

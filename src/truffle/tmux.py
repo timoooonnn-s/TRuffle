@@ -171,9 +171,9 @@ def pane_command(cfg, socket_path, ticket, host, name, console=None, login="radi
 
 def open_panes(cfg, targets, handover, mode=None, server_mode="radius", local_user=None):
     """Create a tmux session with one pane per PaneTarget (a bare device is an ssh pane).
-    mode / server_mode: the switch and terminal-server login of the console panes;
+    mode / server_mode: the device and terminal-server login of the console panes;
     local_user: of the local account, for saved devices that take it (D56).  Returns the session name and
-    {pane id: target} - the pane title cannot be trusted for that, a switch can set it."""
+    {pane id: target} - the pane title cannot be trusted for that, a device can set it."""
     session = free_session_name()
     panes = {}
     targets = [t if isinstance(t, PaneTarget) else PaneTarget(t) for t in targets]
@@ -234,7 +234,7 @@ class PaneSessions(object):
         self.panes[session] = dict((pane, (t, user_for(t))) for pane, t in panes.items())
 
     def consoles(self, sessions):
-        """The console panes among these sessions: closing them leaves the switch consoles
+        """The console panes among these sessions: closing them leaves the device consoles
         behind them logged in (D51), so Ctrl-K has to say so."""
         return [t.name for s in sessions for t, _ in self.panes.get(s, {}).values() if t.console]
 

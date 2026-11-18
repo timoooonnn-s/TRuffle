@@ -1400,3 +1400,114 @@ and TMUX-SECURITY.md's `/run/user` wording (open in D40).
 - **Clipboard copy (M8) stays out:** since the mouse was removed, selecting text works natively, and
   PuTTY's OSC 52 support is weak.  M7 ("down since") untouched.
 - `VERSION` **2.6.0**.
+
+## D58: `ok` for a connect that never happened, through `ct ssh` (user, 2026-11-17)
+User, from the field: "When I cancel an ssh connection while it's not loading with Ctrl-C, it gets checked
+as ssh ok. But it actually can't know."  Right on both counts, and it is D44 #1 again - this time not
+through a keystroke but through the **wrapper** (`ssh_command = ct ssh`, D52/D53).  Reproduced in the test
+harness against a relaying `ct`, two separate causes:
+- **Exit 0 from the wrapper.**  `ct` relays ssh on a terminal of its own; Ctrl-C kills the ssh *inside* it,
+  and the wrapper exits **0** (`pty.spawn` returns the signal in the wait status, `>> 8` makes that a 0).
+  TRuffle's own child is the wrapper, so `failed` saw exit 0, said "fine" before asking anything else, and
+  the SSH column got `ok` plus a place in `is:recent`.  `cancelled` missed it too: the signal never
+  reached us, so only the keystroke was left to go on.
+- **Raw mode with no password held.**  D53 reads an early raw mode as "the wrapper relays ssh, take the
+  session start from the output" - but only `if wrapper and armed`.  With a manual login (D56) nothing is
+  armed, so the wrapper's raw mode was taken as the session start itself, before the connect had even
+  happened.  Whether `ct` relays has nothing to do with whether WE hold a password; `armed` is gone from
+  that check.
+
+### The rule, stated once
+- **A session that never STARTED is never `ok`** - on no exit code at all.  Exit 0 is a logout only for a
+  session TRuffle saw start; before that it is a statement about the wrapper, not about the device.  The
+  cost is named and accepted: where TRuffle cannot see a session start it now says `failed` instead of
+  `ok` (`truffle --check` reports exactly that as `ssh results: NOT RELIABLE`).  Wrong-but-visible beats
+  the dangerous direction of D44 #1 - a dead switch sitting in the list as `ok`.
+- **Your own keystrokes are not the switch's output.**  They are echoed back, so after you type into a
+  connect that has asked you nothing, or press Ctrl-C / Ctrl-\ before a session exists, the output can no
+  longer show a session start (`output_can_start`).  A bare `hello` typed into a hanging connect was read
+  as "a line after the login that is not ssh's" (D53), and so was a `^C` with an Enter behind it.
+- **The keystroke counts, not only the signal** (`interrupt_typed`): a cancel the wrapper swallowed is
+  still a cancel, so the reason reads "cancelled while connecting" and there is no pointless "press any
+  key" afterwards.
+
+### Not changed
+The exit-255-is-a-logout rule (D9), Ctrl-Q as a console logout once a session started (D57 #2), and
+`started` from raw mode for plain ssh (D45) all stay exactly as they were.
+
+- *Tester:* `tests/fake_ssh.py` got **10.99.0.20** - takes the password, then nothing comes back (a switch
+  whose RADIUS server is away), so a cancel after the password can be tested at all.  Five new tests
+  through a relaying `ct`: Ctrl-C with a password held, Ctrl-C with a manual login, Ctrl-C after the
+  password went in, a typed line into a connect that asked nothing - and, as the guard on the `armed`
+  change, a manual login that WORKS through the wrapper, which must still come out `ok`.  The plain-ssh
+  Ctrl-C test of D44 is unchanged.  Each of the five pieces of the fix was re-broken on its own to confirm
+  its test fails without it.  272 tests, green.
+- `VERSION` stays **2.6.0**: no bundle of it has been built yet, so by the version rule (D22) this is the
+  same undelivered release.
+
+## D59: The rename finished, and the texts that did not fit (user, 2026-11-17)
+Three field reports in one go, and "check the whole repository for mistakes like that.  be brutally
+honest."  All three were real, and the sweep found more of the same kind.
+
+### The rename (finishes B3 of D50)
+User: "We renamed the tool Device Manager.  Some spots still say Switch.  There are other devices behind
+a terminal server than just switches, that's why we did a rename."
+- **25 user-visible texts** still said switch - the console window's **`Switch login`** row above all,
+  plus the console notes ("The switch refused the ... login"), the `Ctrl-K` warning, the pane notes, the
+  details page and the save window's `local` line.  What is in the list, or behind a terminal server, is a
+  **device**; a switch is only the most common kind.
+- Kept on purpose: the **verb** ("ssh switched the terminal to raw mode"), **V-Li: Switch Manager** (its
+  real name), `tests/fake_ssh.py` (it really does play a switch), and the examples that are about switches
+  - old switch firmware, the `w3` / `w4` naming scheme, `data.example.csv` and the sample rows built on it.
+- *Decided by the user in this round:* the pass covers **README and `truffle.conf.example`** (not
+  TMUX-SECURITY.md), and in the code **docstrings and comments only** - no identifier moves, so
+  `SwitchList`, `switchlist.py`, `switch_login()` and the handover's `switch_user` / `switch_password`
+  keys keep their names.  69 comments and docstrings were rewritten with `tokenize`, which only ever
+  touches comment and docstring tokens, so no identifier could be hit by accident.  `data.example.csv`
+  stays as it is.
+- Found while reading: the README's **`--check` sample output** still showed `switch name :` and
+  `first switch :`, labels the program stopped printing at the rename.
+
+### What did not fit (user: "the scalability fails")
+User: "when I add a host, the message from the local account doesn't fit on my macbook's screen".
+Reproduced at 80x24, and then every hint in every window was measured against the room it has:
+- **Three were cut on every screen, however wide** - the local-account line by 7 characters, the
+  terminal-server one by 6, the save window's `local` line by 3 - and two more sat within two columns of
+  the edge.  Cut with `[:n]`, so the text simply stopped mid-word with nothing to show it had.
+- **The window subtitle was never clamped at all.**  A saved name may be 64 characters (the save window's
+  own limit); the title line then ran over the window's top-right corner and on across the screen.
+- **The key row had no width budget either**: at 46 columns `Enter save  Tab next  ←→ login  ESC cancel`
+  ran straight through the right border.
+- Now: the login window **wraps** its hints and grows for them (and drops its last hint rather than its
+  key row on a short screen); every one-line hint that still has to be cut is marked with `…`; the
+  subtitle is cut inside the frame; and the key row drops the hints in the **middle**, because the first
+  (what the window does) and the last (`ESC`) are the two you cannot do without.
+- *Decided by the user:* fix the key row and **state the real minimum** rather than making every window
+  fit 40x10.  README: the list draws from 40x10, the windows show all their text from about 80x16.
+
+### The password line
+User: "somewhere, I read a message about where and how long the password is kept & it was formulated
+really weird.  sounded like the password does only get kept in the memory when truffle is closed."
+It was the login window: **"Kept in memory only · forgotten when TRuffle exits"** - which reads exactly
+as the user read it, and was also **wrong**: it ignored `password_lifetime` (600 by default), so the
+window promised something else than D28's rule.  The window is given the lifetime now and says it in two
+lines: "In memory only, never written to disk" / "Forgotten 10 h after you typed it, or when you quit".
+The help page and `truffle --check` say the same sentence.
+
+### More of the same class, from the sweep
+- **"Marked the 1 devices of this view"** - and the same missing plural in the list reload, the export and
+  the help page's device count; `log_keep_days = 1` gave "deleted after 1 days".  The project's own idiom
+  (`"" if n == 1 else "s"`) was simply missing in five places.
+- **`Ctrl-G`'s password row** said "Forget the stored password now" while the key drops *every* login
+  held, and printed `held  + local account` - a dangling `+` - when only the local account was there.  One
+  vocabulary now covers all of it: `Credentials.held_names()` plus `join_words()`, used by the row and by
+  the message afterwards ("Password and local account forgotten (you asked)").
+- The help page's **SSH column** line still said "Ctrl-C while connecting = failed"; after D58 the rule is
+  what TRuffle SAW, so it reads "ok = TRuffle saw you logged in; stopped while connecting = failed".
+
+- *Tester:* six new tests - the login window's hints as data (every one fits the widest window, every one
+  survives wrapping at 40 columns with no word lost, and the password line for 0 / 90 / 600 minutes),
+  `held_names` / `join_words`, and two tmux UI runs: a 64-character name that must stay inside the window
+  frame, and a 46-column screen where every window row must still have both of its borders.  Each one was
+  re-broken to confirm it fails without its fix.  278 tests, green.
+- `VERSION` stays **2.6.0**: still nothing built or delivered (D22's rule, as in D58).

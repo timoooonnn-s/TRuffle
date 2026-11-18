@@ -1,4 +1,4 @@
-"""The logins TRuffle holds in memory: your own, a switch's local account (for the console
+"""The logins TRuffle holds in memory: your own, a device's local account (for the console
 behind a terminal server, and for your saved devices without RADIUS: D56), and a terminal
 server's own local account (lab terminal servers without RADIUS, D54).  Never written
 anywhere, gone when TRuffle exits."""
@@ -9,6 +9,16 @@ import time
 def creds_expired(now, entered_at, minutes):
     """Typed more than `minutes` ago (0 = never)?  Absolute, not idle time (D28)."""
     return bool(minutes) and now - entered_at > minutes * 60
+
+
+def join_words(words):
+    """'password', 'password and local account', 'password, local account and ...' - what
+    the messages that name the held logins read like out loud."""
+    if not words:
+        return ""
+    if len(words) == 1:
+        return words[0]
+    return "%s and %s" % (", ".join(words[:-1]), words[-1])
 
 
 def minutes_text(minutes):
@@ -29,7 +39,7 @@ class Login(object):
 
 
 class Credentials(object):
-    """`own` logs you in everywhere; `local` is a switch's local account (consoles, and
+    """`own` logs you in everywhere; `local` is a device's local account (consoles, and
     saved devices set to it); `server` a terminal server's local account.  Each expires
     `lifetime` minutes after it was typed (0 = when TRuffle exits)."""
 
@@ -57,6 +67,12 @@ class Credentials(object):
     @property
     def held(self):
         return self.own is not None or self.local is not None or self.server is not None
+
+    def held_names(self):
+        """What is held right now, in the same words `expire` reports: ["password",
+        "local account", "terminal server account"] - for the texts that name them."""
+        return (["password"] * (self.own is not None) + ["local account"] * (self.local is not None)
+                + ["terminal server account"] * (self.server is not None))
 
     def forget(self):
         self.own = self.local = self.server = None

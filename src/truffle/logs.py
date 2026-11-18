@@ -1,4 +1,4 @@
-"""Session logs (what a switch showed you), the debug log (what happened around a login),
+"""Session logs (what a device showed you), the debug log (what happened around a login),
 and finding them again.  Every file is created 0600 in a 0700 folder (D8)."""
 
 import os
@@ -7,6 +7,7 @@ import shlex
 import stat
 import time
 
+from .inventory import days_text
 from .session import EscapeStripper
 
 
@@ -145,7 +146,7 @@ def prune_logs(cfg, now=None):
 def keep_text(cfg):
     if not cfg.log_keep_days:
         return "kept forever (log_keep_days = 0)"
-    return "deleted after %d days without a change (log_keep_days)" % cfg.log_keep_days
+    return "deleted after %s without a change (log_keep_days)" % days_text(cfg.log_keep_days)
 
 
 def log_note(result):
